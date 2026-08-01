@@ -77,7 +77,7 @@ class ConnectorDescriptor:
     # (connectors/experimental/) that release builds exclude entirely.
     experimental: bool = False
     risk_notice: str = ""
-    # One-click managed OAuth via OpenWorker Cloud (requires cloud sign-in).
+    # One-click managed OAuth via QunWork Cloud (requires cloud sign-in).
     # Manual token paste ALWAYS remains available — signed out or in — managed
     # is an extra path, never a replacement (local-only open-source flow is
     # sacred).
@@ -450,7 +450,7 @@ DESCRIPTORS: list[ConnectorDescriptor] = [
         name="slack",
         title="Slack",
         icon="💬",
-        blurb="Two-way messaging — one-click via OpenWorker Cloud, or a manual Slack app (Socket Mode).",
+        blurb="Two-way messaging — one-click via QunWork Cloud, or a manual Slack app (Socket Mode).",
         auth="socket_app",
         two_way=True,
         channels=True,
@@ -653,7 +653,7 @@ DESCRIPTORS: list[ConnectorDescriptor] = [
             ),
         ],
         instructions=[
-            "One click connects via OpenWorker Cloud (recommended).",
+            "One click connects via QunWork Cloud (recommended).",
             "Manual: paste a Microsoft Graph access token with Mail and Calendar scopes.",
         ],
         validate=_validate_outlook,
@@ -1256,7 +1256,7 @@ DESCRIPTORS: list[ConnectorDescriptor] = [
             ),
         ],
         instructions=[
-            "One click connects via OpenWorker Cloud (recommended).",
+            "One click connects via QunWork Cloud (recommended).",
             "Manual: create an internal integration at notion.so/my-integrations,",
             "copy its secret, and share the relevant pages with the integration.",
         ],
@@ -1285,7 +1285,7 @@ DESCRIPTORS: list[ConnectorDescriptor] = [
             ),
         ],
         instructions=[
-            "One click connects via OpenWorker Cloud (recommended).",
+            "One click connects via QunWork Cloud (recommended).",
             "Manual: create an API key under Workspace Settings → Developers.",
         ],
         validate=_validate_attio,
@@ -1452,7 +1452,7 @@ def register_descriptor(descriptor: ConnectorDescriptor) -> None:
 
 
 # Experimental connectors live in a separate package so release builds can exclude the code
-# entirely (see packaging/openworker-server.spec). When the package is absent this is a no-op.
+# entirely (see packaging/qunwork-server.spec). When the package is absent this is a no-op.
 try:
     from .experimental import EXPERIMENTAL_DESCRIPTORS as _EXPERIMENTAL
 except ImportError:

@@ -1,7 +1,7 @@
-//! OpenWorker desktop shell.
+//! QunWork desktop shell.
 //!
 //! Tauri is a thin native window over the existing React SPA. It:
-//!   1. picks a free localhost port and starts the Python `openworker-server` as a managed
+//!   1. picks a free localhost port and starts the Python `qunwork-server` as a managed
 //!      sidecar on that port (so it never clashes with a hand-run server on 8765);
 //!   2. injects the sidecar HTTP/WS addresses and per-launch authentication token before the
 //!      SPA loads (single codebase — the browser build still hits 8765);
@@ -52,7 +52,7 @@ fn launch_token() -> String {
 ///   2. The bundled onedir sidecar shipped via Tauri `resources` (production): the
 ///      `sidecar/` folder lands in Contents/Resources on macOS and in the install dir
 ///      (next to the app exe) on Windows.
-///   3. Legacy onefile slot: `openworker-server[.exe]` next to the app binary (pre-onedir
+///   3. Legacy onefile slot: `qunwork-server[.exe]` next to the app binary (pre-onedir
 ///      builds used Tauri externalBin).
 ///   4. Dev fallback: the repo venv, relative to this crate (`src-tauri` → `platform/.venv`;
 ///      `bin/` on POSIX, `Scripts\` on Windows).
@@ -61,9 +61,9 @@ fn server_bin() -> PathBuf {
         return PathBuf::from(p);
     }
     let exe_name = if cfg!(windows) {
-        "openworker-server.exe"
+        "qunwork-server.exe"
     } else {
-        "openworker-server"
+        "qunwork-server"
     };
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
@@ -83,9 +83,9 @@ fn server_bin() -> PathBuf {
     }
     let mut p = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     if cfg!(windows) {
-        p.push("../../../.venv/Scripts/openworker-server.exe");
+        p.push("../../../.venv/Scripts/qunwork-server.exe");
     } else {
-        p.push("../../../.venv/bin/openworker-server");
+        p.push("../../../.venv/bin/qunwork-server");
     }
     p
 }
@@ -110,15 +110,15 @@ fn desktop_prefs_path() -> PathBuf {
     state_dir().join("desktop.json")
 }
 
-/// The sidecar's log file: `<state_dir>/logs/openworker-server.log`, fresh per
+/// The sidecar's log file: `<state_dir>/logs/qunwork-server.log`, fresh per
 /// launch with the previous run kept as `.old`. None (→ /dev/null) only if the
 /// directory can't be created — logging must never block startup.
 fn server_log_file() -> Option<std::fs::File> {
     let dir = state_dir().join("logs");
     std::fs::create_dir_all(&dir).ok()?;
-    let path = dir.join("openworker-server.log");
+    let path = dir.join("qunwork-server.log");
     if path.exists() {
-        let _ = std::fs::rename(&path, dir.join("openworker-server.log.old"));
+        let _ = std::fs::rename(&path, dir.join("qunwork-server.log.old"));
     }
     std::fs::File::create(&path).ok()
 }
@@ -573,7 +573,7 @@ async fn install_update(
     }
     // Windows never reaches here (the NSIS installer takes over and relaunches).
     // macOS: the .app was swapped in place — restart into the new version. The tray
-    // Exit path's sidecar kill runs via RunEvent, so no orphaned openworker-server.
+    // Exit path's sidecar kill runs via RunEvent, so no orphaned qunwork-server.
     app.restart();
 }
 
@@ -690,7 +690,7 @@ pub fn run() {
             //    Overlay title bar (macOS): traffic lights float over the edge-to-edge UI.
             let mut builder =
                 WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
-                    .title("OpenWorker")
+                    .title("QunWork")
                     .inner_size(1360.0, 900.0)
                     .min_inner_size(980.0, 640.0)
                     // Let the WEBVIEW receive OS file drags: Tauri's own drag-drop handler
@@ -722,7 +722,7 @@ pub fn run() {
             });
 
             // 3. System tray: Open / Settings / Quit.
-            let open_i = MenuItem::with_id(app, "open", "Open OpenWorker", true, None::<&str>)?;
+            let open_i = MenuItem::with_id(app, "open", "Open QunWork", true, None::<&str>)?;
             let settings_i = MenuItem::with_id(app, "settings", "Settings", true, None::<&str>)?;
             let quit_i = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&open_i, &settings_i, &quit_i])?;
@@ -731,7 +731,7 @@ pub fn run() {
             // it for light/dark automatically — not the full-color app icon.
             let tray_icon = tauri::image::Image::new(include_bytes!("../icons/tray.rgba"), 44, 44);
             TrayIconBuilder::new()
-                .tooltip("OpenWorker")
+                .tooltip("QunWork")
                 .icon(tray_icon)
                 .icon_as_template(true)
                 .menu(&menu)
@@ -753,7 +753,7 @@ pub fn run() {
             Ok(())
         })
         .build(tauri::generate_context!())
-        .expect("error while building the OpenWorker desktop app")
+        .expect("error while building the QunWork desktop app")
         .run(|app, event| {
             // Also on Exit: belt-and-suspenders in case a quit path reaches teardown without
             // a preceding ExitRequested (observed with macOS Cmd+Q under the tray setup).

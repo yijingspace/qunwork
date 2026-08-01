@@ -1,37 +1,32 @@
-# OpenWorker
+# QunWork（群沃客）
 
-**[openworker.com](https://openworker.com)** · [Download](#download) · [Issues](https://github.com/andrewyng/openworker/issues)
+> **Beta** - QunWork 是 OpenWorker 的二次开发版本，基于 [OpenWorker](https://github.com/andrewyng/openworker)（MIT License，作者 Andrew Ng）构建。
 
-> **Beta** - OpenWorker is in open beta: fully usable, updates itself, and we're actively polishing rough edges. [Issues](https://github.com/andrewyng/openworker/issues) welcome.
+**让 AI 帮你把日常任务做完。** QunWork 是一个开源 AI 同事（coworker），常驻在你的桌面，交付**成品**而不只是聊天：一份精修过的文档、一条带数据的回复、一次更新好的日程、一封整理好的收件箱。
 
-**AI that gets your everyday tasks done.** OpenWorker is an open-source AI coworker that lives on your desktop and delivers **finished work**, not just chat: a polished document, a Slack reply with the numbers, an updated calendar, a triaged inbox.
+**产品愿景：多 Agent 协同、蜂群智能。** 当前版本聚焦于单人桌面的可靠执行；后续版本将逐步支持多个 Agent 协同分工，像蜂群一样把复杂任务拆解、并行、汇聚成最终成品。
 
-It runs on your machine and doesn't lock you into any model: bring your own API key for OpenAI, Anthropic, Google, or an open-weight provider, or run fully local with Ollama. Your data leaves your machine only through the model and integrations *you* choose.
+它运行在你的机器上，不锁定任何模型：自带 OpenAI、Anthropic、Google 或开源模型的 API Key，也可以完全本地运行（Ollama）。你的数据只会通过你自己选择的模型与集成离开机器。
 
-[![How OpenWorker works](docs/assets/how-it-works.png)](https://openworker.com)
+## 下载
 
-## Download
+> 官方安装包渠道目前仍指向 OpenWorker 原版下载；QunWork 自己的发布渠道搭建中，当前请使用 [Run from source](#run-from-source) 本地运行。
 
-[**⬇ macOS (Apple Silicon)**](https://download.openworker.com/mac)
-<sub>macOS 12+ · signed & notarized · auto-updates</sub>
+[**⬇ macOS (Apple Silicon)**](https://download.openworker.com/mac)（原版 OpenWorker）
+[**⬇ Windows 10/11 (x64)**](https://download.openworker.com/windows)（原版 OpenWorker）
 
-[**⬇ Windows 10/11 (x64)**](https://download.openworker.com/windows)
-<sub>builds are not yet code-signed, so SmartScreen will warn; signing is in progress</sub>
+## 工作原理
 
-Open the app, add a model key (or point it at Ollama), and ask for something real.
+1. 告诉 QunWork 你想要的结果 —— "准备一份客户简报"、"理一下我的日程"、"起草一份报告"、"看看发布在 Jira 和 GitHub 上的进度"。
+2. 它把任务拆成步骤，在你的桌面、文件和已连接的应用之间工作。
+3. 在任何有后果的操作前 —— 发消息、改日程、执行命令 —— 它会先确认，由你批准或改向。
+4. 你拿到的是完成的交付物，而不是一份待办清单。
 
-## How it works
-
-1. Tell OpenWorker the outcome you want - "prepare a customer brief," "untangle my calendar," "draft a report," "check where the release stands across Jira and GitHub."
-2. It breaks the task into steps and works across your desktop, files, and connected apps.
-3. Before anything consequential - sending a message, changing a calendar, running a command - it checks in and you approve or redirect.
-4. You get the finished deliverable, not a to-do list.
-
-Under the hood:
+架构：
 
 ```text
 ┌────────────────────────────────────────────────┐
-│              OpenWorker desktop app            │  native shell + GUI
+│              QunWork desktop app               │  native shell + GUI
 ├────────────────────────────────────────────────┤
 │           local agent server (Python)          │  engine · tools · connectors - built on aisuite
 ├───────────────┬────────────────┬───────────────┤
@@ -40,80 +35,73 @@ Under the hood:
 └───────────────┴────────────────┴───────────────┘
 ```
 
-## What it can do
+## 它能做什么
 
-- **Produce real deliverables** - documents, spreadsheets, reports, and web pages land as files you can open and share.
-- **Work from Slack** - mention `@OpenWorker` in a channel; a session opens on your desktop, the work happens with your tools, and the answer comes back as a thread reply.
-- **Use your everyday tools** - 25+ integrations including GitHub, Slack, Jira, Notion, Linear, HubSpot, Outlook, monday.com, Gmail, and Google Calendar, plus your **terminal and local files**. Any tool reachable over [MCP](https://modelcontextprotocol.io/) plugs in too, with per-tool control.
-- **Run on a schedule** - automations for recurring work: a morning brief, a weekly report, a standing watch over a channel. Runs land in the app with full transcripts.
-- **Ask before acting** - writes, sends, and shell commands are approval-gated. Unattended runs park their asks in an inbox instead of acting on their own.
+- **产出真实交付物** —— 文档、表格、报告、网页，落地为你可以打开和分享的文件。
+- **从 Slack 干活** —— 在频道里 `@QunWork`，桌面端打开一个会话，工作在你的工具上完成，答案以 thread 回复返回。
+- **使用你的日常工具** —— 25+ 集成，包括 GitHub、Slack、Jira、Notion、Linear、HubSpot、Outlook、monday.com、Gmail、Google Calendar，以及你的**终端和本地文件**。任何支持 [MCP](https://modelcontextprotocol.io/) 的工具都能接入，并支持按工具控制。
+- **按计划运行** —— 面向重复工作的自动化：晨报、周报、对某个频道的持续关注。运行结果带完整记录落在应用里。
+- **行动前先询问** —— 写入、发送、shell 命令都经过批准门控。无人值守的运行把待确认事项停在收件箱，而不是自作主张。
 
-## Bring your own model
+## 自带模型
 
-Model access is yours: pick a provider, paste your key, switch anytime. Supported out of the box:
+模型访问权是你的：选一个提供商、粘贴你的 Key、随时切换。开箱支持：
 
-**OpenAI · Anthropic · Google Gemini · Inkling (Thinking Machines) · GLM (Z.ai) · DeepSeek · Kimi (Moonshot) · Qwen · MiniMax · Mistral · Grok (xAI)** - plus open-weight models via **Together** and **Fireworks**, and fully local models via **Ollama**.
+**OpenAI · Anthropic · Google Gemini · Inkling (Thinking Machines) · GLM (Z.ai) · DeepSeek · Kimi (Moonshot) · Qwen · MiniMax · Mistral · Grok (xAI)** —— 外加通过 **Together** 和 **Fireworks** 的开源权重模型，以及通过 **Ollama** 的完全本地模型。
 
-A curated model list marks what we've verified for tool-calling work. Adding any model string works at your own risk.
+经过验证的模型清单会标注可用于工具调用。添加任意模型字符串需自担风险。
 
-## Privacy
+## 隐私
 
-OpenWorker is local-first. Everything lives on your machine: the agent loop, your conversations, connector tokens, and model keys - all in the app's local secret store. The only cloud piece is a small service that brokers OAuth handshakes for connectors. You can always use the App without signing-in - use the connectors via manually-created credentials/API-keys.
+QunWork 本地优先。一切都在你的机器上：agent 循环、对话、连接器 token、模型 Key —— 全部在应用的本地 secret store 里。唯一的云组件是一个为连接器代理 OAuth 握手的小服务。你也可以完全不登录使用 —— 通过手动创建的凭据/API Key 使用连接器。
 
-## Run from source
+## 从源码运行
 
-Prerequisites: Python 3.10+, Node 20+, and (for the desktop shell) the Rust toolchain via [rustup](https://rustup.rs/).
+前置条件：Python 3.10+、Node 20+、以及（桌面壳需要）通过 [rustup](https://rustup.rs/) 安装 Rust 工具链。
 
 ```shell
-git clone https://github.com/andrewyng/openworker
-cd openworker
+git clone <你的 QunWork 仓库地址>
+cd <repo>
 
-# 1. One-time bootstrap - creates the Python venv at .venv
-#    (on Windows, run from Git Bash or WSL)
+# 1. 一次性引导 - 在 .venv 创建 Python 虚拟环境
+#    (Windows 上请从 Git Bash 或 WSL 运行)
 bash packaging/setup_dev_env.sh
 
-# 2. Start the local agent server
-.venv/bin/openworker-server --cwd ~/some/project --port 8765
-#    (Windows: .venv\Scripts\openworker-server.exe)
+# 2. 启动本地 agent 服务器
+.venv/bin/qunwork-server --cwd ~/some/project --port 8765
+#    (Windows: .venv\Scripts\qunwork-server.exe)
 
-# 3. In a second terminal, start the UI
+# 3. 另开一个终端启动 UI
 cd surfaces/gui
 npm install
 npm run dev        # browser UI on the Vite dev port
 ```
 
-The standalone server creates a per-launch token at
-`<state-dir>/sidecar-8765.token`; Vite reads that user-only file when it starts.
-For direct API calls, send its value in the `X-OpenWorker-Token` header. The
-desktop app uses an in-memory launch token instead and never writes it to disk.
+独立服务器每次启动会在 `<state-dir>/qunwork-8765.token` 创建一个一次性 token；Vite 启动时读取这个用户专属文件。直接调用 API 时，把它的值放在 `X-QunWork-Token` 请求头里。桌面应用改用内存中的启动 token，从不落盘。
 
-To run the full desktop app instead of the browser UI, replace step 3 with `npm run tauri dev` (from `surfaces/gui/`) - the Tauri shell launches the window and supervises the server itself.
+要运行完整桌面应用而非浏览器 UI，把第 3 步换成 `npm run tauri dev`（在 `surfaces/gui/` 下）—— Tauri 壳会启动窗口并自行监督服务器。
 
-Tests: `.venv/bin/pytest` (server), `npm test` and `npm run e2e` in `surfaces/gui` (GUI unit + hermetic end-to-end). Desktop bundles are built with `packaging/build_dmg.sh` / `packaging/build_windows.ps1`.
+测试：`.venv/bin/pytest`（服务器）、`surfaces/gui` 下的 `npm test` 与 `npm run e2e`（GUI 单元 + 封闭端到端）。桌面安装包用 `packaging/build_dmg.sh` / `packaging/build_windows.ps1` 构建。
 
-## Repository layout
+## 仓库结构
 
-| Directory | What's in it |
+| 目录 | 内容 |
 |---|---|
-| `coworker/` | Python backend - agent engine, model providers, connectors, MCP client, memory, automations |
-| `surfaces/gui/` | Desktop app - React UI + Tauri shell that supervises the server |
-| `stt/` | Speech-to-text sidecar (Rust) for voice input |
-| `packaging/` | Installer builds (macOS DMG, Windows), auto-update manifest, dev bootstrap |
-| `docs/` | Design specs and decision logs |
-| `tests/` | Backend test suite |
+| `coworker/` | Python 后端 —— agent 引擎、模型提供商、连接器、MCP 客户端、记忆、自动化 |
+| `surfaces/gui/` | 桌面应用 —— React UI + 监督服务器的 Tauri 壳 |
+| `stt/` | 语音转文字侧车（Rust），用于语音输入 |
+| `packaging/` | 安装包构建（macOS DMG、Windows）、自动更新清单、开发引导 |
+| `docs/` | 设计文档与决策记录 |
+| `tests/` | 后端测试套件 |
 
-## Built on aisuite
+## 基于 aisuite 构建
 
-OpenWorker's engine is built on [**aisuite**](https://github.com/andrewyng/aisuite), a lightweight Python library providing a unified chat-completions API across LLM providers and an agents layer with tools, toolkits, and MCP support. If you want to build your own agent harness rather than use ours, start there; this repo is a working reference for what aisuite can carry.
+QunWork 的引擎基于 [**aisuite**](https://github.com/andrewyng/aisuite)，一个轻量 Python 库，提供跨 LLM 提供商的统一 chat-completions API，以及带工具、工具包与 MCP 支持的 agents 层。如果你想构建自己的 agent harness 而不是用我们的，可以从那里开始；本仓库是 aisuite 能力的可运行参考。
 
-OpenWorker was originally developed inside the aisuite repository before moving to its own home here; thanks to the aisuite contributors whose work it builds on.
+## 与上游的关系
 
-## Contributing
-
-Contributions and bug reports are welcome - open an [issue](https://github.com/andrewyng/openworker/issues) or a pull request. The app updates itself, so fixes reach installs quickly.
-For any PR, please attach screenshots of what was broken and how it is fixed now. We will shortly add features that you can contribute to.
-Please note that we are actively developing based off a internal list and goal, so we may not approve PRs that add features that are already under-development or deviates from our vision.
+QunWork 是 [OpenWorker](https://github.com/andrewyng/openworker)（MIT License）的二次开发分支。OpenWorker 由 Andrew Ng 于 2024 年发布，原先是 aisuite 仓库的一部分，后独立成仓。感谢 aisuite 与 OpenWorker 的贡献者。合规细节见 [NOTICE.md](NOTICE.md)。
 
 ## License
 
-MIT - see [LICENSE](LICENSE).
+MIT —— 保留上游原版权声明，详见 [LICENSE](LICENSE) 与 [NOTICE.md](NOTICE.md)。

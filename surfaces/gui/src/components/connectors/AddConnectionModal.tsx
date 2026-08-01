@@ -125,7 +125,7 @@ export function AddConnectionModal({
 
 // One-click pane for MCP-BACKED connectors (monday, asana, jira — §42): the sidecar
 // runs a fully LOCAL OAuth flow against the vendor's hosted MCP server (DCR — no
-// client secret, no broker, no OpenWorker sign-in required). Poll until the card
+// client secret, no broker, no QunWork sign-in required). Poll until the card
 // flips to connected, then close.
 function McpOneClick({ c, onConnected }: { c: Connector; onConnected: () => void }) {
   const [waiting, setWaiting] = useState(false);
@@ -152,7 +152,7 @@ function McpOneClick({ c, onConnected }: { c: Connector; onConnected: () => void
     <div className="px-5 py-4 space-y-3">
       <p className="text-[13px] text-muted">
         Opens {c.title} in your browser — sign in and approve access there. No tokens
-        typed, and no OpenWorker account needed: the sign-in runs entirely on this
+        typed, and no QunWork account needed: the sign-in runs entirely on this
         computer.
       </p>
       <button
@@ -255,7 +255,7 @@ function GithubOneClick({ c, cloud }: { c: Connector; cloud: CloudStatus | null 
   return (
     <div className="px-5 py-4 space-y-3">
       <p className="text-[13px] text-muted">
-        Opens GitHub in your browser — approve OpenWorker there. An existing @ocw-agent App
+        Opens GitHub in your browser — approve QunWork there. An existing @ocw-agent App
         installation links right up; otherwise you'll pick an account and repos. No tokens
         typed; the agent acts as ocw-agent[bot].
       </p>

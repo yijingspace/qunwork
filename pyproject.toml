@@ -3,9 +3,9 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "coworker"
+name = "qunwork"
 version = "0.0.0"
-description = "Agent coworker platform — provider-agnostic agentic coworker runtime"
+description = "QunWork — provider-agnostic agentic coworker runtime (multi-agent swarm vision)"
 requires-python = ">=3.10"
 dependencies = [
     "openai>=1.0",
@@ -45,9 +45,9 @@ messaging = ["python-telegram-bot>=21", "slack-bolt>=1.18", "aiohttp>=3.9"]
 browser = ["playwright>=1.44"]
 
 [project.scripts]
-openworker = "coworker.cli:main"
-openworker-server = "coworker.server.run:main"
-openworker-connectors = "coworker.connectors.cli:main"
+qunwork = "coworker.cli:main"
+qunwork-server = "coworker.server.run:main"
+qunwork-connectors = "coworker.connectors.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["."]

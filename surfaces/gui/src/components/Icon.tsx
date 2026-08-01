@@ -74,10 +74,11 @@ export function Icon({
         </svg>
       );
     case "logo":
-      // The OpenWorker mark — a 6-point star, matching the app + macOS tray icon.
+      // The QunWork mark — Q ring with the swarm tail, matching the app + tray icon.
       return (
-        <svg {...s} fill="currentColor" stroke="none">
-          <path d="M12.00 1.80 L13.35 9.66 L20.83 6.90 L14.70 12.00 L20.83 17.10 L13.35 14.34 L12.00 22.20 L10.65 14.34 L3.17 17.10 L9.30 12.00 L3.17 6.90 L10.65 9.66 Z" />
+        <svg {...s} fill="none" stroke="currentColor" strokeWidth={2}>
+          <circle cx="12" cy="11" r="7.5" />
+          <path d="M17.3 16.3l3.7 3.7" strokeLinecap="round" />
         </svg>
       );
     case "sidebar":

@@ -7,7 +7,7 @@ export function isProjectScoped(p?: { workspace?: string; family?: string }): bo
   return p?.family === "code";
 }
 
-// Persona naming: the product is "OpenWorker"; the personas are a "Coworker" family — Coworker
+// Persona naming: the product is "QunWork"; the personas are a "Coworker" family — Coworker
 // (general), Code Coworker, Ops Coworker. In lists/chrome we use the SHORT label (Coworker / Code /
 // Ops); the persona detail page uses the FULL family name. Backend names are left untouched (the
 // API + tests keep "OpenWorker" / "Ops Coworker"); this is purely the display layer.

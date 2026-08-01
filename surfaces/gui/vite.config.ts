@@ -18,7 +18,7 @@ export default defineConfig(({ command }) => {
         ? path.join(process.env.APPDATA || os.homedir(), "coworker")
         : path.join(os.homedir(), ".config", "coworker"));
     try {
-      devToken = fs.readFileSync(path.join(state, "sidecar-8765.token"), "utf8").trim();
+      devToken = fs.readFileSync(path.join(state, "qunwork-8765.token"), "utf8").trim();
     } catch {
       // The Tauri dev shell injects its in-memory token at runtime. Plain browser dev
       // shows the normal startup retry until the standalone server/token file exists.

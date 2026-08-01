@@ -29,7 +29,7 @@ export function WorkspaceTrustPrompt({
         <div className="gate-mark">✦</div>
         <h2 id="workspace-trust-title">Trust this workspace&rsquo;s commands?</h2>
         <p className="gate-sub">
-          This project asks OpenWorker to run the commands below without individual approval.
+          This project asks QunWork to run the commands below without individual approval.
           Trust applies to future configuration changes at this exact folder until you revoke it
           in Settings.
         </p>

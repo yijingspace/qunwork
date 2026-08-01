@@ -474,7 +474,7 @@ def test_standalone_server_token_file_is_user_only(tmp_path, monkeypatch):
     monkeypatch.delenv("COWORKER_API_TOKEN", raising=False)
     path = server_run._ensure_api_token(9876)
     try:
-        assert path == tmp_path / "coworker-state" / "sidecar-9876.token"
+        assert path == tmp_path / "coworker-state" / "qunwork-9876.token"
         assert path.read_text().strip() == os.environ["COWORKER_API_TOKEN"]
         assert len(path.read_text().strip()) == 64
         assert (path.stat().st_mode & 0o777) == 0o600
@@ -563,10 +563,10 @@ def test_sidecar_token_gates_rest_and_websockets(tmp_path, monkeypatch):
     assert client.get("/v1/health").json() == {"status": "ok"}
     assert client.get("/v1/sessions").status_code == 401
     assert client.get(
-        "/v1/sessions", headers={"X-OpenWorker-Token": "wrong"}
+        "/v1/sessions", headers={"X-QunWork-Token": "wrong"}
     ).status_code == 401
 
-    headers = {"X-OpenWorker-Token": "a" * 64}
+    headers = {"X-QunWork-Token": "a" * 64}
     assert client.get("/v1/health", headers=headers).json()[
         "default_workspace"
     ] == str(tmp_path.resolve())
@@ -585,15 +585,15 @@ def test_sidecar_token_gates_rest_and_websockets(tmp_path, monkeypatch):
     assert denied.value.code == 1008
 
     with client.websocket_connect(
-        "/ws/session/authed", subprotocols=["openworker", "a" * 64]
+        "/ws/session/authed", subprotocols=["qunwork", "a" * 64]
     ) as ws:
-        assert ws.accepted_subprotocol == "openworker"
+        assert ws.accepted_subprotocol == "qunwork"
         assert ws.receive_json()["type"] == "ready"
 
     with client.websocket_connect(
-        "/ws/events", subprotocols=["openworker", "a" * 64]
+        "/ws/events", subprotocols=["qunwork", "a" * 64]
     ) as ws:
-        assert ws.accepted_subprotocol == "openworker"
+        assert ws.accepted_subprotocol == "qunwork"
 
     # Redirect callbacks remain tokenless, then enforce their own signed state.
     assert client.get(

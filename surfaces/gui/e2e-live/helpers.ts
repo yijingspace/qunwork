@@ -15,7 +15,7 @@ function sidecarToken(): string {
       ? join(process.env.APPDATA || homedir(), "coworker")
       : join(homedir(), ".config", "coworker"));
   try {
-    return readFileSync(join(state, "sidecar-8765.token"), "utf8").trim();
+    return readFileSync(join(state, "qunwork-8765.token"), "utf8").trim();
   } catch {
     return "";
   }
@@ -25,7 +25,7 @@ function sidecarToken(): string {
 export function backendFetch(path: string, init: RequestInit = {}): Promise<Response> {
   const headers = new Headers(init.headers);
   const token = sidecarToken();
-  if (token) headers.set("X-OpenWorker-Token", token);
+  if (token) headers.set("X-QunWork-Token", token);
   return fetch(`${BACKEND}${path}`, { ...init, headers });
 }
 
@@ -35,7 +35,7 @@ export async function scratchBaseIfReady(): Promise<string | null> {
     const res = await backendFetch("/v1/settings");
     const s = await res.json();
     if (res.ok && s.model_ready) {
-      return String(s.scratch_base || "~/OpenWorker").replace(/^~(?=\/|$)/, homedir());
+      return String(s.scratch_base || "~/QunWork").replace(/^~(?=\/|$)/, homedir());
     }
   } catch {
     /* backend unreachable */

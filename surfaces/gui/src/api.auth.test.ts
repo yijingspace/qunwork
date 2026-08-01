@@ -8,7 +8,7 @@ afterEach(() => {
 it("authenticates REST and session WebSocket calls with the launch token", async () => {
   vi.stubGlobal("__COWORKER_API_TOKEN__", "launch-token");
   const request = vi.fn(async (_url: string, init?: RequestInit) => {
-    expect(new Headers(init?.headers).get("X-OpenWorker-Token")).toBe("launch-token");
+    expect(new Headers(init?.headers).get("X-QunWork-Token")).toBe("launch-token");
     return { json: async () => ({ status: "ok" }) } as Response;
   });
   vi.stubGlobal("fetch", request);
@@ -34,5 +34,5 @@ it("authenticates REST and session WebSocket calls with the launch token", async
 
   const session = new Session("s1", "/workspace", "code", { onEvent: vi.fn() });
   const socket = (session as unknown as { ws: FakeWebSocket }).ws;
-  expect(socket.protocols).toEqual(["openworker", "launch-token"]);
+  expect(socket.protocols).toEqual(["qunwork", "launch-token"]);
 });
