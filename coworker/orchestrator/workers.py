@@ -65,6 +65,10 @@ drops your finished work.
 about it. Never end with process sentences like \"I will now write…\", \"now stitching \
 the fragments…\", \"verifying…\" — if you still need to write/stitch, DO it inside this \
 same turn and end with the product text.
+- AFTER WRITING A FILE: your final message must CONTAIN THE FULL FILE CONTENT (read \
+the file back if needed). The orchestrator stitches workers' final messages into the \
+deliverable — content that lives only on disk is lost. \"Written to x.md\" alone is \
+never an acceptable final message.
 - Web/search are never a substitute for writing: cap them at 2 calls per task, each \
 at most once per query. If a call fails or is slow, proceed — mark uncertain figures \
 with \"~\" plus a note.

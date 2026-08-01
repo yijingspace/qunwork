@@ -315,9 +315,14 @@ class Orchestrator:
                 )
 
             try:
-                if self.task_timeout_seconds:
+                # consolidation tasks (many deps) need more time to read files,
+                # stitch and write — give them extra headroom.
+                timeout = self.task_timeout_seconds
+                if timeout and len(task.deps) >= 2:
+                    timeout = max(timeout, self.task_timeout_seconds * 3)
+                if timeout:
                     result = await asyncio.wait_for(
-                        _run_task(), timeout=self.task_timeout_seconds
+                        _run_task(), timeout=timeout
                     )
                 else:
                     result = await _run_task()
