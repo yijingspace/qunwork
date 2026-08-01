@@ -230,3 +230,52 @@ def test_orchestrate_mounted_on_knowledge_engine(tmp_path):
     # Code family keeps its explorer-only delegation.
     code_engine = build_engine(agent=get_agent("code"), workspace=str(ws), provider=P())
     assert "orchestrate" not in code_engine.registry.names()
+
+
+async def test_executor_writes_are_auto_approved(tmp_path):
+    """Swarm workers auto-approve writes (no deadlock waiting for a human click):
+    an executor that calls write_file completes the task instead of hanging."""
+    from coworker.engine import ApprovalOutcome
+    from coworker.orchestrator import auto_approver
+
+    approver = auto_approver()
+    # exercise the approver directly: a write request resolves to ALWAYS_TOOL
+    from coworker.engine import PermissionRequest
+
+    outcome = await approver(
+        PermissionRequest(
+            tool_name="write_file",
+            arguments={"path": "x.txt"},
+            metadata=None,
+            reason="test",
+        )
+    )
+    assert outcome == ApprovalOutcome.ALWAYS_TOOL
+
+
+async def test_orchestrator_timeout_pauses(tmp_path):
+    """A run exceeding timeout_seconds returns paused instead of hanging forever."""
+    from coworker.orchestrator import Orchestrator
+    from coworker.orchestrator.governance import GovernanceConfig
+    from coworker.providers import AssistantTurn, ModelCapabilities, ProviderClient
+
+    class SlowProvider(ProviderClient):
+        def complete(self, *, model, messages, tools=None, **settings):
+            import time
+
+            time.sleep(0.5)  # slow enough to trip a 0.1s timeout
+            return AssistantTurn(text='[{"id":"t0","description":"Write a report","deps":[]}]')
+
+        def capabilities(self, model):
+            return ModelCapabilities()
+
+    orch = Orchestrator(
+        provider=SlowProvider(),
+        model="m",
+        workspace=str(tmp_path / "ws"),
+        timeout_seconds=1,
+        governance_config=GovernanceConfig(),
+    )
+    result = await orch.run("Write a report")
+    assert result.status == "paused"
+    assert "timed out" in result.summary

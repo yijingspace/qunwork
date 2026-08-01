@@ -24,9 +24,27 @@ __all__ = [
     "Task",
     "VectorMemory",
     "PersistentVectorMemory",
+    "auto_approver",
     "run_orchestration",
     "orchestration_tools",
 ]
+
+
+def auto_approver():
+    """An Approver that auto-allows worker writes for the duration of the run.
+
+    Running a swarm is itself the user's explicit authorization to work in the
+    chosen workspace; per-tool approval prompts would deadlock the headless
+    workers (nothing is there to click). Safety still holds: the governance
+    loop watches red-lines/drift, and workers stay inside the workspace.
+    """
+
+    from ..engine import ApprovalOutcome
+
+    async def approve(request):
+        return ApprovalOutcome.ALWAYS_TOOL
+
+    return approve
 
 
 def run_orchestration(

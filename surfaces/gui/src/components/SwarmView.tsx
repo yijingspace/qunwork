@@ -55,6 +55,7 @@ export function SwarmView({ onBack, workspace }: { onBack: () => void; workspace
   const [tasks, setTasks] = useState<TaskView[]>([]);
   const [thoughts, setThoughts] = useState<Thought[]>([]);
   const [governance, setGovernance] = useState<string[]>([]);
+  const [finalReport, setFinalReport] = useState<string>("");
   const [error, setError] = useState<string | null>(null);
   const [history, setHistory] = useState<OrchestrationHistoryItem[]>([]);
   const mounted = useRef(true);
@@ -83,6 +84,7 @@ export function SwarmView({ onBack, workspace }: { onBack: () => void; workspace
 
   const applySnapshot = (snap: OrchestrationRunSnapshot) => {
     setStatus(snap.status);
+    if (snap.final) setFinalReport(snap.final);
     const tasks: TaskView[] = [];
     const thoughts: Thought[] = [];
     const gov: string[] = [];
@@ -270,6 +272,19 @@ export function SwarmView({ onBack, workspace }: { onBack: () => void; workspace
                 <div className="text-[12px] text-muted whitespace-pre-wrap">{th.text}</div>
               </div>
             ))}
+          </div>
+        )}
+
+        {finalReport && (
+          <div className="mb-4">
+            <div className="text-[11px] uppercase tracking-[0.07em] text-faint font-semibold mb-1.5">
+              {t("Final report")}
+            </div>
+            <div className="rounded-xl border border-lineStrong bg-panel px-4 py-3">
+              <pre className="text-[12.5px] text-ink whitespace-pre-wrap font-sans leading-relaxed max-h-72 overflow-y-auto">
+                {finalReport}
+              </pre>
+            </div>
           </div>
         )}
 

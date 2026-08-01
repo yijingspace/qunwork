@@ -99,6 +99,7 @@ class Orchestrator:
     memory_scope: Optional[str] = None  # persistent-memory scope (e.g. workspace path)
     memory_db: Optional[str] = None  # SQLite path for persistent memory (default workspace/.qunwork/memory.db)
     max_parallel: int = 1  # how many independent tasks run concurrently
+    timeout_seconds: Optional[int] = 300  # whole-run timeout (None = no limit)
     event_sink: Optional[Callable[[str, dict], None]] = None  # (kind, payload) progress feed
     _runs: int = field(default=0, init=False)
     _run_seq: int = field(default=0, init=False)
@@ -134,11 +135,15 @@ class Orchestrator:
 
     # -- execution ----------------------------------------------------------
     async def _execute(self, task: Task, *, deps: list[str] = None, hints: list[str] = None) -> str:
+        from . import auto_approver
+
         engine = build_executor_engine(
             workspace=self.workspace,
             provider=self.provider,
             model=self.model,
-            approver=self.approver,
+            # Auto-approve worker writes by default (running the swarm IS the
+            # authorization); callers may override with their own approver.
+            approver=self.approver if self.approver is not None else auto_approver(),
             agent=self.executor_agent,
             model_settings=self.model_settings,
         )
@@ -178,6 +183,27 @@ class Orchestrator:
 
     # -- main loop ----------------------------------------------------------
     async def run(self, intent: str) -> OrchestrationResult:
+        if self.timeout_seconds:
+            try:
+                return await asyncio.wait_for(self._run(intent), timeout=self.timeout_seconds)
+            except asyncio.TimeoutError:
+                self._emit(
+                    "run_timed_out",
+                    {"seconds": self.timeout_seconds},
+                )
+                return OrchestrationResult(
+                    intent=intent,
+                    plan=Plan(goal=intent),
+                    summary=f"swarm timed out after {self.timeout_seconds}s",
+                    status="paused",
+                    runs=self._runs,
+                    governance_report="\n".join(
+                        f"[step {self._runs}] TIMEOUT after {self.timeout_seconds}s"
+                    ),
+                )
+        return await self._run(intent)
+
+    async def _run(self, intent: str) -> OrchestrationResult:
         self._emit("run_started", {"intent": intent})
         plan = await self._plan(intent)
         self._emit(

@@ -288,4 +288,5 @@ export const zh: Messages = {
   "Task plan": "任务计划",
   "Worker thoughts": "Worker 思维链",
   "History": "历史记录",
+  "Final report": "最终报告",
 };

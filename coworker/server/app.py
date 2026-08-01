@@ -274,7 +274,8 @@ def create_app(manager: SessionManager) -> FastAPI:
                 provider=manager.provider,
                 model=body.get("model") or manager.model,
                 workspace=workspace,
-                approver=manager.inbox_approver(session_id, "cowork"),
+                # Auto-approve worker writes: running the swarm is the authorization.
+                # (Inbox gating would deadlock headless workers waiting for clicks.)
                 max_parallel=int(body.get("max_parallel") or 1),
                 memory_scope=body.get("memory_scope") or str(workspace),
                 event_sink=lambda kind, payload: store.append_event(run_id, kind, payload),
@@ -283,9 +284,8 @@ def create_app(manager: SessionManager) -> FastAPI:
         async def _finalize(orch: "Orchestrator") -> dict[str, Any]:
             try:
                 result = await orch.run(intent)
-                store.update_status(run_id, result.status)
-                return {
-                    "ok": True,
+                store.update_status(run_id, result.status, final=result.summary)
+                return {                    "ok": True,
                     "run_id": run_id,
                     "status": result.status,
                     "runs": result.runs,
@@ -306,7 +306,6 @@ def create_app(manager: SessionManager) -> FastAPI:
             except Exception as exc:  # surface failures via the run store
                 store.update_status(run_id, "failed", str(exc))
                 return {"ok": False, "run_id": run_id, "error": str(exc)}
-
         if sync:
             return await _finalize(_build())
         import asyncio
