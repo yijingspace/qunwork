@@ -86,9 +86,10 @@ def test_drift_escalates_to_human():
 
 def test_viscosity_mid_warns():
     gov = _gov(check_every=1)
-    plan = _plan(_task("t0", "task"))
-    for _ in range(3):
-        gov.record_step(_task("t0", "task", result="stuck output"), "stuck output", False)
+    plan = _plan(_task("t0", "Write a report"))
+    # two identical + one different -> viscosity 0.5 (mid band: 0.4..0.66)
+    for r in ["stuck output", "stuck output", "different output"]:
+        gov.record_step(_task("t0", "Write a report", result=r), r, False)
     cmd = gov.inspect(plan)
     assert cmd.action == WARN
 

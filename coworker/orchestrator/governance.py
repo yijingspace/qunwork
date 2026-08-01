@@ -44,7 +44,7 @@ class GovernanceConfig:
     viscosity_epsilon: float = 0.05  # similarity change below this = no progress
     viscosity_high: float = 0.66  # > this share of stuck steps -> REVERT
     viscosity_mid: float = 0.4  # > this -> WARN
-    drift_threshold: float = 0.7  # > this -> WARN + ESCALATE
+    drift_threshold: float = 0.8  # > this -> WARN + ESCALATE (subtasks legitimately differ from the goal)
     red_lines: list[str] = field(default_factory=list)  # e.g. ["drop table", "rm -rf /"]
     max_warnings: int = 3  # repeated WARNs escalate to a human
 

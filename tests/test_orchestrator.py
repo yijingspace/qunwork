@@ -279,3 +279,45 @@ async def test_orchestrator_timeout_pauses(tmp_path):
     result = await orch.run("Write a report")
     assert result.status == "paused"
     assert "timed out" in result.summary
+
+
+async def test_task_timeout_degrades_and_continues(tmp_path):
+    """A task that exceeds task_timeout_seconds is marked done (partial) so the
+    rest of the plan and the final report still proceed."""
+    from coworker.orchestrator import Orchestrator
+    from coworker.orchestrator.governance import GovernanceConfig
+    from coworker.providers import AssistantTurn, ModelCapabilities, ProviderClient
+
+    class SlowExecutor(ProviderClient):
+        def __init__(self):
+            self.planned = False
+            self.exec_calls = 0
+
+        def complete(self, *, model, messages, tools=None, **settings):
+            last = str((messages or [{}])[-1].get("content", ""))
+            if "Execute it now" in last:  # executor
+                import time
+
+                time.sleep(0.4)  # exceed the 0.2s intent; task timeout is 1s
+                return AssistantTurn(text="never reached", finish_reason="stop")
+            if "Validate the result" in last:  # reviewer
+                return AssistantTurn(text='{"accepted":true,"confidence":0.9,"reason":"ok","needs_human":false}')
+            return AssistantTurn(text='[{"id":"t0","description":"Write intro","deps":[]}]')
+
+        def capabilities(self, model):
+            return ModelCapabilities()
+
+    orch = Orchestrator(
+        provider=SlowExecutor(),
+        model="m",
+        workspace=str(tmp_path / "ws"),
+        task_timeout_seconds=1,
+        timeout_seconds=30,
+        governance_config=GovernanceConfig(),
+    )
+    # the executor sleeps 0.4s per call; a tight task timeout forces degradation
+    orch.task_timeout_seconds = 0.2
+    result = await orch.run("Write a report")
+    assert result.status == "completed"  # degraded, not paused
+    t0 = result.plan.tasks[0]
+    assert t0.done and "timed out" in t0.result

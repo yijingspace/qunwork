@@ -100,6 +100,7 @@ class Orchestrator:
     memory_db: Optional[str] = None  # SQLite path for persistent memory (default workspace/.qunwork/memory.db)
     max_parallel: int = 1  # how many independent tasks run concurrently
     timeout_seconds: Optional[int] = 300  # whole-run timeout (None = no limit)
+    task_timeout_seconds: Optional[int] = 90  # per-task timeout; timeout degrades to a partial result
     event_sink: Optional[Callable[[str, dict], None]] = None  # (kind, payload) progress feed
     _runs: int = field(default=0, init=False)
     _run_seq: int = field(default=0, init=False)
@@ -246,7 +247,25 @@ class Orchestrator:
                 if h.meta.get("task_id") != task.id or h.meta.get("run_token") != run_token
             ]
             try:
-                result = await self._execute(task, deps=deps, hints=hints)
+                if self.task_timeout_seconds:
+                    result = await asyncio.wait_for(
+                        self._execute(task, deps=deps, hints=hints),
+                        timeout=self.task_timeout_seconds,
+                    )
+                else:
+                    result = await self._execute(task, deps=deps, hints=hints)
+            except asyncio.TimeoutError:
+                # Degrade: mark done with a partial-result note so dependents and
+                # the final report can still proceed instead of the run stalling.
+                task.status = "done"
+                task.result = (
+                    f"⚠ task timed out after {self.task_timeout_seconds}s — "
+                    "result may be incomplete; continue with available information"
+                )
+                task.confidence = 0.3
+                gov.record_step(task, task.result, True)
+                self._emit("task_timeout", {"id": task.id, "seconds": self.task_timeout_seconds})
+                return True
             except Exception as exc:  # executor crash → one retry, then escalate
                 task.status = "pending" if task.retries < self.max_retries else "needs_human"
                 task.result = f"executor error: {exc}"

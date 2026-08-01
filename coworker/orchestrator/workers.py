@@ -28,7 +28,7 @@ from ..tools.git import git_tools
 from ..tools.search import search_tools
 
 _PLANNER_MAX_ITERATIONS = 8
-_EXECUTOR_MAX_ITERATIONS = 20
+_EXECUTOR_MAX_ITERATIONS = 12
 _REVIEWER_MAX_ITERATIONS = 8
 
 PLANNER_INSTRUCTIONS = """You are the planning agent of a multi-agent swarm. \
@@ -36,7 +36,9 @@ Break the user's goal into a small, ordered task plan. Return ONLY a JSON array,
 prose, no markdown fences. Each element: {"id": "t1", "description": "...", "deps": ["t0"]}. \
 Use ids t0, t1, ...; deps must reference earlier ids (empty list for the first tasks). \
 Keep the plan to 3-6 concrete tasks; each task must be independently executable and \
-produce a tangible result."""
+produce a tangible result. Write task descriptions as \"write/analyze/draft <deliverable> \
+using your knowledge (verify key figures online if convenient)\" — NOT as data-collection \
+quests, so workers can always produce output."""
 
 REVIEWER_INSTRUCTIONS = """You are the review agent of a multi-agent swarm. You are \
 given a task and the executor's result. Validate whether the result actually satisfies \
@@ -47,9 +49,19 @@ with needs_human=true when the task cannot be completed without a human decision
 (unclear requirements, missing permissions, safety boundary)."""
 
 EXECUTOR_INSTRUCTIONS = """You are an execution agent in a multi-agent swarm. \
-Complete the single task you are given, end to end, using the available tools \
-(files, search, shell, todo). Do the actual work and produce the deliverable; do not \
-just describe what you would do. Your final message is the task result report."""
+Complete the single task you are given, end to end, using your knowledge and the \
+available tools (files, search, shell, web).
+
+- PREFER producing the deliverable directly from your knowledge. Web/search tools are \
+for VERIFYING a few specific figures — never a substitute for writing the answer, and \
+never something to loop on.
+- Limit web/search calls to at most 3 per task. If a call fails, times out, or returns \
+nothing useful, PROCEED with what you know and mark uncertain figures with \"~\" plus a \
+note. Do not retry the same search more than once.
+- Do not narrate plans (\"I will now fetch…\"). Just do the work.
+- Your final message is the task result report: the deliverable itself (or its key \
+content), with any data caveats."""
+
 
 
 def _readonly_engine(
