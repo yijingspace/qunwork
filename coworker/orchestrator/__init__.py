@@ -14,6 +14,7 @@ import aisuite as ai
 from .models import OrchestrationResult, Plan, ReviewVerdict, Task
 from .orchestrator import Orchestrator
 from .vectormemory import VectorMemory
+from .memory_store import PersistentVectorMemory
 
 __all__ = [
     "Orchestrator",
@@ -22,6 +23,7 @@ __all__ = [
     "ReviewVerdict",
     "Task",
     "VectorMemory",
+    "PersistentVectorMemory",
     "run_orchestration",
     "orchestration_tools",
 ]

@@ -47,14 +47,17 @@ class VectorMemory:
         self.embedder = embedder
         self.items: list[MemoryItem] = []
 
-    def add(self, text: str, **meta: Any) -> None:
+    def _new_item(self, text: str, meta: dict[str, Any]) -> MemoryItem:
         vec = None
         if self.embedder is not None:
             try:
                 vec = self.embedder(text)
             except Exception:
                 vec = None
-        self.items.append(MemoryItem(text=text, meta=meta, vector=vec))
+        return MemoryItem(text=text, meta=meta, vector=vec)
+
+    def add(self, text: str, **meta: Any) -> None:
+        self.items.append(self._new_item(text, meta))
 
     def search(self, query: str, k: int = 3) -> list[MemoryHit]:
         if not self.items:

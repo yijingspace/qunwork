@@ -15,10 +15,13 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import uuid
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Optional
 
 from .governance import ESCALATE, NOP, PAUSE, REVERT, WARN, Governance, GovernanceCommand, GovernanceConfig
+from .memory_store import PersistentVectorMemory
 from .models import OrchestrationResult, Plan, ReviewVerdict, Task
 from .vectormemory import VectorMemory
 from .workers import (
@@ -93,8 +96,11 @@ class Orchestrator:
     governance_config: Optional[GovernanceConfig] = None
     embedder: Optional[Any] = None  # optional text->vector callable for drift/memory
     memory: Optional[VectorMemory] = None  # shared blackboard across worker steps
+    memory_scope: Optional[str] = None  # persistent-memory scope (e.g. workspace path)
+    memory_db: Optional[str] = None  # SQLite path for persistent memory (default workspace/.qunwork/memory.db)
     max_parallel: int = 1  # how many independent tasks run concurrently
     _runs: int = field(default=0, init=False)
+    _run_seq: int = field(default=0, init=False)
 
     # -- planning -----------------------------------------------------------
     async def _plan(self, intent: str) -> Plan:
@@ -154,7 +160,15 @@ class Orchestrator:
         plan = await self._plan(intent)
         by_id = plan.by_id()
         gov = Governance(goal=intent, config=self.governance_config, embedder=self.embedder)
-        mem = self.memory if self.memory is not None else VectorMemory(embedder=self.embedder)
+        self._run_seq += 1
+        run_token = str(uuid.uuid4())
+        if self.memory is not None:
+            mem = self.memory
+        elif self.memory_scope is not None:
+            db = self.memory_db or str(Path(self.workspace) / ".qunwork" / "memory.db")
+            mem = PersistentVectorMemory(db, scope=self.memory_scope, embedder=self.embedder)
+        else:
+            mem = VectorMemory(embedder=self.embedder)
         gov_log: list[str] = []
         governance_paused = False
 
@@ -170,7 +184,7 @@ class Orchestrator:
             hints = [
                 f"[{h.meta.get('task_id', '?')}] {h.text[:800]}"
                 for h in mem.search(task.description, k=2)
-                if h.meta.get("task_id") != task.id
+                if h.meta.get("task_id") != task.id or h.meta.get("run_token") != run_token
             ]
             try:
                 result = await self._execute(task, deps=deps, hints=hints)
@@ -195,7 +209,11 @@ class Orchestrator:
                 task.retries += 1
             gov.record_step(task, result, verdict.accepted)
             if task.status == "done":
-                mem.add(task.description, task_id=task.id, result=task.result[:500])
+                mem.add(
+                    f"{task.description}\n→ {task.result[:500]}",
+                    task_id=task.id,
+                    run_token=run_token,
+                )
             return True
 
         # Iterate until convergence: all tasks done, a task escalated to human,
