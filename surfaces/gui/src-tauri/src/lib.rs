@@ -486,8 +486,11 @@ fn show_main(app: &tauri::AppHandle) {
 // The GUI drives updates through these commands (same invoke bridge as everything
 // else — no global plugin JS): check, background pre-download, install. Update
 // artifacts are minisign-verified against the pubkey in tauri.conf.json before
-// anything is installed; the manifest lives at the endpoints configured there
-// (download.openworker.com → GitHub Releases).
+// anything is installed.
+//
+// QunWork: auto-update is DISABLED — the endpoints list is empty (we don't have a
+// self-hosted update server yet), and these commands report "no update" so the GUI
+// never prompts. A stray click must never fetch the upstream OpenWorker builds again.
 
 #[derive(serde::Serialize)]
 struct UpdateInfo {
@@ -497,13 +500,8 @@ struct UpdateInfo {
 
 #[tauri::command]
 async fn check_for_update(app: tauri::AppHandle) -> Result<Option<UpdateInfo>, String> {
-    use tauri_plugin_updater::UpdaterExt;
-    let updater = app.updater().map_err(|e| e.to_string())?;
-    let update = updater.check().await.map_err(|e| e.to_string())?;
-    Ok(update.map(|u| UpdateInfo {
-        version: u.version.clone(),
-        notes: u.body.clone().unwrap_or_default(),
-    }))
+    let _ = app;
+    Ok(None) // disabled: no self-hosted update endpoint
 }
 
 /// Update bytes pre-fetched by `download_update`, keyed by version. The GUI kicks the
@@ -516,25 +514,8 @@ async fn download_update(
     app: tauri::AppHandle,
     pending: tauri::State<'_, PendingUpdate>,
 ) -> Result<(), String> {
-    use tauri_plugin_updater::UpdaterExt;
-    let updater = app.updater().map_err(|e| e.to_string())?;
-    let Some(update) = updater.check().await.map_err(|e| e.to_string())? else {
-        return Err("no update available".into());
-    };
-    // Periodic re-checks re-invoke this for the same release — the cached bytes stand.
-    // (Guard scope stays sync: a std MutexGuard must not live across an await.)
-    {
-        let slot = pending.0.lock().unwrap();
-        if slot.as_ref().map(|(v, _)| v == &update.version).unwrap_or(false) {
-            return Ok(());
-        }
-    }
-    let bytes = update
-        .download(|_, _| {}, || {})
-        .await
-        .map_err(|e| e.to_string())?;
-    *pending.0.lock().unwrap() = Some((update.version.clone(), bytes));
-    Ok(())
+    let _ = (app, pending);
+    Err("auto-update is disabled".into()) // QunWork: no self-hosted endpoint yet
 }
 
 /// Drop the pre-fetched bundle. Invoked on "Later": a dismissed release would
