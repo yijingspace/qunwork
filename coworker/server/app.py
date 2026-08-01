@@ -276,7 +276,7 @@ def create_app(manager: SessionManager) -> FastAPI:
                 workspace=workspace,
                 # Auto-approve worker writes: running the swarm is the authorization.
                 # (Inbox gating would deadlock headless workers waiting for clicks.)
-                max_parallel=int(body.get("max_parallel") or 1),
+                max_parallel=int(body.get("max_parallel") or 4),
                 timeout_seconds=(
                     int(body["timeout_seconds"])
                     if body.get("timeout_seconds")

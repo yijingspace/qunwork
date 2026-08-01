@@ -98,7 +98,7 @@ class Orchestrator:
     memory: Optional[VectorMemory] = None  # shared blackboard across worker steps
     memory_scope: Optional[str] = None  # persistent-memory scope (e.g. workspace path)
     memory_db: Optional[str] = None  # SQLite path for persistent memory (default workspace/.qunwork/memory.db)
-    max_parallel: int = 1  # how many independent tasks run concurrently
+    max_parallel: int = 4  # how many independent tasks run concurrently
     timeout_seconds: Optional[int] = 300  # whole-run timeout (None = no limit)
     task_timeout_seconds: Optional[int] = 90  # per-task timeout; timeout degrades to a partial result
     event_sink: Optional[Callable[[str, dict], None]] = None  # (kind, payload) progress feed

@@ -34,11 +34,14 @@ _REVIEWER_MAX_ITERATIONS = 8
 PLANNER_INSTRUCTIONS = """You are the planning agent of a multi-agent swarm. \
 Break the user's goal into a small, ordered task plan. Return ONLY a JSON array, no \
 prose, no markdown fences. Each element: {"id": "t1", "description": "...", "deps": ["t0"]}. \
-Use ids t0, t1, ...; deps must reference earlier ids (empty list for the first tasks). \
-Keep the plan to 3-6 concrete tasks; each task must be independently executable and \
-produce a tangible result. Write task descriptions as \"write/analyze/draft <deliverable> \
-using your knowledge (verify key figures online if convenient)\" — NOT as data-collection \
-quests, so workers can always produce output."""
+Use ids t0, t1, ...; deps must reference earlier ids (empty list for the first tasks).
+
+PARALLELISM IS KEY: make tasks as INDEPENDENT as possible so many run at once. \
+Chapter/part tasks should have EMPTY deps (each writes its own section from \
+knowledge, verifying key figures if convenient). Only the final consolidation task \
+depends on all earlier ones. Aim for 4-8 tasks: several independent writing tasks + \
+one final assemble/consolidate task with deps on all others. Keep each task \
+independently executable and tangible ("write/analyze/draft <deliverable>")."""
 
 REVIEWER_INSTRUCTIONS = """You are the review agent of a multi-agent swarm. You are \
 given a task and the executor's result. Validate whether the result actually satisfies \

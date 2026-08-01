@@ -101,7 +101,7 @@ function DAGDiagram({ tasks }: { tasks: TaskView[] }) {
 export function SwarmView({ onBack, workspace }: { onBack: () => void; workspace?: string }) {
   const t = useT();
   const [intent, setIntent] = useState("");
-  const [maxParallel, setMaxParallel] = useState(2);
+  const [maxParallel, setMaxParallel] = useState(4);
   const [timeoutSeconds, setTimeoutSeconds] = useState(300);
   const [busy, setBusy] = useState(false);
   const [runId, setRunId] = useState<string | null>(null);

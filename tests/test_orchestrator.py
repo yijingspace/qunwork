@@ -196,6 +196,7 @@ async def test_governance_revert_redispatch_low_confidence(tmp_path):
     orch = _orch(
         tmp_path,
         provider,
+        max_parallel=1,  # serial: this test scripts deterministic turn order
         governance_config=GovernanceConfig(
             check_every=1, viscosity_high=0.8, viscosity_mid=0.4,
             drift_threshold=1.0, max_warnings=99
