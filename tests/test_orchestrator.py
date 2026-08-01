@@ -283,27 +283,34 @@ async def test_orchestrator_timeout_pauses(tmp_path):
 
 
 async def test_task_timeout_degrades_and_continues(tmp_path):
-    """A task that exceeds task_timeout_seconds is marked done (partial) so the
-    rest of the plan and the final report still proceed."""
+    """A task that exceeds task_timeout_seconds is marked done with the draft the
+    executor already produced, so dependents and the final report still proceed."""
     from coworker.orchestrator import Orchestrator
     from coworker.orchestrator.governance import GovernanceConfig
-    from coworker.providers import AssistantTurn, ModelCapabilities, ProviderClient
+    from coworker.providers import AssistantTurn, ModelCapabilities, ProviderClient, ToolCall
 
     class SlowExecutor(ProviderClient):
         def __init__(self):
-            self.planned = False
-            self.exec_calls = 0
+            self.first_exec = True
+            self.drafted = False
 
         def complete(self, *, model, messages, tools=None, **settings):
-            last = str((messages or [{}])[-1].get("content", ""))
-            if "Execute it now" in last:  # executor
-                import time
-
-                time.sleep(0.4)  # exceed the 0.2s intent; task timeout is 1s
-                return AssistantTurn(text="never reached", finish_reason="stop")
-            if "Validate the result" in last:  # reviewer
+            joined = str(messages)
+            if "Validate the result" in joined:  # reviewer
                 return AssistantTurn(text='{"accepted":true,"confidence":0.9,"reason":"ok","needs_human":false}')
-            return AssistantTurn(text='[{"id":"t0","description":"Write intro","deps":[]}]')
+            if self.first_exec:  # planner
+                self.first_exec = False
+                return AssistantTurn(text='[{"id":"t0","description":"Write intro","deps":[]}]')
+            if not self.drafted:  # executor, first call: draft + tool call
+                self.drafted = True
+                return AssistantTurn(
+                    text="初稿:中国AI市场规模约1.2万亿",
+                    tool_calls=[ToolCall(id="c1", name="list_files", arguments={})],
+                )
+            import time
+
+            time.sleep(0.4)  # executor second call exceeds the 0.2s task timeout
+            return AssistantTurn(text="核实中", finish_reason="stop")
 
         def capabilities(self, model):
             return ModelCapabilities()
@@ -312,13 +319,13 @@ async def test_task_timeout_degrades_and_continues(tmp_path):
         provider=SlowExecutor(),
         model="m",
         workspace=str(tmp_path / "ws"),
-        task_timeout_seconds=1,
+        task_timeout_seconds=0.2,
         timeout_seconds=30,
         governance_config=GovernanceConfig(),
     )
-    # the executor sleeps 0.4s per call; a tight task timeout forces degradation
-    orch.task_timeout_seconds = 0.2
     result = await orch.run("Write a report")
     assert result.status == "completed"  # degraded, not paused
     t0 = result.plan.tasks[0]
-    assert t0.done and "timed out" in t0.result
+    assert t0.done
+    # the executor's real draft survived the timeout (not a placeholder)
+    assert "1.2万亿" in t0.result

@@ -11,7 +11,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Optional
 
-_TIMEOUT = 20.0
+_TIMEOUT = 8.0
 
 
 @dataclass

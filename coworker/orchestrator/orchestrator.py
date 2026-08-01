@@ -135,7 +135,14 @@ class Orchestrator:
         return parse_plan(text, goal=intent)
 
     # -- execution ----------------------------------------------------------
-    async def _execute(self, task: Task, *, deps: list[str] = None, hints: list[str] = None) -> str:
+    async def _execute(
+        self,
+        task: Task,
+        *,
+        deps: list[str] = None,
+        hints: list[str] = None,
+        on_text: Optional[Callable[[str], None]] = None,
+    ) -> str:
         from . import auto_approver
 
         engine = build_executor_engine(
@@ -154,9 +161,14 @@ class Orchestrator:
         if hints:
             parts.append("\nRelevant prior results (context only):\n" + "\n".join(hints))
         prompt = "\n".join(parts)
-        text, status = await _run_engine_async(
-            engine, prompt, on_event=self._worker_feed("executor", task.id)
-        )
+
+        def feed(kind: str, payload: dict[str, Any]) -> None:
+            if kind == "worker_thought" and payload.get("text"):
+                if on_text is not None:
+                    on_text(str(payload["text"]))
+                self._emit("worker_thought", {"worker": "executor", "task_id": task.id, **payload})
+
+        text, status = await _run_engine_async(engine, prompt, on_event=feed)
         if not text:
             raise RuntimeError(f"executor produced no result for {task.id} (status: {status})")
         return text
@@ -246,23 +258,31 @@ class Orchestrator:
                 for h in mem.search(task.description, k=2)
                 if h.meta.get("task_id") != task.id or h.meta.get("run_token") != run_token
             ]
+            collected: list[str] = []
+
+            async def _run_task() -> str:
+                return await self._execute(
+                    task, deps=deps, hints=hints, on_text=collected.append
+                )
+
             try:
                 if self.task_timeout_seconds:
                     result = await asyncio.wait_for(
-                        self._execute(task, deps=deps, hints=hints),
-                        timeout=self.task_timeout_seconds,
+                        _run_task(), timeout=self.task_timeout_seconds
                     )
                 else:
-                    result = await self._execute(task, deps=deps, hints=hints)
+                    result = await _run_task()
             except asyncio.TimeoutError:
-                # Degrade: mark done with a partial-result note so dependents and
-                # the final report can still proceed instead of the run stalling.
+                # Degrade with whatever the executor already produced — a real
+                # partial draft, not a placeholder — so dependents and the final
+                # report can still assemble something useful.
+                partial = collected[-1] if collected else ""
                 task.status = "done"
-                task.result = (
+                task.result = partial or (
                     f"⚠ task timed out after {self.task_timeout_seconds}s — "
-                    "result may be incomplete; continue with available information"
+                    "no content was produced before the timeout"
                 )
-                task.confidence = 0.3
+                task.confidence = 0.4 if partial else 0.3
                 gov.record_step(task, task.result, True)
                 self._emit("task_timeout", {"id": task.id, "seconds": self.task_timeout_seconds})
                 return True

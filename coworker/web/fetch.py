@@ -86,7 +86,7 @@ def make_web_fetch_tool() -> Callable[..., Any]:
 
             with httpx.Client(
                 follow_redirects=True,
-                timeout=20.0,
+                timeout=8.0,
                 headers={"User-Agent": "coworker/0.1 (+desktop)"},
             ) as client:
                 resp = client.get(url)
