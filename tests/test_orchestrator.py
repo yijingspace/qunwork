@@ -401,3 +401,54 @@ async def test_planner_retries_then_succeeds(tmp_path):
     result = await orch.run("Write a report")
     assert result.status == "completed"
     assert provider.calls >= 2  # first planner call failed, second succeeded
+
+
+async def test_global_timeout_keeps_partial_drafts(tmp_path):
+    """When the whole run times out, already-completed task results are kept."""
+    from coworker.orchestrator import Orchestrator
+    from coworker.orchestrator.governance import GovernanceConfig
+    from coworker.providers import AssistantTurn, ModelCapabilities, ProviderClient, ToolCall
+
+    class Slow(ProviderClient):
+        def __init__(self):
+            self.done_t1 = False
+
+        def complete(self, *, model, messages, tools=None, **settings):
+            joined = str(messages)
+            if "Validate the result" in joined:
+                return AssistantTurn(text='{"accepted":true,"confidence":0.9,"reason":"ok","needs_human":false}')
+            if "Execute it now" in joined:
+                is_t1 = "Task [t1]" in joined
+                if is_t1 and self.done_t1:
+                    import time
+
+                    time.sleep(2.0)  # t1 hangs past the 1s global timeout
+                    return AssistantTurn(text="never", finish_reason="stop")
+                if is_t1:
+                    self.done_t1 = True
+                    return AssistantTurn(
+                        text="t1 草稿",
+                        tool_calls=[ToolCall(id="c1", name="list_files", arguments={})],
+                    )
+                # t0 completes quickly with a real result
+                if "Task [t0]" in joined:
+                    return AssistantTurn(text="t0 章节草稿:固态电池2027量产", finish_reason="stop")
+                return AssistantTurn(text="草稿", finish_reason="stop")
+            return AssistantTurn(text='[{"id":"t0","description":"Write A","deps":[]},'
+                                       '{"id":"t1","description":"Write B","deps":[]}]')
+
+        def capabilities(self, model):
+            return ModelCapabilities()
+
+    orch = Orchestrator(
+        provider=Slow(),
+        model="m",
+        workspace=str(tmp_path / "ws"),
+        timeout_seconds=1,  # short global timeout
+        task_timeout_seconds=10,  # only the global timeout fires
+        governance_config=GovernanceConfig(),
+    )
+    result = await orch.run("Write a report")
+    assert result.status == "paused"
+    # the completed task's result survived the global timeout
+    assert any("固态电池2027量产" in t.result for t in result.plan.tasks)

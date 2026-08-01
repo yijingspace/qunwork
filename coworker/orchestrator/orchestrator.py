@@ -108,11 +108,12 @@ class Orchestrator:
     memory_scope: Optional[str] = None  # persistent-memory scope (e.g. workspace path)
     memory_db: Optional[str] = None  # SQLite path for persistent memory (default workspace/.qunwork/memory.db)
     max_parallel: int = 4  # how many independent tasks run concurrently
-    timeout_seconds: Optional[int] = 300  # whole-run timeout (None = no limit)
+    timeout_seconds: Optional[int] = 600  # whole-run timeout (None = no limit)
     task_timeout_seconds: Optional[int] = 90  # per-task timeout; timeout degrades to a partial result
     event_sink: Optional[Callable[[str, dict], None]] = None  # (kind, payload) progress feed
     _runs: int = field(default=0, init=False)
     _run_seq: int = field(default=0, init=False)
+    _last_plan: Optional[Plan] = field(default=None, init=False)
 
     def _emit(self, kind: str, payload: dict[str, Any]) -> None:
         if self.event_sink is not None:
@@ -221,10 +222,16 @@ class Orchestrator:
                     "run_timed_out",
                     {"seconds": self.timeout_seconds},
                 )
+                # Keep whatever the swarm already produced (degraded tasks with
+                # real drafts) — a timeout must not throw the partial work away.
+                plan = self._last_plan or Plan(goal=intent)
+                summary = "\n\n".join(
+                    f"[{t.id}] {t.description}\n{t.result}" for t in plan.tasks if t.result
+                ) or f"swarm timed out after {self.timeout_seconds}s"
                 return OrchestrationResult(
                     intent=intent,
-                    plan=Plan(goal=intent),
-                    summary=f"swarm timed out after {self.timeout_seconds}s",
+                    plan=plan,
+                    summary=summary,
                     status="paused",
                     runs=self._runs,
                     governance_report="\n".join(
@@ -236,6 +243,7 @@ class Orchestrator:
     async def _run(self, intent: str) -> OrchestrationResult:
         self._emit("run_started", {"intent": intent})
         plan = await self._plan(intent)
+        self._last_plan = plan
         self._emit(
             "plan_ready",
             {
