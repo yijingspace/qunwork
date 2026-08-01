@@ -51,6 +51,7 @@ import { IntegrationsView } from "./components/IntegrationsView";
 import { SettingsView } from "./components/SettingsView";
 import { PersonaView } from "./components/PersonaView";
 import { AuditView } from "./components/AuditView";
+import { useT } from "./i18n";
 import { InboxView } from "./components/InboxView";
 import { ApprovalCard } from "./components/ApprovalCard";
 import { DirectoryRequestCard } from "./components/DirectoryRequestCard";
@@ -144,6 +145,7 @@ function fallbackWorkspace(current: string | null, projects: RecentWorkspace[]):
 }
 
 export function App() {
+  const t = useT();
   const [workspace, setWorkspace] = useState<string | null>(null);
   const [branch, setBranch] = useState<string | null>(null);
   const [showGate, setShowGate] = useState(false);
@@ -681,29 +683,29 @@ export function App() {
           break;
         case "turn_end":
           if (d.status === "max_iterations_exceeded")
-            setItems((p) => [...p, { kind: "notice", tone: "warn", text: "Stopped: max iterations reached." }]);
+            setItems((p) => [...p, { kind: "notice", tone: "warn", text: t("Stopped: max iterations reached.") }]);
           break;
         case "model_changed":
           // Mid-session switch (server-applied): update the header fact and drop the
           // persisted marker into the live transcript (replay renders it from history).
           if (d.model) setModel(d.model);
-          setItems((p) => [...p, { kind: "notice", tone: "info", text: d.text || "Model switched" }]);
+          setItems((p) => [...p, { kind: "notice", tone: "info", text: d.text || t("Model switched") }]);
           break;
         case "interrupted":
           flushPartialStream();
-          setItems((p) => [...p, { kind: "notice", tone: "warn", text: "Interrupted." }]);
+          setItems((p) => [...p, { kind: "notice", tone: "warn", text: t("Interrupted.") }]);
           break;
         case "error":
           flushPartialStream();
           setItems((p) => [
             ...p,
-            { kind: "notice", tone: "warn", text: "Error: " + (d.error || "unknown"), retriable: true },
+            { kind: "notice", tone: "warn", text: t("Error: ") + (d.error || "unknown"), retriable: true },
           ]);
           break;
         case "input_rejected":
           setItems((p) => [
             ...p,
-            { kind: "notice", tone: "warn", text: d.error || "That message was rejected." },
+            { kind: "notice", tone: "warn", text: d.error || t("That message was rejected.") },
           ]);
           break;
         case "turn_done":
@@ -1105,7 +1107,7 @@ export function App() {
   const subtitleParts = [modelDisplay];
   if (isProjectScoped(personaOf(agent)) && workspace) subtitleParts.push(baseName(workspace));
   const activeInfo = sessions.find((s) => s.session_id === sessionId);
-  const activeTitle = activeInfo?.title || "New session";
+  const activeTitle = activeInfo?.title || t("New session");
 
   const desktop = isTauri();
   // Dev-only: `?overlay=1` simulates the desktop overlay layout in the browser (adds the
@@ -1144,7 +1146,7 @@ export function App() {
           <Icon name="logo" size={38} />
         </div>
         <div className="boot-text">
-          {resumedExisting ? "Restoring your session…" : "Starting QunWork…"}
+          {resumedExisting ? t("Restoring your session…") : t("Starting QunWork…")}
           <span className="beta-tag">BETA</span>
         </div>
       </div>
@@ -1196,7 +1198,7 @@ export function App() {
             <button
               className="text-[12px] text-faint px-0.5"
               data-testid="toast-dismiss"
-              title="Dismiss"
+              title={t("Dismiss")}
               onClick={() => setRunToast(null)}
             >
               ✕
@@ -1223,8 +1225,8 @@ export function App() {
           className="nav-reveal-btn"
           onClick={toggleNav}
           onMouseEnter={() => setNavPeek(true)}
-          title="Show sidebar (⌘B)"
-          aria-label="Show sidebar"
+          title={t("Show sidebar (⌘B)")}
+          aria-label={t("Show sidebar")}
         >
           <Icon name="sidebar" size={16} />
         </button>
@@ -1328,24 +1330,24 @@ export function App() {
                 <button
                   className="topbar-icon-btn"
                   onClick={toggleNav}
-                  aria-label="Show sidebar"
-                  title="Show sidebar (⌘B)"
+                  aria-label={t("Show sidebar")}
+                  title={t("Show sidebar (⌘B)")}
                 >
                   <Icon name="sidebar" size={16} />
                 </button>
                 <button
                   className="topbar-icon-btn"
                   onClick={() => startNewSession()}
-                  aria-label="New session"
-                  title="New session"
+                  aria-label={t("New session")}
+                  title={t("New session")}
                 >
                   <Icon name="plus" size={16} />
                 </button>
                 <button
                   className="topbar-icon-btn"
                   onClick={() => setSearchOpen(true)}
-                  aria-label="Search"
-                  title="Search"
+                  aria-label={t("Search")}
+                  title={t("Search")}
                 >
                   <Icon name="search" size={16} />
                 </button>
@@ -1381,10 +1383,10 @@ export function App() {
                 className="topbar-artifacts-btn"
                 onMouseDown={(e) => e.stopPropagation()}
                 onClick={() => setRailHidden(false)}
-                title="Show files this conversation produced"
+                title={t("Show files this conversation produced")}
               >
                 <Icon name="file" size={14} />
-                <span>Artifacts</span>
+                <span>{t("Artifacts")}</span>
                 <span className="topbar-artifacts-count">{artifactCount}</span>
               </button>
             )}
@@ -1395,8 +1397,8 @@ export function App() {
                 className="topbar-icon-btn"
                 onMouseDown={(e) => e.stopPropagation()}
                 onClick={() => setRailHidden((h) => !h)}
-                aria-label={railHidden ? "Show side panel" : "Hide side panel"}
-                title={railHidden ? "Show side panel" : "Hide side panel"}
+                aria-label={railHidden ? t("Show side panel") : t("Hide side panel")}
+                title={railHidden ? t("Show side panel") : t("Hide side panel")}
               >
                 <Icon name="sidebarRight" size={16} />
               </button>
@@ -1448,7 +1450,7 @@ export function App() {
                   <div className="hero">
                     <h1 className="greeting">
                       <span className="mark">✦</span>
-                      {agent === "chat" ? "How can I help?" : "Let's build something."}
+                      {agent === "chat" ? t("How can I help?") : t("Let's build something.")}
                     </h1>
                     {needsWorkspace(agent) && (
                       <div className="suggestions">
@@ -1456,7 +1458,7 @@ export function App() {
                         {SUGGESTIONS.map((s, i) => (
                           <div className="suggest" key={i} onClick={() => workspace && send(s.text)}>
                             <span className="ico">{s.ico}</span>
-                            {s.text}
+                            {t(s.text)}
                           </div>
                         ))}
                       </div>
@@ -1537,10 +1539,10 @@ export function App() {
               resetKey={sessionId}
               placeholder={
                 agent === "code"
-                  ? "Ask the coder to build, fix, or explain…  (drop or paste files)"
+                  ? t("Ask the coder to build, fix, or explain…  (drop or paste files)")
                   : agent === "chat"
-                    ? "Ask anything…  (drop or paste files)"
-                    : "Ask the coworker…  (drop or paste files)"
+                    ? t("Ask anything…  (drop or paste files)")
+                    : t("Ask the coworker…  (drop or paste files)")
               }
               approvalSlot={
                 // Live inline cards are for ATTENDED sessions only; when Unattended the prompt is

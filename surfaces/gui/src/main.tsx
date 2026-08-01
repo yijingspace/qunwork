@@ -1,6 +1,7 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import { App } from "./App";
+import { LanguageProvider } from "./i18n";
 import { initTheme } from "./theme";
 import { platformOS } from "./tauri";
 import "./tailwind.css";
@@ -19,6 +20,8 @@ window.addEventListener("drop", (e) => e.preventDefault());
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
-    <App />
+    <LanguageProvider>
+      <App />
+    </LanguageProvider>
   </React.StrictMode>,
 );

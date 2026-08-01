@@ -39,6 +39,7 @@ import { ModelsTab } from "./ManageTabs";
 import { GalleryModal } from "./GalleryModal";
 import { PersonasTab } from "./PersonasTab";
 import { showPersonas } from "../flags";
+import { useT } from "../i18n";
 
 // Settings, restructured (Option 2) into a full-page surface that mirrors IntegrationsView's shell:
 // a left sub-nav (Appearance · Files · Models · Personas) + centered panel, replacing the old
@@ -72,6 +73,7 @@ export function SettingsView({
   initialTab?: SetTab;
   onOpenPersona?: (id: string) => void;
 }) {
+  const t = useT();
   // Personas is flag-gated (hidden for launch) — filter the tab AND coerce a stale
   // deep-link to it (openSettings("personas") callers) so the page never opens on a
   // section with no nav entry.
@@ -84,20 +86,20 @@ export function SettingsView({
     <main className="flex-1 min-w-0 flex bg-paper">
       <nav className="page-subnav w-[208px] shrink-0 border-r border-line bg-panel/40 px-3 py-4">
         <div className="px-2 text-[13.5px] font-semibold mb-3 flex items-center gap-2">
-          <Icon name="gear" size={16} /> Settings
+          <Icon name="gear" size={16} /> {t("Settings")}
         </div>
-        {tabs.map((t) => {
-          const active = tab === t.key;
+        {tabs.map((tabDef) => {
+          const active = tab === tabDef.key;
           return (
             <button
-              key={t.key}
+              key={tabDef.key}
               className={
                 "w-full text-left px-2.5 py-2 rounded-lg text-[13px] flex items-center gap-2 " +
                 (active ? "bg-paper text-accent font-medium" : "text-muted hover:bg-paper hover:text-ink")
               }
-              onClick={() => setTab(t.key)}
+              onClick={() => setTab(tabDef.key)}
             >
-              <Icon name={t.icon} size={15} /> {t.label}
+              <Icon name={tabDef.icon} size={15} /> {t(tabDef.label)}
             </button>
           );
         })}
@@ -110,8 +112,8 @@ export function SettingsView({
           ) : tab === "models" ? (
             <section>
               <PanelHead
-                title="Models"
-                sub="Providers and the models offered in the composer's picker. Keys are stored only on this computer."
+                title={t("Models")}
+                sub={t("Providers and the models offered in the composer's picker. Keys are stored only on this computer.")}
               />
               <ModelsTab />
               {/* Token savings is model-spend behavior, so it lives here (UX-021),
@@ -141,6 +143,7 @@ const formatBytes = (bytes: number) => {
 };
 
 function VoiceInputSection() {
+  const t = useT();
   const [status, setStatus] = useState<DictationStatus | null>(null);
   const [progress, setProgress] = useState<DictationDownloadProgress | null>(null);
   const [phase, setPhase] = useState<"idle" | "downloading" | "verifying" | "testing" | "transcribing">("idle");
@@ -215,7 +218,7 @@ function VoiceInputSection() {
   };
 
   const remove = async () => {
-    if (!window.confirm("Delete the local Whisper model and disable Voice Input?")) return;
+    if (!window.confirm(t("Delete the local Whisper model and disable Voice Input?"))) return;
     setError(null);
     try {
       publish(await deleteDictationModel());
@@ -234,7 +237,7 @@ function VoiceInputSection() {
         setPhase("transcribing");
         const transcript = (await stopDictation()).trim();
         setTestTranscript(transcript);
-        if (!transcript) throw new Error("No speech was detected. Try again and speak for a little longer.");
+        if (!transcript) throw new Error(t("No speech was detected. Try again and speak for a little longer."));
         publish(await markDictationTestPassed());
       } else {
         setTestTranscript("");
@@ -258,12 +261,12 @@ function VoiceInputSection() {
   return (
     <section>
       <PanelHead
-        title="Voice input"
-        sub="Speak naturally in the composer. Recordings and transcripts stay on this device."
+        title={t("Voice input")}
+        sub={t("Speak naturally in the composer. Recordings and transcripts stay on this device.")}
       />
 
       {!desktop ? (
-        <div className={CARD + " p-4 text-[13px] text-muted"}>Voice Input setup is available in the QunWork desktop app.</div>
+        <div className={CARD + " p-4 text-[13px] text-muted"}>{t("Voice Input setup is available in the QunWork desktop app.")}</div>
       ) : (
         <div className="space-y-4">
           <div className="rounded-xl border border-green-200 bg-green-50/70 px-4 py-3 text-[12.5px] text-green-800">
@@ -275,12 +278,12 @@ function VoiceInputSection() {
               <Icon name="code" size={18} className="text-accent mt-0.5" />
               <div className="min-w-0 flex-1">
                 <div className="text-[13.5px] font-medium">This device</div>
-                <div className="text-[12px] text-muted mt-1">{status?.device_summary || "Checking compatibility…"}</div>
+                <div className="text-[12px] text-muted mt-1">{status?.device_summary || t("Checking compatibility…")}</div>
                 {status?.compatibility_reason && <div className="text-[12px] text-red-600 mt-1.5">{status.compatibility_reason}</div>}
               </div>
               {status && (
                 <span className={"text-[11.5px] px-2 py-1 rounded-full " + (status.supported ? "bg-green-50 text-green-700" : "bg-red-50 text-red-600")}>
-                  {status.supported ? "● Compatible" : "Unsupported"}
+                  {status.supported ? t("● Compatible") : t("Unsupported")}
                 </span>
               )}
             </div>
@@ -329,15 +332,15 @@ function VoiceInputSection() {
               <div className="min-w-0 flex-1">
                 <div className="text-[13.5px] font-medium">Microphone test</div>
                 <div className="text-[12px] text-muted mt-0.5">
-                  {ready ? "Your microphone and local transcription engine are working." : "Record a short phrase to enable the composer microphone."}
+                  {ready ? t("Your microphone and local transcription engine are working.") : t("Record a short phrase to enable the composer microphone.")}
                 </div>
               </div>
-              {ready && <span className="text-[11.5px] px-2 py-1 rounded-full bg-green-50 text-green-700">● Ready</span>}
+              {ready && <span className="text-[11.5px] px-2 py-1 rounded-full bg-green-50 text-green-700">{t("● Ready")}</span>}
               <button className={BTN_BORDERED} disabled={!status?.supported || !status?.model_verified || phase === "transcribing"} onClick={() => void toggleTest()}>
-                {status?.recording ? "Stop and check" : phase === "transcribing" ? "Transcribing…" : ready ? "Test again" : "Test microphone"}
+                {status?.recording ? t("Stop and check") : phase === "transcribing" ? t("Transcribing…") : ready ? t("Test again") : t("Test microphone")}
               </button>
             </div>
-            {status?.recording && <div className="border-t border-line px-4 py-3 text-[12px] text-accent" role="status">● Listening… speak a short phrase, then stop.</div>}
+            {status?.recording && <div className="border-t border-line px-4 py-3 text-[12px] text-accent" role="status">{t("● Listening… speak a short phrase, then stop.")}</div>}
             {testTranscript && <div className="border-t border-line bg-paper/50 px-4 py-3 text-[13px]">“{testTranscript}”</div>}
           </div>
 
@@ -352,14 +355,15 @@ function VoiceInputSection() {
 // entry point to the Persona Gallery (a screen-sized modal — installs finish back
 // here, disabled pending consent; a gallery install re-mounts the list in place).
 function PersonasSection({ onOpenPersona }: { onOpenPersona?: (id: string) => void }) {
+  const t = useT();
   const [galleryBump, setGalleryBump] = useState(0);
   const [galleryOpen, setGalleryOpen] = useState(false);
 
   return (
     <section>
       <PanelHead
-        title="Personas"
-        sub="Which coworkers are enabled and shown in the picker, plus installing new persona bundles."
+        title={t("Personas")}
+        sub={t("Which coworkers are enabled and shown in the picker, plus installing new persona bundles.")}
       />
       <PersonasTab key={galleryBump} onOpenPersona={onOpenPersona} />
       <button
@@ -388,6 +392,7 @@ function PersonasSection({ onOpenPersona }: { onOpenPersona?: (id: string) => vo
 
 // -- Appearance + app behaviour ------------------------------------------------
 function AppearanceSection() {
+  const t = useT();
   const [theme, setTheme] = useThemePref();
   const [autostart, setAuto] = useState(false);
   const [keepAwake, setKeep] = useState(false);
@@ -409,14 +414,14 @@ function AppearanceSection() {
 
   return (
     <section>
-      <PanelHead title="General" sub="How QunWork looks and behaves on this machine." />
+      <PanelHead title={t("General")} sub={t("How QunWork looks and behaves on this machine.")} />
 
       <div className={CARD + " p-4 mb-4"}>
         <div className={FIELD_LABEL}>Theme</div>
-        <div className="seg mt-2.5" role="radiogroup" aria-label="Appearance">
+        <div className="seg mt-2.5" role="radiogroup" aria-label={t("Appearance")}>
           {(["light", "dark", "auto"] as const).map((p) => (
             <button key={p} className={p === theme ? "active" : ""} onClick={() => setTheme(p)}>
-              {p === "light" ? "Light" : p === "dark" ? "Dark" : "Auto"}
+              {p === "light" ? t("Light") : p === "dark" ? t("Dark") : t("Auto")}
             </button>
           ))}
         </div>
@@ -467,6 +472,7 @@ function AppearanceSection() {
 }
 
 function TrustedWorkspacesCard() {
+  const t = useT();
   const [workspaces, setWorkspaces] = useState<WorkspaceCommandTrust[] | null>(null);
 
   const refresh = () =>
@@ -503,7 +509,7 @@ function TrustedWorkspacesCard() {
                 <div className="text-[11.5px] text-muted mt-0.5">
                   {workspace.requested_commands.length
                     ? `${workspace.requested_commands.length} project command allowance${workspace.requested_commands.length === 1 ? "" : "s"}`
-                    : "No project command allowances currently declared"}
+                    : t("No project command allowances currently declared")}
                   {!workspace.exists ? " · Folder unavailable" : ""}
                 </div>
               </div>
@@ -522,6 +528,7 @@ function TrustedWorkspacesCard() {
 }
 
 function UpdateInline() {
+  const t = useT();
   const [state, setState] = useState<"idle" | "checking" | "none" | "found" | "installing" | "error">("idle");
   const [version, setVersion] = useState("");
 
@@ -562,7 +569,7 @@ function UpdateInline() {
           disabled={state === "checking" || state === "installing"}
           data-testid="settings-update-check"
         >
-          {state === "checking" ? "Checking…" : "Check for updates"}
+          {state === "checking" ? t("Checking…") : t("Check for updates")}
         </button>
       )}
       {(state === "none" || state === "error" || state === "installing") && (
@@ -570,8 +577,8 @@ function UpdateInline() {
           {state === "none"
             ? "You're on the latest version."
             : state === "error"
-              ? "Couldn't check right now — try again later."
-              : "Downloading — QunWork restarts by itself when it's ready."}
+              ? t("Couldn't check right now — try again later.")
+              : t("Downloading — QunWork restarts by itself when it's ready.")}
         </span>
       )}
     </span>
@@ -588,6 +595,7 @@ function UpdateInline() {
 // then this card is the user's dial: attach thresholds + the fallback for models
 // without native PDF support.
 function TokenSavingsCard() {
+  const t = useT();
   const [pdf, setPdf] = useState<PdfSettings | null>(null);
 
   useEffect(() => {
@@ -617,7 +625,7 @@ function TokenSavingsCard() {
       </div>
 
       <div className="mt-3 text-[13px] text-ink">PDFs on models without native PDF support</div>
-      <div className="seg mt-2" role="radiogroup" aria-label="PDF fallback" data-testid="pdf-fallback">
+      <div className="seg mt-2" role="radiogroup" aria-label={t("PDF fallback")} data-testid="pdf-fallback">
         <button
           className={pdf.pdf_fallback === "text" ? "active" : ""}
           onClick={() => save({ pdf_fallback: "text" })}
@@ -712,6 +720,7 @@ function SidebarCard() {
 // -- Files (scratch location) — one card inside General (UX-021: a single option
 // doesn't earn its own tab) -----------------------------------------------------
 function FilesCard() {
+  const t = useT();
   const [settings, setSettings] = useState<ModelSettings | null>(null);
   const [scratchDraft, setScratchDraft] = useState("");
   const [scratchMsg, setScratchMsg] = useState<string | null>(null);
@@ -732,10 +741,10 @@ function FilesCard() {
     setScratchMsg(null);
     const res = await setScratchBase(scratchDraft.trim());
     if (res.ok) {
-      setScratchMsg("Saved. New conversations will use this location.");
+      setScratchMsg(t("Saved. New conversations will use this location."));
       refresh();
     } else {
-      setScratchMsg(res.error || "Could not use that location.");
+      setScratchMsg(res.error || t("Could not use that location."));
     }
   };
   const browseScratch = async () => {
@@ -760,7 +769,7 @@ function FilesCard() {
             onKeyDown={(e) => e.key === "Enter" && saveScratch()}
           />
           {desktop && (
-            <button className={BTN_BORDERED} onClick={browseScratch} title="Pick a folder">
+            <button className={BTN_BORDERED} onClick={browseScratch} title={t("Pick a folder")}>
               Browse
             </button>
           )}

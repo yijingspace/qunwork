@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { getRecentWorkspaces, openWorkspace, type RecentWorkspace } from "../api";
 import { chooseFolder } from "../tauri";
+import { useT } from "../i18n";
 
 // The mandatory workspace picker for project-scoped personas. Deliberately no
 // "switch persona" escape hatch: if a persona needs a folder, the choice here is
@@ -13,6 +14,7 @@ interface Props {
 }
 
 export function FolderGate({ onChoose, onCancel, create }: Props) {
+  const t = useT();
   const [recents, setRecents] = useState<RecentWorkspace[]>([]);
   const [path, setPath] = useState("");
   const [error, setError] = useState("");
@@ -40,11 +42,11 @@ export function FolderGate({ onChoose, onCancel, create }: Props) {
     <div className="gate-overlay">
       <div className="gate">
         <div className="gate-mark">✦</div>
-        <h2>{create ? "New project" : "Choose a project folder"}</h2>
+        <h2>{create ? t("New project") : t("Choose a project folder")}</h2>
         <p className="gate-sub">
           {create
-            ? "Pick a folder or enter a path. If the path doesn't exist, it will be created."
-            : "This coworker needs a workspace to read, edit, and run in."}
+            ? t("Pick a folder or enter a path. If the path doesn't exist, it will be created.")
+            : t("This coworker needs a workspace to read, edit, and run in.")}
         </p>
 
         <div className="gate-input">
@@ -59,7 +61,7 @@ export function FolderGate({ onChoose, onCancel, create }: Props) {
             Browse…
           </button>
           <button className="btn primary" onClick={() => open(path, create)} disabled={!path.trim()}>
-            {create ? "Create" : "Open"}
+            {create ? t("Create") : t("Open")}
           </button>
         </div>
         {error && <div className="gate-error">{error}</div>}

@@ -5,6 +5,7 @@ import { getSettings, inspectPdf } from "../api";
 import { Dropdown, type Option } from "./Dropdown";
 import { Icon } from "./Icon";
 import { Toggle } from "./Toggle";
+import { useT } from "../i18n";
 import {
   cancelDictation,
   getDictationLevel,
@@ -80,6 +81,7 @@ interface Props {
 }
 
 export function Composer(props: Props) {
+  const t = useT();
   const [text, setText] = useState("");
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [dragging, setDragging] = useState(false);
@@ -292,7 +294,7 @@ export function Composer(props: Props) {
       if (dictation?.recording) {
         setDictationBusy("Transcribing…");
         const transcript = await stopDictation();
-        if (transcript === null) throw new Error("Could not transcribe your recording.");
+        if (transcript === null) throw new Error(t("Could not transcribe your recording."));
         if (transcript.trim()) {
           setText((draft) => (draft.trim() ? `${draft.trimEnd()} ${transcript.trim()}` : transcript.trim()));
         }
@@ -309,7 +311,7 @@ export function Composer(props: Props) {
       }
       setDictationBusy("Starting microphone…");
       const recording = await startDictation();
-      if (!recording?.recording) throw new Error("Could not start the microphone.");
+      if (!recording?.recording) throw new Error(t("Could not start the microphone."));
       setDictation(recording);
     } catch (error) {
       setDictationError(error instanceof Error ? error.message : "Voice dictation is unavailable.");
@@ -355,7 +357,7 @@ export function Composer(props: Props) {
           <button
             className="shrink-0 opacity-60 hover:opacity-100"
             onClick={() => setAttachNotice(null)}
-            title="Dismiss"
+            title={t("Dismiss")}
           >
             ✕
           </button>
@@ -404,8 +406,8 @@ export function Composer(props: Props) {
           <div className="relative">
             <button
               className={iconBtn + (attachMenuOpen ? " bg-paper text-ink" : "")}
-              title="Attach"
-              aria-label="Attach"
+              title={t("Attach")}
+              aria-label={t("Attach")}
               onClick={() => setAttachMenuOpen((v) => !v)}
             >
               <Icon name="plus" size={17} />
@@ -414,11 +416,11 @@ export function Composer(props: Props) {
               <>
                 <div className="fixed inset-0 z-30" onClick={() => setAttachMenuOpen(false)} />
                 <div className="absolute z-40 bottom-full mb-1 left-0 min-w-[180px] rounded-xl border border-line bg-panel shadow-2xl py-1.5">
-                  {attachItem("image", "Photo or image", () => pickFiles("image/*"))}
+                  {attachItem("image", t("Photo or image"), () => pickFiles("image/*"))}
                   {attachItem("file", "PDF", () => pickFiles("application/pdf,.pdf"))}
                   {attachItem(
                     "fileCode",
-                    "Other files",
+                    t("Other files"),
                     () => pickFiles("text/*,.md,.csv,.json,.yaml,.yml,.log,.py,.ts,.tsx,.js,.rs,.go,.toml"),
                   )}
                 </div>
@@ -469,10 +471,10 @@ export function Composer(props: Props) {
             <button
               className="pill model-warn chip"
               onClick={() => props.onConnectModel?.()}
-              title="Connect a model"
-              aria-label="No model connected — connect a model"
+              title={t("Connect a model")}
+              aria-label={t("No model connected — connect a model")}
             >
-              <span className="pill-label">No model</span>
+              <span className="pill-label">{t("No model")}</span>
               <span className="model-warn-ico" aria-hidden>⚠</span>
             </button>
           ) : modelsLoaded ? (
@@ -482,7 +484,7 @@ export function Composer(props: Props) {
               className="pill chip text-faint cursor-default"
               disabled
               data-testid="models-loading"
-              title="Fetching the model list from the server"
+              title={t("Fetching the model list from the server")}
             >
               <span className="pill-label">Loading models…</span>
             </button>
@@ -507,7 +509,7 @@ export function Composer(props: Props) {
                     ? "Start local voice dictation"
                     : "Configure Voice Input in Settings")
               }
-              aria-label={dictation?.recording ? "Stop dictation" : voiceReady ? "Start dictation" : "Configure Voice Input in Settings"}
+              aria-label={dictation?.recording ? t("Stop dictation") : voiceReady ? t("Start dictation") : t("Configure Voice Input in Settings")}
               aria-disabled={!voiceReady && !dictation?.recording}
             >
               <Icon name={dictation?.recording ? "stop" : "mic"} size={16} />
@@ -530,7 +532,7 @@ export function Composer(props: Props) {
               onClick={submit}
               disabled={!props.connected || !!dictation?.recording || !!dictationBusy}
               title={needsModel ? "Connect a model to send" : undefined}
-              aria-label="Send"
+              aria-label={t("Send")}
             >
               <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                 <path d="M12 19V5M5 12l7-7 7 7" />
@@ -560,6 +562,7 @@ function ModeMenu({
   unattended?: boolean;
   onUnattendedChange?: (on: boolean) => void;
 }) {
+  const t = useT();
   const [open, setOpen] = useState(false);
   const current = PERMISSION_OPTIONS.find((o) => o.value === mode);
   return (
@@ -572,10 +575,10 @@ function ModeMenu({
         onClick={() => setOpen((v) => !v)}
         aria-haspopup="menu"
         aria-expanded={open}
-        aria-label="Mode"
+        aria-label={t("Mode")}
         title={
-          `Mode: ${current?.label || mode}` +
-          (unattended ? " · approvals go to the Inbox" : "")
+          `${t("Mode")}: ${t(current?.label || mode)}` +
+          (unattended ? t(" · approvals go to the Inbox") : "")
         }
       >
         {current?.label || mode}
@@ -603,10 +606,10 @@ function ModeMenu({
                     "text-[13px] " + (o.value === mode ? "font-medium text-accent" : "text-ink")
                   }
                 >
-                  {o.label}
+                  {t(o.label)}
                   {o.value === mode && <span className="ml-1.5">✓</span>}
                 </span>
-                <span className="text-[11px] text-faint leading-snug">{o.description}</span>
+                <span className="text-[11px] text-faint leading-snug">{t(o.description || "")}</span>
               </button>
             ))}
             {onUnattendedChange && (
@@ -622,7 +625,7 @@ function ModeMenu({
                   <Toggle
                     checked={!!unattended}
                     onChange={onUnattendedChange}
-                    title="Send approvals to the Inbox"
+                    title={t("Send approvals to the Inbox")}
                   />
                 </div>
               </>
@@ -647,6 +650,7 @@ function attachItem(icon: "image" | "file" | "fileCode", label: string, onClick:
 }
 
 function AttachChip({ a, onRemove }: { a: Attachment; onRemove: () => void }) {
+  const t = useT();
   return (
     <div className={"attach-chip" + (a.kind === "image" ? " img" : "")}>
       {a.kind === "image" ? (
@@ -657,7 +661,7 @@ function AttachChip({ a, onRemove }: { a: Attachment; onRemove: () => void }) {
           <span className="attach-name">{a.name}</span>
         </>
       )}
-      <button className="attach-x" onClick={onRemove} title="Remove">
+      <button className="attach-x" onClick={onRemove} title={t("Remove")}>
         ✕
       </button>
     </div>
