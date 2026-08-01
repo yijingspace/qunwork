@@ -77,9 +77,16 @@ class OrchestrationRunStore:
     def append_event(self, run_id: str, kind: str, payload: dict[str, Any]) -> int:
         with self._lock:
             seq = self._next_seq(run_id)
+            now = time.time()
             self._db.execute(
                 "INSERT INTO orchestration_events (run_id, seq, kind, payload, ts) VALUES (?,?,?,?,?)",
-                (run_id, seq, kind, json.dumps(payload, ensure_ascii=False), time.time()),
+                (run_id, seq, kind, json.dumps(payload, ensure_ascii=False), now),
+            )
+            # heartbeat: keep updated_at fresh while the run is alive so pollers can
+            # tell a live run from an orphaned one (background task lost on restart).
+            self._db.execute(
+                "UPDATE orchestration_runs SET updated_at = ? WHERE run_id = ?",
+                (now, run_id),
             )
             self._db.commit()
         return seq

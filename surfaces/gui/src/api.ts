@@ -595,7 +595,13 @@ export interface OrchestrationResponse {
 
 export async function orchestrate(
   intent: string,
-  opts?: { workspace?: string; maxParallel?: number; memoryScope?: string; sync?: boolean },
+  opts?: {
+    workspace?: string;
+    maxParallel?: number;
+    memoryScope?: string;
+    sync?: boolean;
+    timeoutSeconds?: number;
+  },
 ): Promise<OrchestrationResponse> {
   const res = await fetch(`${httpBase()}/v1/orchestrate`, {
     method: "POST",
@@ -606,6 +612,7 @@ export async function orchestrate(
       max_parallel: opts?.maxParallel,
       memory_scope: opts?.memoryScope,
       sync: opts?.sync,
+      timeout_seconds: opts?.timeoutSeconds,
     }),
   });
   return await res.json();
@@ -618,6 +625,8 @@ export interface OrchestrationRunSnapshot {
   intent: string;
   status: string;
   final?: string;
+  created_at?: number;
+  updated_at?: number;
   events: { kind: string; payload: Record<string, unknown> }[];
 }
 

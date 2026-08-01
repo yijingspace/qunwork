@@ -19,11 +19,6 @@ async function defaultWorkspaceHint(): Promise<string | undefined> {
   }
 }
 
-/** Swarm (multi-agent) panel — real-time progress:
- *  POST (async) → poll the run store → stream the event feed:
- *  plan DAG, per-task status, worker chain-of-thought, governance commands,
- *  plus a history list of past runs. */
-
 interface TaskView {
   id: string;
   description: string;
@@ -46,9 +41,68 @@ const STATUS_MARK: Record<string, string> = {
   pending: "○",
 };
 
+const STATUS_COLOR: Record<string, string> = {
+  done: "#16a34a",
+  needs_human: "#d97706",
+  running: "#2563eb",
+  pending: "#cbd5e1",
+};
+
+function fmtDuration(sec: number): string {
+  const m = Math.floor(sec / 60);
+  const s = Math.round(sec % 60);
+  return m > 0 ? `${m}分${s}秒` : `${s}秒`;
+}
+
+/** Simple vertical DAG: each task is a row; dependency arrows link parent -> child. */
+function DAGDiagram({ tasks }: { tasks: TaskView[] }) {
+  const ROW = 64;
+  const PAD = 26;
+  const W = 280;
+  const H = Math.max(ROW + PAD * 2, tasks.length * ROW + PAD * 2);
+  const y = (i: number) => PAD + i * ROW + ROW / 2;
+  return (
+    <svg width={W} height={H} viewBox={`0 0 ${W} ${H}`} className="shrink-0">
+      <defs>
+        <marker id="dag-arrow" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L6,3 L0,6 Z" fill="#94a3b8" />
+        </marker>
+      </defs>
+      {tasks.map((t, i) =>
+        t.deps.map((d) => {
+          const di = tasks.findIndex((x) => x.id === d);
+          if (di < 0) return null;
+          return (
+            <line
+              key={`${t.id}-${d}`}
+              x1={24}
+              y1={y(di) + 14}
+              x2={24}
+              y2={y(i) - 14}
+              stroke="#94a3b8"
+              strokeWidth={1.5}
+              markerEnd="url(#dag-arrow)"
+            />
+          );
+        }),
+      )}
+      {tasks.map((t, i) => (
+        <g key={t.id}>
+          <circle cx={24} cy={y(i)} r={11} fill={STATUS_COLOR[t.status] ?? "#cbd5e1"} />
+          <text x={44} y={y(i) + 4} fontSize={12} fill="currentColor">
+            {t.id}
+          </text>
+        </g>
+      ))}
+    </svg>
+  );
+}
+
 export function SwarmView({ onBack, workspace }: { onBack: () => void; workspace?: string }) {
   const t = useT();
   const [intent, setIntent] = useState("");
+  const [maxParallel, setMaxParallel] = useState(2);
+  const [timeoutSeconds, setTimeoutSeconds] = useState(300);
   const [busy, setBusy] = useState(false);
   const [runId, setRunId] = useState<string | null>(null);
   const [status, setStatus] = useState<string | null>(null);
@@ -56,16 +110,21 @@ export function SwarmView({ onBack, workspace }: { onBack: () => void; workspace
   const [thoughts, setThoughts] = useState<Thought[]>([]);
   const [governance, setGovernance] = useState<string[]>([]);
   const [finalReport, setFinalReport] = useState<string>("");
+  const [elapsed, setElapsed] = useState(0);
+  const [startedAt, setStartedAt] = useState<number | null>(null);
+  const [stale, setStale] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [history, setHistory] = useState<OrchestrationHistoryItem[]>([]);
   const mounted = useRef(true);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
     mounted.current = true;
     return () => {
       mounted.current = false;
       if (pollRef.current) clearInterval(pollRef.current);
+      if (timerRef.current) clearInterval(timerRef.current);
     };
   }, []);
 
@@ -122,35 +181,64 @@ export function SwarmView({ onBack, workspace }: { onBack: () => void; workspace
     if (!goal || busy) return;
     setBusy(true);
     setError(null);
+    setStale(false);
     setRunId(null);
     setStatus("running");
     setTasks([]);
     setThoughts([]);
     setGovernance([]);
+    setFinalReport("");
+    setStartedAt(Date.now());
+    setElapsed(0);
+    timerRef.current = setInterval(() => {
+      if (mounted.current) setElapsed((Date.now() - (startedAt ?? Date.now())) / 1000);
+    }, 1000);
     try {
       const ws = workspace?.trim() || (await defaultWorkspaceHint());
-      const res = await orchestrate(goal, { workspace: ws || undefined, maxParallel: 2 });
+      const res = await orchestrate(goal, {
+        workspace: ws || undefined,
+        maxParallel,
+        timeoutSeconds,
+      });
       if (!mounted.current) return;
       if (!res.ok || !res.run_id) {
         setError(res.error || "orchestration failed to start");
         setBusy(false);
+        if (timerRef.current) clearInterval(timerRef.current);
         return;
       }
       setRunId(res.run_id);
-      // poll the run store until it leaves "running"
       const rid = res.run_id;
+      // Poll until the run leaves "running" (heartbeat-aware: an orphaned run —
+      // background task lost on server restart — is detected and reported).
+      const maxPolls = Math.ceil((timeoutSeconds + 90) / 1);
+      let polls = 0;
+      let lastActivity = Date.now();
       pollRef.current = setInterval(async () => {
+        polls += 1;
         try {
           const snap = await getOrchestrateRun(rid);
           if (!mounted.current) return;
           applySnapshot(snap);
-          if (snap.status !== "running") {
+          const upd = (snap.updated_at ?? 0) * 1000;
+          if (upd > lastActivity) lastActivity = upd;
+          const dead = upd > 0 && Date.now() - upd > (timeoutSeconds + 60) * 1000;
+          if (snap.status !== "running" || polls > maxPolls || dead) {
             if (pollRef.current) clearInterval(pollRef.current);
+            if (timerRef.current) clearInterval(timerRef.current);
+            if (snap.status === "running") {
+              setStatus(dead ? "stale" : "paused");
+              setStale(true);
+              setError(t("Run seems unresponsive (server restarted?). Try again."));
+            } else {
+              setElapsed((Date.now() - (startedAt ?? Date.now())) / 1000);
+            }
             setBusy(false);
             loadHistory();
           }
         } catch {
           if (pollRef.current) clearInterval(pollRef.current);
+          if (timerRef.current) clearInterval(timerRef.current);
           setBusy(false);
         }
       }, 1000);
@@ -158,6 +246,7 @@ export function SwarmView({ onBack, workspace }: { onBack: () => void; workspace
       if (mounted.current) {
         setError(String(e));
         setBusy(false);
+        if (timerRef.current) clearInterval(timerRef.current);
       }
     }
   };
@@ -165,20 +254,36 @@ export function SwarmView({ onBack, workspace }: { onBack: () => void; workspace
   const openRun = async (rid: string) => {
     setBusy(true);
     setError(null);
+    setStale(false);
     setRunId(rid);
     setStatus("running");
+    setStartedAt(Date.now());
     try {
       const snap = await getOrchestrateRun(rid);
       if (!mounted.current) return;
       applySnapshot(snap);
       setStatus(snap.status);
       setIntent(snap.intent);
+      if (snap.created_at && snap.updated_at) {
+        setElapsed(snap.updated_at - snap.created_at);
+      }
     } catch (e) {
       if (mounted.current) setError(String(e));
     } finally {
       if (mounted.current) setBusy(false);
     }
   };
+
+  // -- derived stats --------------------------------------------------------
+  const doneTasks = tasks.filter((x) => x.status === "done");
+  const avgConf = doneTasks.length
+    ? doneTasks.reduce((a, x) => a + x.confidence, 0) / doneTasks.length
+    : 0;
+  const estTokens = Math.round(
+    (thoughts.reduce((a, th) => a + th.text.length, 0) +
+      tasks.reduce((a, x) => a + (x.result || "").length, 0)) /
+      4,
+  );
 
   return (
     <div className="flex flex-col h-full">
@@ -202,7 +307,31 @@ export function SwarmView({ onBack, workspace }: { onBack: () => void; workspace
           onChange={(e) => setIntent(e.target.value)}
           placeholder={t("Describe the goal, e.g. Write a market report with research, draft and review steps…")}
         />
-        <div className="flex items-center gap-2 mt-2">
+        {/* swarm config */}
+        <div className="flex items-center gap-4 mt-2 flex-wrap">
+          <label className="flex items-center gap-1.5 text-[12px] text-muted">
+            {t("Max parallel")}
+            <input
+              type="number"
+              min={1}
+              max={8}
+              value={maxParallel}
+              onChange={(e) => setMaxParallel(Math.max(1, Math.min(8, Number(e.target.value) || 1)))}
+              className="w-14 rounded border border-line bg-paper px-1.5 py-0.5 text-[12px] outline-none"
+            />
+          </label>
+          <label className="flex items-center gap-1.5 text-[12px] text-muted">
+            {t("Timeout (s)")}
+            <input
+              type="number"
+              min={60}
+              max={900}
+              step={30}
+              value={timeoutSeconds}
+              onChange={(e) => setTimeoutSeconds(Math.max(60, Math.min(900, Number(e.target.value) || 300)))}
+              className="w-16 rounded border border-line bg-paper px-1.5 py-0.5 text-[12px] outline-none"
+            />
+          </label>
           <button
             className="px-4 py-1.5 rounded-full bg-ink text-panel text-[13px] disabled:opacity-40"
             disabled={busy || !intent.trim()}
@@ -214,6 +343,7 @@ export function SwarmView({ onBack, workspace }: { onBack: () => void; workspace
             <span className={"text-[12px] " + (status === "completed" ? "text-ok" : status === "failed" ? "text-danger" : "text-muted")}>
               {t("Status")}: {status}
               {runId && <span className="text-faint"> · {runId}</span>}
+              {elapsed > 0 && <span className="text-faint"> · {fmtDuration(elapsed)}</span>}
             </span>
           )}
         </div>
@@ -225,6 +355,62 @@ export function SwarmView({ onBack, workspace }: { onBack: () => void; workspace
           <p className="text-[13px] text-faint">
             {t("Send a goal above — the swarm will split it into tasks, run them, validate and converge.")}
           </p>
+        )}
+
+        {/* DAG + stats */}
+        {(tasks.length > 0 || runId) && (
+          <div className="flex gap-4 mb-4">
+            {tasks.length > 0 && (
+              <div className="rounded-xl border border-line bg-panel px-3 py-3">
+                <div className="text-[11px] uppercase tracking-[0.07em] text-faint font-semibold mb-1">
+                  {t("Task DAG")}
+                </div>
+                <DAGDiagram tasks={tasks} />
+              </div>
+            )}
+            <div className="flex-1 min-w-0">
+              <div className="rounded-xl border border-line bg-panel px-3.5 py-3 mb-2">
+                <div className="text-[11px] uppercase tracking-[0.07em] text-faint font-semibold mb-1.5">
+                  {t("Run stats")}
+                </div>
+                <div className="grid grid-cols-3 gap-2 text-[12px]">
+                  <div>
+                    <div className="text-faint">{t("Elapsed")}</div>
+                    <div className="font-semibold">{fmtDuration(elapsed)}</div>
+                  </div>
+                  <div>
+                    <div className="text-faint">{t("Confidence")}</div>
+                    <div className="font-semibold">{doneTasks.length ? `${(avgConf * 100).toFixed(0)}%` : "—"}</div>
+                  </div>
+                  <div>
+                    <div className="text-faint">{t("Tokens (est)")}</div>
+                    <div className="font-semibold">{estTokens.toLocaleString()}</div>
+                  </div>
+                </div>
+                <div className="mt-1.5 text-[11px] text-faint">
+                  {t("Tasks")}: {doneTasks.length}/{tasks.length}
+                </div>
+              </div>
+              {stale && (
+                <div className="rounded-xl border border-warn bg-amber-50 px-3.5 py-2.5 mb-2 text-[12px] text-amber-800">
+                  {t("This run stopped updating (server may have restarted). The run record is kept; try running again.")}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {finalReport && (
+          <div className="mb-4">
+            <div className="text-[11px] uppercase tracking-[0.07em] text-faint font-semibold mb-1.5">
+              {t("Final report")}
+            </div>
+            <div className="rounded-xl border border-lineStrong bg-panel px-4 py-3">
+              <pre className="text-[12.5px] text-ink whitespace-pre-wrap font-sans leading-relaxed max-h-72 overflow-y-auto">
+                {finalReport}
+              </pre>
+            </div>
+          </div>
         )}
 
         {tasks.length > 0 && (
@@ -272,19 +458,6 @@ export function SwarmView({ onBack, workspace }: { onBack: () => void; workspace
                 <div className="text-[12px] text-muted whitespace-pre-wrap">{th.text}</div>
               </div>
             ))}
-          </div>
-        )}
-
-        {finalReport && (
-          <div className="mb-4">
-            <div className="text-[11px] uppercase tracking-[0.07em] text-faint font-semibold mb-1.5">
-              {t("Final report")}
-            </div>
-            <div className="rounded-xl border border-lineStrong bg-panel px-4 py-3">
-              <pre className="text-[12.5px] text-ink whitespace-pre-wrap font-sans leading-relaxed max-h-72 overflow-y-auto">
-                {finalReport}
-              </pre>
-            </div>
           </div>
         )}
 

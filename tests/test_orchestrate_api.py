@@ -119,3 +119,57 @@ def test_orchestrate_run_not_found(client):
     r = client.get("/v1/orchestrate/does-not-exist")
     assert r.status_code == 200
     assert r.json()["ok"] is False
+
+
+def test_orchestrate_accepts_timeout_and_max_parallel(tmp_path, monkeypatch):
+    """The panel config (max_parallel / timeout_seconds) flows through the API."""
+    import time as _time
+
+    from coworker.server.manager import SessionManager
+
+    from coworker.server.app import create_app
+
+    monkeypatch.setenv("COWORKER_STATE_DIR", str(tmp_path / "state"))
+    ws = tmp_path / "ws"
+    ws.mkdir()
+
+    class P(ProviderClient):
+        def __init__(self):
+            self.turns = [
+                AssistantTurn(text='[{"id":"t0","description":"Write a report","deps":[]}]'),
+                AssistantTurn(text="done", finish_reason="stop"),
+                AssistantTurn(text='{"accepted":true,"confidence":0.9,"reason":"ok","needs_human":false}'),
+            ]
+
+        def complete(self, *, model, messages, tools=None, **settings):
+            assert self.turns
+            return self.turns.pop(0)
+
+        def capabilities(self, model):
+            return ModelCapabilities()
+
+    manager = SessionManager(data_dir=tmp_path / "data", provider=P(), workspace=str(ws))
+    from fastapi.testclient import TestClient
+
+    with TestClient(create_app(manager)) as client:
+        r = client.post(
+            "/v1/orchestrate",
+            json={"intent": "Write a report", "sync": True, "max_parallel": 3, "timeout_seconds": 120},
+        )
+        assert r.json()["ok"] is True and r.json()["status"] == "completed"
+
+
+def test_run_store_heartbeat_updates_updated_at(tmp_path):
+    """Appending an event refreshes the run's updated_at (live vs orphaned)."""
+    from coworker.orchestrator.run_store import OrchestrationRunStore
+
+    store = OrchestrationRunStore(tmp_path / "orch.db")
+    run_id = store.create_run("x")
+    before = store.get_run(run_id)["updated_at"]
+    import time as _time
+
+    _time.sleep(0.01)
+    store.append_event(run_id, "worker_thought", {"text": "thinking"})
+    after = store.get_run(run_id)["updated_at"]
+    assert after > before
+    store.close()

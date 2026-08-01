@@ -289,4 +289,15 @@ export const zh: Messages = {
   "Worker thoughts": "Worker 思维链",
   "History": "历史记录",
   "Final report": "最终报告",
+  "Max parallel": "最大并行",
+  "Timeout (s)": "超时(秒)",
+  "Task DAG": "任务 DAG",
+  "Run stats": "运行统计",
+  "Elapsed": "耗时",
+  "Confidence": "置信度",
+  "Tokens (est)": "Token(估)",
+  "Tasks": "任务",
+  "Run seems unresponsive (server restarted?). Try again.": "此运行似乎已无响应(服务可能重启过)。请重试。",
+  "This run stopped updating (server may have restarted). The run record is kept; try running again.":
+    "此运行已停止更新(服务可能重启过)。记录已保留,请重新运行。",
 };
