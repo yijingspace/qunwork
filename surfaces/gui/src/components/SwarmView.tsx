@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import {
+  getHealth,
   getOrchestrateHistory,
   getOrchestrateRun,
   orchestrate,
@@ -7,6 +8,16 @@ import {
   type OrchestrationRunSnapshot,
 } from "../api";
 import { useT } from "../i18n";
+
+/** Fallback workspace hint: the server's configured default, if any. */
+async function defaultWorkspaceHint(): Promise<string | undefined> {
+  try {
+    const h = await getHealth();
+    return h.default_workspace ?? undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 /** Swarm (multi-agent) panel — real-time progress:
  *  POST (async) → poll the run store → stream the event feed:
@@ -35,7 +46,7 @@ const STATUS_MARK: Record<string, string> = {
   pending: "○",
 };
 
-export function SwarmView({ onBack }: { onBack: () => void }) {
+export function SwarmView({ onBack, workspace }: { onBack: () => void; workspace?: string }) {
   const t = useT();
   const [intent, setIntent] = useState("");
   const [busy, setBusy] = useState(false);
@@ -115,7 +126,8 @@ export function SwarmView({ onBack }: { onBack: () => void }) {
     setThoughts([]);
     setGovernance([]);
     try {
-      const res = await orchestrate(goal, { maxParallel: 2 });
+      const ws = workspace?.trim() || (await defaultWorkspaceHint());
+      const res = await orchestrate(goal, { workspace: ws || undefined, maxParallel: 2 });
       if (!mounted.current) return;
       if (!res.ok || !res.run_id) {
         setError(res.error || "orchestration failed to start");

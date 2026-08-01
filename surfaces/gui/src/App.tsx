@@ -1298,7 +1298,7 @@ export function App() {
           initialOpenId={scheduledOpenId}
         />
       ) : surface === "swarm" ? (
-        <SwarmView onBack={() => setSurface("session")} />
+        <SwarmView workspace={workspace || ""} onBack={() => setSurface("session")} />
       ) : surface === "integrations" ? (
         <IntegrationsView />
       ) : surface === "settings" ? (

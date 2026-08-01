@@ -260,7 +260,10 @@ def create_app(manager: SessionManager) -> FastAPI:
             return {"ok": False, "error": "intent is required"}
         workspace = body.get("workspace") or manager.default_workspace
         if not workspace:
-            return {"ok": False, "error": "no workspace configured; pass workspace"}
+            return {
+                "ok": False,
+                "error": "no workspace configured — open a project folder first, or pass workspace",
+            }
         session_id = f"__orchestrate__{secrets.token_hex(4)}"
         store = manager.orchestration_store
         run_id = store.create_run(intent)
