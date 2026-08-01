@@ -131,7 +131,7 @@ class Orchestrator:
     memory_db: Optional[str] = None  # SQLite path for persistent memory (default workspace/.qunwork/memory.db)
     max_parallel: int = 4  # how many independent tasks run concurrently
     timeout_seconds: Optional[int] = 600  # whole-run timeout (None = no limit)
-    task_timeout_seconds: Optional[int] = 90  # per-task timeout; timeout degrades to a partial result
+    task_timeout_seconds: Optional[int] = 150  # per-task timeout; timeout degrades to a partial result
     event_sink: Optional[Callable[[str, dict], None]] = None  # (kind, payload) progress feed
     _runs: int = field(default=0, init=False)
     _run_seq: int = field(default=0, init=False)
@@ -435,18 +435,32 @@ class Orchestrator:
 
     def _persist_report(self, result: OrchestrationResult) -> None:
         """Write the assembled deliverable to the workspace so the swarm ALWAYS
-        produces a file, even when the consolidator never got around to writing it."""
+        produces a file, even when the consolidator never got around to writing it.
+
+        If the intent names an explicit output file (\"写入 probe_test_1.md\" /
+        \"保存为 report.txt\"), that file in the workspace root is used; otherwise a
+        timestamped slug under _swarm_reports/."""
         import re as _re
         import time as _time
 
         report = result.final_report().strip()
-        if not report or report.startswith("⚠ task timed out") and len(report) < 40:
+        if not report or (report.startswith("⚠ task timed out") and len(report) < 40):
             return
-        slug = _re.sub(r"[^\w\u4e00-\u9fff-]+", "_", result.intent)[:48].strip("_") or "report"
-        out_dir = Path(self.workspace) / "_swarm_reports"
+        # honor an explicit output filename in the intent, if any
+        m = _re.search(
+            r"(?:写入|保存(?:到|为)?|输出(?:到|为)?|生成|创建|落盘(?:到)?|文件(?:名)?[:：]?)\s*"
+            r"([\w\u4e00-\u9fff.\-]+\.(?:md|markdown|txt))",
+            result.intent,
+        )
         try:
-            out_dir.mkdir(parents=True, exist_ok=True)
-            path = out_dir / f"{_time.strftime('%Y%m%d-%H%M%S')}-{slug}.md"
+            if m:
+                fname = _re.sub(r"[\\/]+", "_", m.group(1))
+                path = Path(self.workspace) / fname
+            else:
+                slug = _re.sub(r"[^\w\u4e00-\u9fff-]+", "_", result.intent)[:48].strip("_") or "report"
+                out_dir = Path(self.workspace) / "_swarm_reports"
+                out_dir.mkdir(parents=True, exist_ok=True)
+                path = out_dir / f"{_time.strftime('%Y%m%d-%H%M%S')}-{slug}.md"
             path.write_text(report, encoding="utf-8")
             result.report_path = str(path)
             self._emit("report_saved", {"path": str(path), "status": result.status})

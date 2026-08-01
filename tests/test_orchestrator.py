@@ -496,3 +496,35 @@ async def test_report_is_persisted_to_workspace(tmp_path):
     assert saved.is_file()
     assert "固态电池" in saved.read_text(encoding="utf-8")
     assert "_swarm_reports" in result.report_path
+
+
+async def test_report_persisted_to_intent_named_file(tmp_path):
+    """When the intent names an output file, the deliverable lands at that path
+    (e.g. probe_test_1.md) — not just under _swarm_reports/."""
+    from coworker.orchestrator import Orchestrator
+    from coworker.orchestrator.governance import GovernanceConfig
+    from coworker.providers import AssistantTurn, ModelCapabilities, ProviderClient
+
+    class P(ProviderClient):
+        def complete(self, *, model, messages, tools=None, **settings):
+            joined = str(messages)
+            if "Validate the result" in joined:
+                return AssistantTurn(text='{"accepted":true,"confidence":0.9,"reason":"ok","needs_human":false}')
+            if "Execute it now" in joined:
+                return AssistantTurn(text="探针输出:固态电池是一种……", finish_reason="stop")
+            return AssistantTurn(text='[{"id":"t0","description":"Write probe","deps":[]}]')
+
+        def capabilities(self, model):
+            return ModelCapabilities()
+
+    orch = Orchestrator(
+        provider=P(),
+        model="m",
+        workspace=str(tmp_path / "ws"),
+        governance_config=GovernanceConfig(),
+    )
+    result = await orch.run("压测探针:生成说明文本并写入 probe_test_1.md")
+    assert result.status == "completed"
+    target = tmp_path / "ws" / "probe_test_1.md"
+    assert target.is_file()
+    assert "固态电池" in target.read_text(encoding="utf-8")

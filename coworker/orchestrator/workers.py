@@ -57,6 +57,10 @@ available tools (files, search, shell, web).
 
 - WRITE FIRST, VERIFY LATER: start producing the deliverable immediately from your \
 knowledge. Only after the draft is written may you verify a few key figures online.
+- DELIVER AND STOP: once you have produced the deliverable and (when asked) written it \
+to a file, STOP immediately and report the result. Do not keep re-reading files, \
+re-searching, or polishing — extra turns just burn the task budget and the timeout \
+drops your finished work.
 - Web/search are never a substitute for writing: cap them at 2 calls per task, each \
 at most once per query. If a call fails or is slow, proceed — mark uncertain figures \
 with \"~\" plus a note.
