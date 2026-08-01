@@ -245,6 +245,49 @@ def create_app(manager: SessionManager) -> FastAPI:
     def agents() -> dict[str, Any]:
         return {"agents": manager.list_agents()}
 
+    @app.post("/v1/orchestrate")
+    async def orchestrate(body: dict, request: Request) -> dict[str, Any]:
+        """Delegate a whole multi-step goal to the multi-agent swarm (planner ->
+        executors -> reviewer, governed). Executor writes are approval-gated to
+        the Inbox. Returns the converged task DAG, outcomes and governance report.
+        """
+        from ..orchestrator import Orchestrator
+
+        intent = str(body.get("intent") or "").strip()
+        if not intent:
+            return {"ok": False, "error": "intent is required"}
+        workspace = body.get("workspace") or manager.default_workspace
+        if not workspace:
+            return {"ok": False, "error": "no workspace configured; pass workspace"}
+        session_id = f"__orchestrate__{secrets.token_hex(4)}"
+        orch = Orchestrator(
+            provider=manager.provider,
+            model=body.get("model") or manager.model,
+            workspace=workspace,
+            approver=manager.inbox_approver(session_id, "cowork"),
+            max_parallel=int(body.get("max_parallel") or 1),
+            memory_scope=body.get("memory_scope") or str(workspace),
+        )
+        result = await orch.run(intent)
+        return {
+            "ok": True,
+            "status": result.status,
+            "runs": result.runs,
+            "tasks": [
+                {
+                    "id": t.id,
+                    "description": t.description,
+                    "deps": t.deps,
+                    "status": t.status,
+                    "confidence": t.confidence,
+                    "result": (t.result or "")[:2000],
+                }
+                for t in result.plan.tasks
+            ],
+            "governance_report": result.governance_report,
+            "session_id": session_id,
+        }
+
     @app.get("/v1/personas")
     def personas() -> dict[str, Any]:
         return {"personas": manager.personas.list_all()}

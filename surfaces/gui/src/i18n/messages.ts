@@ -271,4 +271,18 @@ export const zh: Messages = {
     "根据我最近的 HubSpot 线索生成报告:来源、阶段,以及谁需要跟进。",
   "Set up a weekly progress report: summarize activity in my GitHub repos and post it to Slack every Friday morning.":
     "设置每周进度报告:汇总我 GitHub 仓库的动态,并在每周五早上发布到 Slack。",
+  "Multi-agent swarm": "多智能体蜂群",
+  "Planner decomposes, executors work, reviewer validates, governance watches.":
+    "规划者拆解、执行者干活、评审者把关、治理回路监督。",
+  "Describe the goal, e.g. Write a market report with research, draft and review steps…":
+    "描述目标,例如:撰写市场报告,包含调研、起草和评审步骤…",
+  "Swarm running…": "蜂群运行中…",
+  "Run swarm": "运行蜂群",
+  "Status": "状态",
+  "steps": "步",
+  "Send a goal above — the swarm will split it into tasks, run them, validate and converge.":
+    "在上面发送目标——蜂群会拆解任务、执行、校验并收敛。",
+  "Swarm working…": "蜂群工作中…",
+  "depends on": "依赖",
+  "Governance report": "治理报告",
 };

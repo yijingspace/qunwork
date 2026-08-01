@@ -134,6 +134,9 @@ interface Props {
   onOpenPersona: (id: string) => void;
   onManagePersonas: () => void;
   onOpenScheduled: () => void;
+  // Multi-agent swarm panel.
+  onOpenSwarm: () => void;
+  swarmActive: boolean;
   // Scheduled-band row click: open the Automations surface ON that automation (UX-023).
   onOpenAutomation: (id: string) => void;
   onOpenIntegrations: () => void;
@@ -1043,8 +1046,20 @@ export function Sidebar(props: Props) {
         </button>
       </div>
 
-      {/* Scroll area: Pinned band + the RECENT header (with group/filter control), then the body —
-          grouped (per-persona accordion) or flat (chronological list). */}
+      {/* Swarm: multi-agent orchestration panel (UX: worker swarm visualization). */}
+      <div className="px-2.5 mt-1">
+        <button
+          className={
+            "w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-[13px] text-left hover:bg-paper hover:text-ink " +
+            (props.swarmActive ? "text-ink bg-paper" : "text-muted")
+          }
+          data-testid="nav-swarm"
+          onClick={props.onOpenSwarm}
+        >
+          <span className="text-[14px]">🐝</span>
+          <span className="flex-1">{t("Multi-agent swarm")}</span>
+        </button>
+      </div>
       <div className="flex-1 overflow-y-auto px-2.5 mt-3 pb-2">
         <div className="space-y-4">
           {pinnedBand()}

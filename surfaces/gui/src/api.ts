@@ -570,6 +570,44 @@ export async function getConnectors(): Promise<Connector[]> {
   return (await res.json()).connectors ?? [];
 }
 
+// -- multi-agent orchestration (swarm) --------------------------------------
+
+export interface OrchestratedTask {
+  id: string;
+  description: string;
+  deps: string[];
+  status: string;
+  confidence: number;
+  result: string;
+}
+
+export interface OrchestrationResponse {
+  ok: boolean;
+  status: string;
+  runs: number;
+  error?: string;
+  tasks: OrchestratedTask[];
+  governance_report: string;
+  session_id?: string;
+}
+
+export async function orchestrate(
+  intent: string,
+  opts?: { workspace?: string; maxParallel?: number; memoryScope?: string },
+): Promise<OrchestrationResponse> {
+  const res = await fetch(`${httpBase()}/v1/orchestrate`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      intent,
+      workspace: opts?.workspace,
+      max_parallel: opts?.maxParallel,
+      memory_scope: opts?.memoryScope,
+    }),
+  });
+  return await res.json();
+}
+
 export async function connectConnector(
   name: string,
   fields: Record<string, string>,
