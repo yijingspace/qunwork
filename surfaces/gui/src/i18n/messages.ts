@@ -300,4 +300,5 @@ export const zh: Messages = {
   "Run seems unresponsive (server restarted?). Try again.": "此运行似乎已无响应(服务可能重启过)。请重试。",
   "This run stopped updating (server may have restarted). The run record is kept; try running again.":
     "此运行已停止更新(服务可能重启过)。记录已保留,请重新运行。",
+  "Copy": "复制",
 };

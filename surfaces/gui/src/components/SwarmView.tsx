@@ -258,6 +258,10 @@ export function SwarmView({ onBack, workspace }: { onBack: () => void; workspace
     setRunId(rid);
     setStatus("running");
     setStartedAt(Date.now());
+    // jump the content view back to the top so the loaded run is immediately visible
+    requestAnimationFrame(() => {
+      document.querySelector(".swarm-scroll")?.scrollTo({ top: 0 });
+    });
     try {
       const snap = await getOrchestrateRun(rid);
       if (!mounted.current) return;
@@ -350,7 +354,7 @@ export function SwarmView({ onBack, workspace }: { onBack: () => void; workspace
         {error && <div className="text-[12px] text-danger mt-2">{error}</div>}
       </div>
 
-      <div className="flex-1 overflow-y-auto hairline-scroll px-5 py-4">
+      <div className="flex-1 overflow-y-auto hairline-scroll swarm-scroll px-5 py-4">
         {!runId && !busy && history.length === 0 && (
           <p className="text-[13px] text-faint">
             {t("Send a goal above — the swarm will split it into tasks, run them, validate and converge.")}
@@ -402,11 +406,19 @@ export function SwarmView({ onBack, workspace }: { onBack: () => void; workspace
 
         {finalReport && (
           <div className="mb-4">
-            <div className="text-[11px] uppercase tracking-[0.07em] text-faint font-semibold mb-1.5">
-              {t("Final report")}
+            <div className="flex items-center justify-between mb-1.5">
+              <div className="text-[11px] uppercase tracking-[0.07em] text-faint font-semibold">
+                {t("Final report")}
+              </div>
+              <button
+                className="text-[11px] text-faint hover:text-ink"
+                onClick={() => navigator.clipboard?.writeText(finalReport).catch(() => {})}
+              >
+                {t("Copy")}
+              </button>
             </div>
             <div className="rounded-xl border border-lineStrong bg-panel px-4 py-3">
-              <pre className="text-[12.5px] text-ink whitespace-pre-wrap font-sans leading-relaxed max-h-72 overflow-y-auto">
+              <pre className="text-[12.5px] text-ink whitespace-pre-wrap font-sans leading-relaxed max-h-[72vh] overflow-y-auto">
                 {finalReport}
               </pre>
             </div>

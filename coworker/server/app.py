@@ -289,7 +289,15 @@ def create_app(manager: SessionManager) -> FastAPI:
         async def _finalize(orch: "Orchestrator") -> dict[str, Any]:
             try:
                 result = await orch.run(intent)
-                store.update_status(run_id, result.status, final=result.summary)
+                # final = the consolidation task's full output (the finished report)
+                # when available, else the assembled task summary.
+                last_done = [t for t in result.plan.tasks if t.done]
+                final_report = (
+                    last_done[-1].result
+                    if last_done and last_done[-1].result
+                    else result.summary
+                )
+                store.update_status(run_id, result.status, final=final_report)
                 return {                    "ok": True,
                     "run_id": run_id,
                     "status": result.status,
