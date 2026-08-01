@@ -302,4 +302,5 @@ export const zh: Messages = {
     "此运行已停止更新(服务可能重启过)。记录已保留,请重新运行。",
   "Copy": "复制",
   "Saved to": "已保存到",
+  "Back to chat": "返回主页",
 };

@@ -291,22 +291,27 @@ export function SwarmView({ onBack, workspace }: { onBack: () => void; workspace
   );
 
   return (
-    <div className="flex flex-col h-full">
-      <div className="flex items-center gap-3 px-5 pt-4 pb-3 border-b border-line shrink-0">
-        <button className="text-[13px] text-muted hover:text-ink" onClick={onBack}>
-          ←
+    <div className="flex flex-col h-full min-w-0 overflow-hidden">
+      <div className="flex items-center gap-3 px-5 pt-4 pb-3 border-b border-line shrink-0 min-w-0">
+        <button
+          className="shrink-0 flex items-center gap-1.5 rounded-lg border border-line px-2.5 py-1 text-[12.5px] text-muted hover:text-ink hover:border-lineStrong"
+          onClick={onBack}
+          data-testid="swarm-back"
+        >
+          ← {t("Back to chat")}
         </button>
-        <div>
-          <div className="text-[15px] font-semibold">🐝 {t("Multi-agent swarm")}</div>
-          <div className="text-[12px] text-muted">
+        <div className="min-w-0">
+          <div className="text-[15px] font-semibold truncate">🐝 {t("Multi-agent swarm")}</div>
+          <div className="text-[12px] text-muted truncate">
             {t("Planner decomposes, executors work, reviewer validates, governance watches.")}
           </div>
         </div>
       </div>
 
-      <div className="px-5 py-4 border-b border-line shrink-0">
+      <div className="px-5 py-4 border-b border-line shrink-0 min-w-0">
         <textarea
-          className="w-full rounded-lg border border-line bg-paper px-3 py-2 text-[13px] outline-none focus:border-lineStrong resize-none"
+          className="w-full min-w-0 rounded-lg border border-line bg-paper px-3 py-2 text-[13px] outline-none focus:border-lineStrong resize-none break-words overflow-y-auto"
+          wrap="soft"
           rows={3}
           value={intent}
           onChange={(e) => setIntent(e.target.value)}
@@ -355,7 +360,7 @@ export function SwarmView({ onBack, workspace }: { onBack: () => void; workspace
         {error && <div className="text-[12px] text-danger mt-2">{error}</div>}
       </div>
 
-      <div className="flex-1 overflow-y-auto hairline-scroll swarm-scroll px-5 py-4">
+      <div className="flex-1 overflow-y-auto hairline-scroll swarm-scroll px-5 py-4 min-w-0">
         {!runId && !busy && history.length === 0 && (
           <p className="text-[13px] text-faint">
             {t("Send a goal above — the swarm will split it into tasks, run them, validate and converge.")}
@@ -419,7 +424,7 @@ export function SwarmView({ onBack, workspace }: { onBack: () => void; workspace
               </button>
             </div>
             <div className="rounded-xl border border-lineStrong bg-panel px-4 py-3">
-              <pre className="text-[12.5px] text-ink whitespace-pre-wrap font-sans leading-relaxed max-h-[72vh] overflow-y-auto">
+              <pre className="text-[12.5px] text-ink whitespace-pre-wrap break-words font-sans leading-relaxed max-h-[72vh] overflow-y-auto">
                 {finalReport}
               </pre>
               {reportPath && (
@@ -453,7 +458,7 @@ export function SwarmView({ onBack, workspace }: { onBack: () => void; workspace
                   </div>
                 )}
                 {task.result && (
-                  <pre className="text-[11.5px] text-muted mt-1.5 whitespace-pre-wrap font-sans leading-snug max-h-20 overflow-y-auto">
+                  <pre className="text-[11.5px] text-muted mt-1.5 whitespace-pre-wrap break-words font-sans leading-snug max-h-20 overflow-y-auto">
                     {task.result}
                   </pre>
                 )}
@@ -473,7 +478,7 @@ export function SwarmView({ onBack, workspace }: { onBack: () => void; workspace
                   {th.worker}
                   {th.task_id ? ` · ${th.task_id}` : ""}
                 </div>
-                <div className="text-[12px] text-muted whitespace-pre-wrap">{th.text}</div>
+                <div className="text-[12px] text-muted whitespace-pre-wrap break-words">{th.text}</div>
               </div>
             ))}
           </div>
