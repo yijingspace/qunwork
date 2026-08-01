@@ -62,20 +62,42 @@ def _extract_json(text: str) -> Any:
 
 
 def parse_plan(text: str, *, goal: str) -> Plan:
-    """Parse the planner worker's JSON task list into a Plan."""
-    data = _extract_json(text)
-    if not isinstance(data, list):
-        raise ValueError("planner did not return a JSON array of tasks")
-    tasks = []
-    for i, item in enumerate(data):
-        if not isinstance(item, dict) or not item.get("description"):
-            continue
-        tid = str(item.get("id") or f"t{i}")
-        deps = [str(d) for d in (item.get("deps") or [])]
-        tasks.append(Task(id=tid, description=str(item["description"]), deps=deps))
-    if not tasks:
-        raise ValueError("planner returned an empty task list")
-    return Plan(goal=goal, tasks=tasks)
+    """Parse the planner worker's JSON task list into a Plan, with multi-level
+    fallbacks: strict JSON array → extracted "description" fields → line items."""
+    data = None
+    try:
+        data = _extract_json(text)
+    except ValueError:
+        pass
+    if isinstance(data, list):
+        tasks = []
+        for i, item in enumerate(data):
+            if not isinstance(item, dict) or not item.get("description"):
+                continue
+            tid = str(item.get("id") or f"t{i}")
+            deps = [str(d) for d in (item.get("deps") or [])]
+            tasks.append(Task(id=tid, description=str(item["description"]), deps=deps))
+        if tasks:
+            return Plan(goal=goal, tasks=tasks)
+    # fallback 1: extract every "description": "…" field
+    descs = re.findall(r'"description"\s*:\s*"([^"]+)"', text)
+    if descs:
+        return Plan(
+            goal=goal,
+            tasks=[Task(id=f"t{i}", description=d) for i, d in enumerate(descs)],
+        )
+    # fallback 2: treat bullet/numbered lines as tasks
+    lines = [
+        re.sub(r"^[-*\d.\s\u2022]+", "", ln).strip()
+        for ln in text.splitlines()
+        if re.match(r"^\s*[-*\d.\u2022]", ln) and len(ln.strip()) > 10
+    ]
+    if lines:
+        return Plan(
+            goal=goal,
+            tasks=[Task(id=f"t{i}", description=d) for i, d in enumerate(lines)],
+        )
+    raise ValueError(f"could not parse task plan from worker output: {text[:300]}")
 
 
 def parse_verdict(text: str) -> ReviewVerdict:
@@ -228,7 +250,7 @@ class Orchestrator:
                 summary = "\n\n".join(
                     f"[{t.id}] {t.description}\n{t.result}" for t in plan.tasks if t.result
                 ) or f"swarm timed out after {self.timeout_seconds}s"
-                return OrchestrationResult(
+                result = OrchestrationResult(
                     intent=intent,
                     plan=plan,
                     summary=summary,
@@ -238,6 +260,8 @@ class Orchestrator:
                         f"[step {self._runs}] TIMEOUT after {self.timeout_seconds}s"
                     ),
                 )
+                self._persist_report(result)
+                return result
         return await self._run(intent)
 
     async def _run(self, intent: str) -> OrchestrationResult:
@@ -398,7 +422,7 @@ class Orchestrator:
             f"[{t.id}] {t.description}\n{t.result}" for t in plan.tasks if t.result
         )
         self._emit("run_completed", {"status": status, "runs": self._runs})
-        return OrchestrationResult(
+        result = OrchestrationResult(
             intent=intent,
             plan=plan,
             summary=summary,
@@ -406,3 +430,25 @@ class Orchestrator:
             runs=self._runs,
             governance_report="\n".join(gov_log),
         )
+        self._persist_report(result)
+        return result
+
+    def _persist_report(self, result: OrchestrationResult) -> None:
+        """Write the assembled deliverable to the workspace so the swarm ALWAYS
+        produces a file, even when the consolidator never got around to writing it."""
+        import re as _re
+        import time as _time
+
+        report = result.final_report().strip()
+        if not report or report.startswith("⚠ task timed out") and len(report) < 40:
+            return
+        slug = _re.sub(r"[^\w\u4e00-\u9fff-]+", "_", result.intent)[:48].strip("_") or "report"
+        out_dir = Path(self.workspace) / "_swarm_reports"
+        try:
+            out_dir.mkdir(parents=True, exist_ok=True)
+            path = out_dir / f"{_time.strftime('%Y%m%d-%H%M%S')}-{slug}.md"
+            path.write_text(report, encoding="utf-8")
+            result.report_path = str(path)
+            self._emit("report_saved", {"path": str(path), "status": result.status})
+        except OSError:
+            pass

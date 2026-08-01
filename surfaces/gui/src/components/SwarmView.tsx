@@ -110,6 +110,7 @@ export function SwarmView({ onBack, workspace }: { onBack: () => void; workspace
   const [thoughts, setThoughts] = useState<Thought[]>([]);
   const [governance, setGovernance] = useState<string[]>([]);
   const [finalReport, setFinalReport] = useState<string>("");
+  const [reportPath, setReportPath] = useState<string>("");
   const [elapsed, setElapsed] = useState(0);
   const [startedAt, setStartedAt] = useState<number | null>(null);
   const [stale, setStale] = useState(false);
@@ -143,8 +144,7 @@ export function SwarmView({ onBack, workspace }: { onBack: () => void; workspace
 
   const applySnapshot = (snap: OrchestrationRunSnapshot) => {
     setStatus(snap.status);
-    if (snap.final) setFinalReport(snap.final);
-    const tasks: TaskView[] = [];
+    if (snap.final) setFinalReport(snap.final);    const tasks: TaskView[] = [];
     const thoughts: Thought[] = [];
     const gov: string[] = [];
     for (const ev of snap.events) {
@@ -207,6 +207,7 @@ export function SwarmView({ onBack, workspace }: { onBack: () => void; workspace
         if (timerRef.current) clearInterval(timerRef.current);
         return;
       }
+      setReportPath(res.report_path ?? "");
       setRunId(res.run_id);
       const rid = res.run_id;
       // Poll until the run leaves "running" (heartbeat-aware: an orphaned run —
@@ -421,6 +422,11 @@ export function SwarmView({ onBack, workspace }: { onBack: () => void; workspace
               <pre className="text-[12.5px] text-ink whitespace-pre-wrap font-sans leading-relaxed max-h-[72vh] overflow-y-auto">
                 {finalReport}
               </pre>
+              {reportPath && (
+                <div className="mt-2 pt-2 border-t border-line text-[11px] text-faint break-all">
+                  📄 {t("Saved to")}: {reportPath}
+                </div>
+              )}
             </div>
           </div>
         )}

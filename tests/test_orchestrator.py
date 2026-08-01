@@ -452,3 +452,47 @@ async def test_global_timeout_keeps_partial_drafts(tmp_path):
     assert result.status == "paused"
     # the completed task's result survived the global timeout
     assert any("固态电池2027量产" in t.result for t in result.plan.tasks)
+
+
+def test_parse_plan_falls_back_to_description_fields():
+    """A non-JSON planner reply with description fields still yields a plan."""
+    from coworker.orchestrator.orchestrator import parse_plan
+
+    plan = parse_plan(
+        'Here is the plan: {"description": "Write intro"}, {"description": "Write body"}',
+        goal="g",
+    )
+    assert [t.description for t in plan.tasks] == ["Write intro", "Write body"]
+
+
+async def test_report_is_persisted_to_workspace(tmp_path):
+    """The assembled report is always written to _swarm_reports in the workspace."""
+    from coworker.orchestrator import Orchestrator
+    from coworker.orchestrator.governance import GovernanceConfig
+    from coworker.providers import AssistantTurn, ModelCapabilities, ProviderClient
+
+    class P(ProviderClient):
+        def complete(self, *, model, messages, tools=None, **settings):
+            joined = str(messages)
+            if "Validate the result" in joined:
+                return AssistantTurn(text='{"accepted":true,"confidence":0.9,"reason":"ok","needs_human":false}')
+            if "Execute it now" in joined:
+                return AssistantTurn(text="完整报告:固态电池市场分析……", finish_reason="stop")
+            return AssistantTurn(text='[{"id":"t0","description":"Write report","deps":[]}]')
+
+        def capabilities(self, model):
+            return ModelCapabilities()
+
+    orch = Orchestrator(
+        provider=P(),
+        model="m",
+        workspace=str(tmp_path / "ws"),
+        governance_config=GovernanceConfig(),
+    )
+    result = await orch.run("撰写固态电池市场分析报告")
+    assert result.status == "completed"
+    assert result.report_path
+    saved = __import__("pathlib").Path(result.report_path)
+    assert saved.is_file()
+    assert "固态电池" in saved.read_text(encoding="utf-8")
+    assert "_swarm_reports" in result.report_path

@@ -57,6 +57,7 @@ def run_orchestration(
     approver: Optional[Any] = None,
     max_retries: int = 2,
     executor_agent: str = "cowork",
+    memory_scope: Optional[str] = None,
 ) -> OrchestrationResult:
     """Run one orchestrated goal synchronously (worker-thread context)."""
     orch = Orchestrator(
@@ -67,6 +68,7 @@ def run_orchestration(
         approver=approver,
         max_retries=max_retries,
         executor_agent=executor_agent,
+        memory_scope=memory_scope,
     )
     import asyncio
 
@@ -101,9 +103,17 @@ def orchestration_tools(
             # (e.g. a small max_tokens) truncate worker JSON plans and stall the
             # swarm. Workers use the provider's defaults.
             model_settings=None,
+            # share episodic memory across runs for this workspace so later swarm
+            # runs (and the main session) benefit from earlier lessons
+            memory_scope=str(workspace),
             approver=approver,
         )
-        out: dict[str, Any] = {"status": result.status, "report": result.task_report()}
+        out: dict[str, Any] = {
+            "status": result.status,
+            # the finished deliverable (consolidation output) + where it was saved
+            "report": result.final_report(),
+            "report_path": result.report_path,
+        }
         if result.status != "completed":
             out["note"] = (
                 "not fully completed — see the task report for what needs human attention"

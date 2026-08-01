@@ -298,10 +298,12 @@ def create_app(manager: SessionManager) -> FastAPI:
                     else result.summary
                 )
                 store.update_status(run_id, result.status, final=final_report)
-                return {                    "ok": True,
+                return {
+                    "ok": True,
                     "run_id": run_id,
                     "status": result.status,
                     "runs": result.runs,
+                    "report_path": result.report_path,
                     "tasks": [
                         {
                             "id": t.id,

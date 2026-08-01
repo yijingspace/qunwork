@@ -588,6 +588,7 @@ export interface OrchestrationResponse {
   error?: string;
   run_id?: string;
   async?: boolean;
+  report_path?: string;
   tasks: OrchestratedTask[];
   governance_report: string;
   session_id?: string;

@@ -71,6 +71,15 @@ class OrchestrationResult:
     status: str = "completed"  # completed | needs_human | paused | failed
     runs: int = 0
     governance_report: str = ""  # health metrics + governance commands, if any
+    report_path: str = ""  # file the assembled report was written to (if any)
+
+    def final_report(self) -> str:
+        """The finished deliverable: the consolidation task's full output if it
+        exists, else the assembled task summary."""
+        done = [t for t in self.plan.tasks if t.done and t.result]
+        if done:
+            return done[-1].result
+        return self.summary
 
     def task_report(self) -> str:
         lines = [f"Goal: {self.plan.goal}"]
