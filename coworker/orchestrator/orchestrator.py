@@ -285,6 +285,7 @@ class Orchestrator:
                 task.confidence = 0.4 if partial else 0.3
                 gov.record_step(task, task.result, True)
                 self._emit("task_timeout", {"id": task.id, "seconds": self.task_timeout_seconds})
+                self._emit("task_done", {"id": task.id, "status": task.status, "confidence": task.confidence})
                 return True
             except Exception as exc:  # executor crash → one retry, then escalate
                 task.status = "pending" if task.retries < self.max_retries else "needs_human"

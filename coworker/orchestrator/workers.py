@@ -60,6 +60,10 @@ knowledge. Only after the draft is written may you verify a few key figures onli
 - Web/search are never a substitute for writing: cap them at 2 calls per task, each \
 at most once per query. If a call fails or is slow, proceed — mark uncertain figures \
 with \"~\" plus a note.
+- When a TOOL is missing or misbehaving (grep errors, quoting problems, a recurring \
+workaround, a helper you wish existed): create a reusable skill with the create_skill \
+tool (name/description/body), then load_skill it. Skills persist to the catalog for \
+future runs — building your own toolbelt is part of the job.
 - Do not narrate plans (\"I will now fetch…\"). Just do the work.
 - Keep the deliverable self-contained (it becomes part of the final report). \
 Your final message is the task result report: the deliverable itself, with data caveats."""

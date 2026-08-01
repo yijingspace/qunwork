@@ -329,3 +329,28 @@ async def test_task_timeout_degrades_and_continues(tmp_path):
     assert t0.done
     # the executor's real draft survived the timeout (not a placeholder)
     assert "1.2万亿" in t0.result
+
+
+def test_create_skill_persists_and_reloads(tmp_path):
+    """create_skill writes a SKILL.md, refreshes the catalog, and the skill is
+    immediately loadable — the worker's self-authored toolbelt survives runs."""
+    from coworker.skills import SkillLoader, skill_tools
+
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    loader = SkillLoader([ws / ".coworker" / "skills", ws])
+    tools = {getattr(t, "__name__", ""): t for t in skill_tools(loader)}
+    assert "create_skill" in tools and "load_skill" in tools
+
+    out = tools["create_skill"](
+        name="ps-quoting",
+        description="PowerShell quoting helper for Windows",
+        body="Use single quotes outside, escape `$` with backtick...",
+    )
+    assert out["ok"] and "skills" in out["path"]
+
+    # skill is now in the catalog and loadable
+    assert "ps-quoting" in loader.names()
+    loaded = tools["load_skill"]("ps-quoting")
+    assert loaded["name"] == "ps-quoting" and "single quotes" in loaded["instructions"]
+    assert (ws / ".coworker" / "skills" / "ps-quoting" / "SKILL.md").is_file()
