@@ -49,6 +49,15 @@ def _extract_json(text: str) -> Any:
                 return json.loads(m.group(0))
             except json.JSONDecodeError:
                 pass
+        # truncated JSON: try to close a dangling array/object before giving up
+        stripped = text.strip()
+        if stripped:
+            for closer, closer_rev in (("]", "["), ("}", "{")):
+                if stripped.count(closer_rev) > stripped.count(closer):
+                    try:
+                        return json.loads(stripped + closer)
+                    except json.JSONDecodeError:
+                        pass
     raise ValueError(f"could not parse JSON from worker output: {text[:200]}")
 
 
@@ -123,16 +132,24 @@ class Orchestrator:
 
     # -- planning -----------------------------------------------------------
     async def _plan(self, intent: str) -> Plan:
-        engine = build_planner_engine(
-            workspace=self.workspace,
-            provider=self.provider,
-            model=self.model,
-            model_settings=self.model_settings,
-        )
-        text, status = await _run_engine_async(engine, intent)
-        if not text:
-            raise RuntimeError(f"planner produced no plan (status: {status})")
-        return parse_plan(text, goal=intent)
+        last_err: Exception | None = None
+        for attempt in range(3):  # planner JSON can be flaky — retry before giving up
+            try:
+                engine = build_planner_engine(
+                    workspace=self.workspace,
+                    provider=self.provider,
+                    model=self.model,
+                    model_settings=self.model_settings,
+                )
+                text, status = await _run_engine_async(engine, intent, on_event=self._worker_feed("planner"))
+                if not text:
+                    last_err = RuntimeError(f"planner produced no plan (status: {status})")
+                    continue
+                return parse_plan(text, goal=intent)
+            except (ValueError, RuntimeError) as exc:
+                last_err = exc
+                self._emit("planner_retry", {"attempt": attempt + 1, "error": str(exc)})
+        raise RuntimeError(f"planner failed after 3 attempts: {last_err}")
 
     # -- execution ----------------------------------------------------------
     async def _execute(

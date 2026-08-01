@@ -354,3 +354,50 @@ def test_create_skill_persists_and_reloads(tmp_path):
     loaded = tools["load_skill"]("ps-quoting")
     assert loaded["name"] == "ps-quoting" and "single quotes" in loaded["instructions"]
     assert (ws / ".coworker" / "skills" / "ps-quoting" / "SKILL.md").is_file()
+
+
+def test_parse_plan_recovers_truncated_json():
+    """A truncated task array (max_tokens cut) is repaired, not fatal."""
+    from coworker.orchestrator.orchestrator import parse_plan
+
+    plan = parse_plan(
+        '[{"id":"t0","description":"Write intro","deps":[]},{"id":"t1","description":"Write body","deps":["t0"]}',
+        goal="g",
+    )
+    assert [t.id for t in plan.tasks] == ["t0", "t1"]
+
+
+async def test_planner_retries_then_succeeds(tmp_path):
+    """A planner that returns garbage on the first call is retried."""
+    from coworker.orchestrator import Orchestrator
+    from coworker.orchestrator.governance import GovernanceConfig
+    from coworker.providers import AssistantTurn, ModelCapabilities, ProviderClient
+
+    class FlakyPlanner(ProviderClient):
+        def __init__(self):
+            self.calls = 0
+
+        def complete(self, *, model, messages, tools=None, **settings):
+            joined = str(messages)
+            if "Validate the result" in joined:  # reviewer
+                return AssistantTurn(text='{"accepted":true,"confidence":0.9,"reason":"ok","needs_human":false}')
+            if "Execute it now" in joined:  # executor
+                return AssistantTurn(text="chapter done", finish_reason="stop")
+            self.calls += 1  # planner
+            if self.calls == 1:
+                return AssistantTurn(text="not json at all", finish_reason="stop")
+            return AssistantTurn(text='[{"id":"t0","description":"Write intro","deps":[]}]')
+
+        def capabilities(self, model):
+            return ModelCapabilities()
+
+    provider = FlakyPlanner()
+    orch = Orchestrator(
+        provider=provider,
+        model="m",
+        workspace=str(tmp_path / "ws"),
+        governance_config=GovernanceConfig(),
+    )
+    result = await orch.run("Write a report")
+    assert result.status == "completed"
+    assert provider.calls >= 2  # first planner call failed, second succeeded

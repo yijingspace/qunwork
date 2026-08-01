@@ -97,7 +97,10 @@ def orchestration_tools(
             workspace=workspace,
             provider=provider,
             model=model,
-            model_settings=model_settings,
+            # Do NOT inherit the parent session's model_settings: output caps there
+            # (e.g. a small max_tokens) truncate worker JSON plans and stall the
+            # swarm. Workers use the provider's defaults.
+            model_settings=None,
             approver=approver,
         )
         out: dict[str, Any] = {"status": result.status, "report": result.task_report()}

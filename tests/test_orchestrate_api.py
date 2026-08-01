@@ -108,7 +108,7 @@ def test_orchestrate_async_poll_and_history(tmp_path, monkeypatch):
         assert "run_started" in kinds and "plan_ready" in kinds and "run_completed" in kinds
         # chain-of-thought: the executor's intermediate message was streamed.
         thoughts = [e for e in snap["events"] if e["kind"] == "worker_thought"]
-        assert thoughts and "thinking about the outline" in thoughts[0]["payload"]["text"]
+        assert any("thinking about the outline" in t["payload"]["text"] for t in thoughts)
 
         # history lists the run
         hist = client.get("/v1/orchestrate/history").json()
