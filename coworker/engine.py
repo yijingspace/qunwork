@@ -899,6 +899,7 @@ class TurnEngine:
             for msg in self.messages
             if msg.get("role") != "notice"
         ]
+        out = _heal_tool_pairing(out)
         # PDF attachments (stored as `file` parts) are adapted to the ACTIVE model right
         # here — never in the persisted history — so a mid-session model switch always
         # re-decides: native PDF models get the real document, the rest get the local
@@ -1025,6 +1026,42 @@ def _tool_error_message(tool_call: ToolCall, reason: str) -> dict[str, Any]:
         "content": json.dumps({"error": "tool call not executed", "reason": reason}),
         "ts": time.time(),
     }
+
+
+def _heal_tool_pairing(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Defensively repair orphaned tool_calls before a provider call.
+
+    OpenAI (and compatible backends) hard-reject a thread where an assistant
+    message declares tool_calls that have no matching tool response per
+    tool_call_id (HTTP 400 "insufficient tool messages"). Every engine path is
+    supposed to answer every call, but a missed edge (e.g. a call suspended
+    across a resume boundary) would surface exactly that 400. This pass adds a
+    placeholder tool response for any declared call_id that has no response —
+    the model then sees "call was dropped" and self-corrects instead of the
+    whole turn dying. Read-only: the persisted `self.messages` is untouched.
+    """
+    healed: list[dict[str, Any]] = []
+    for i, msg in enumerate(messages):
+        healed.append(msg)
+        tcs = msg.get("tool_calls") if msg.get("role") == "assistant" else None
+        if not tcs:
+            continue
+        declared = {tc.get("id") for tc in tcs if tc.get("id")}
+        responded: set[str] = set()
+        for nxt in messages[i + 1 :]:
+            if nxt.get("role") == "assistant":
+                break
+            if nxt.get("role") == "tool" and nxt.get("tool_call_id") in declared:
+                responded.add(nxt["tool_call_id"])
+        for tid in declared - responded:
+            healed.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": tid,
+                    "content": json.dumps({"error": "tool call was dropped before execution"}),
+                }
+            )
+    return healed
 
 
 def _preview(value: Any, max_chars: int = 300) -> str:
