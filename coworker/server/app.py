@@ -249,7 +249,9 @@ def create_app(manager: SessionManager) -> FastAPI:
     async def orchestrate(body: dict, request: Request) -> dict[str, Any]:
         """Delegate a whole multi-step goal to the multi-agent swarm (planner ->
         executors -> reviewer, governed). Executor writes are approval-gated to
-        the Inbox. Returns the converged task DAG, outcomes and governance report.
+        the Inbox. Default is ASYNC: returns a run_id immediately and streams
+        progress events to the run store (poll GET /v1/orchestrate/{run_id}).
+        Pass {"sync": true} for the blocking variant that returns the full result.
         """
         from ..orchestrator import Orchestrator
 
@@ -260,33 +262,65 @@ def create_app(manager: SessionManager) -> FastAPI:
         if not workspace:
             return {"ok": False, "error": "no workspace configured; pass workspace"}
         session_id = f"__orchestrate__{secrets.token_hex(4)}"
-        orch = Orchestrator(
-            provider=manager.provider,
-            model=body.get("model") or manager.model,
-            workspace=workspace,
-            approver=manager.inbox_approver(session_id, "cowork"),
-            max_parallel=int(body.get("max_parallel") or 1),
-            memory_scope=body.get("memory_scope") or str(workspace),
-        )
-        result = await orch.run(intent)
-        return {
-            "ok": True,
-            "status": result.status,
-            "runs": result.runs,
-            "tasks": [
-                {
-                    "id": t.id,
-                    "description": t.description,
-                    "deps": t.deps,
-                    "status": t.status,
-                    "confidence": t.confidence,
-                    "result": (t.result or "")[:2000],
+        store = manager.orchestration_store
+        run_id = store.create_run(intent)
+        sync = bool(body.get("sync"))
+
+        def _build() -> "Orchestrator":
+            return Orchestrator(
+                provider=manager.provider,
+                model=body.get("model") or manager.model,
+                workspace=workspace,
+                approver=manager.inbox_approver(session_id, "cowork"),
+                max_parallel=int(body.get("max_parallel") or 1),
+                memory_scope=body.get("memory_scope") or str(workspace),
+                event_sink=lambda kind, payload: store.append_event(run_id, kind, payload),
+            )
+
+        async def _finalize(orch: "Orchestrator") -> dict[str, Any]:
+            try:
+                result = await orch.run(intent)
+                store.update_status(run_id, result.status)
+                return {
+                    "ok": True,
+                    "run_id": run_id,
+                    "status": result.status,
+                    "runs": result.runs,
+                    "tasks": [
+                        {
+                            "id": t.id,
+                            "description": t.description,
+                            "deps": t.deps,
+                            "status": t.status,
+                            "confidence": t.confidence,
+                            "result": (t.result or "")[:2000],
+                        }
+                        for t in result.plan.tasks
+                    ],
+                    "governance_report": result.governance_report,
+                    "session_id": session_id,
                 }
-                for t in result.plan.tasks
-            ],
-            "governance_report": result.governance_report,
-            "session_id": session_id,
-        }
+            except Exception as exc:  # surface failures via the run store
+                store.update_status(run_id, "failed", str(exc))
+                return {"ok": False, "run_id": run_id, "error": str(exc)}
+
+        if sync:
+            return await _finalize(_build())
+        import asyncio
+
+        asyncio.create_task(_finalize(_build()))
+        return {"ok": True, "run_id": run_id, "async": True}
+
+    @app.get("/v1/orchestrate/history")
+    def orchestrate_history() -> dict[str, Any]:
+        return {"runs": manager.orchestration_store.list_runs(limit=50)}
+
+    @app.get("/v1/orchestrate/{run_id}")
+    def orchestrate_run(run_id: str) -> dict[str, Any]:
+        run = manager.orchestration_store.get_run(run_id)
+        if not run:
+            return {"ok": False, "error": "run not found"}
+        return {"ok": True, **run}
 
     @app.get("/v1/personas")
     def personas() -> dict[str, Any]:

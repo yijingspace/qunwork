@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 import aisuite as ai
 
@@ -151,12 +151,21 @@ def build_executor_engine(
     return engine
 
 
-async def _run_engine_async(engine: TurnEngine, prompt: str) -> tuple[str, str]:
-    """Run a child engine and collect its final text + status (async context)."""
+async def _run_engine_async(
+    engine: TurnEngine,
+    prompt: str,
+    on_event: Optional[Callable[[str, dict], None]] = None,
+) -> tuple[str, str]:
+    """Run a child engine and collect its final text + status (async context).
+    `on_event` receives (kind, payload) for intermediate assistant text so the
+    caller can stream the worker's chain-of-thought (thought feed)."""
     report, status = "", "unknown"
     async for event in engine.run(prompt):
         if event.type == EventType.ASSISTANT_MESSAGE and event.data.get("text"):
-            report = event.data["text"]
+            text = event.data["text"]
+            report = text
+            if on_event:
+                on_event("worker_thought", {"text": text})
         elif event.type == EventType.TURN_END:
             status = event.data.get("status", "unknown")
         elif event.type == EventType.ERROR:

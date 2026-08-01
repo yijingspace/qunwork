@@ -18,7 +18,7 @@ import re
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from .governance import ESCALATE, NOP, PAUSE, REVERT, WARN, Governance, GovernanceCommand, GovernanceConfig
 from .memory_store import PersistentVectorMemory
@@ -99,8 +99,25 @@ class Orchestrator:
     memory_scope: Optional[str] = None  # persistent-memory scope (e.g. workspace path)
     memory_db: Optional[str] = None  # SQLite path for persistent memory (default workspace/.qunwork/memory.db)
     max_parallel: int = 1  # how many independent tasks run concurrently
+    event_sink: Optional[Callable[[str, dict], None]] = None  # (kind, payload) progress feed
     _runs: int = field(default=0, init=False)
     _run_seq: int = field(default=0, init=False)
+
+    def _emit(self, kind: str, payload: dict[str, Any]) -> None:
+        if self.event_sink is not None:
+            try:
+                self.event_sink(kind, payload)
+            except Exception:
+                pass
+
+    def _worker_feed(self, worker: str, task_id: str = "") -> Callable[[str, dict], None]:
+        """Wrap a worker engine's on_event into sink events (chain-of-thought feed)."""
+
+        def feed(kind: str, payload: dict[str, Any]) -> None:
+            if kind == "worker_thought":
+                self._emit("worker_thought", {"worker": worker, "task_id": task_id, **payload})
+
+        return feed
 
     # -- planning -----------------------------------------------------------
     async def _plan(self, intent: str) -> Plan:
@@ -131,7 +148,9 @@ class Orchestrator:
         if hints:
             parts.append("\nRelevant prior results (context only):\n" + "\n".join(hints))
         prompt = "\n".join(parts)
-        text, status = await _run_engine_async(engine, prompt)
+        text, status = await _run_engine_async(
+            engine, prompt, on_event=self._worker_feed("executor", task.id)
+        )
         if not text:
             raise RuntimeError(f"executor produced no result for {task.id} (status: {status})")
         return text
@@ -149,7 +168,9 @@ class Orchestrator:
             f"Executor's result:\n{result[:4000]}\n\n"
             "Validate the result against the task. Return the JSON verdict."
         )
-        text, status = await _run_engine_async(engine, prompt)
+        text, status = await _run_engine_async(
+            engine, prompt, on_event=self._worker_feed("reviewer", task.id)
+        )
         if not text:
             # No verdict → treat as accepted with low confidence rather than looping forever.
             return ReviewVerdict(accepted=True, reason=f"no verdict (status: {status})", confidence=0.3)
@@ -157,7 +178,18 @@ class Orchestrator:
 
     # -- main loop ----------------------------------------------------------
     async def run(self, intent: str) -> OrchestrationResult:
+        self._emit("run_started", {"intent": intent})
         plan = await self._plan(intent)
+        self._emit(
+            "plan_ready",
+            {
+                "goal": intent,
+                "tasks": [
+                    {"id": t.id, "description": t.description, "deps": t.deps}
+                    for t in plan.tasks
+                ],
+            },
+        )
         by_id = plan.by_id()
         gov = Governance(goal=intent, config=self.governance_config, embedder=self.embedder)
         self._run_seq += 1
@@ -176,6 +208,7 @@ class Orchestrator:
             """Run one task (execute + validate + update). Returns True if progress."""
             self._runs += 1
             task.status = "running"
+            self._emit("task_started", {"id": task.id, "description": task.description, "attempt": task.retries + 1})
             deps = [
                 f"[{d}] {by_id[d].result}"
                 for d in task.deps
@@ -192,9 +225,21 @@ class Orchestrator:
                 task.status = "pending" if task.retries < self.max_retries else "needs_human"
                 task.result = f"executor error: {exc}"
                 task.retries += 1
+                self._emit("task_result", {"id": task.id, "error": str(exc), "status": task.status})
                 return True
 
+            self._emit("task_result", {"id": task.id, "result": result[:2000]})
             verdict = await self._review(task, result)
+            self._emit(
+                "task_review",
+                {
+                    "id": task.id,
+                    "accepted": verdict.accepted,
+                    "confidence": verdict.confidence,
+                    "reason": verdict.reason,
+                    "needs_human": verdict.needs_human,
+                },
+            )
             task.confidence = verdict.confidence
             if verdict.accepted:
                 task.status = "done"
@@ -208,6 +253,7 @@ class Orchestrator:
                 task.result = result
                 task.retries += 1
             gov.record_step(task, result, verdict.accepted)
+            self._emit("task_done", {"id": task.id, "status": task.status, "confidence": task.confidence})
             if task.status == "done":
                 mem.add(
                     f"{task.description}\n→ {task.result[:500]}",
@@ -224,6 +270,7 @@ class Orchestrator:
             if self._runs % gov.config.check_every == 0:
                 cmd = gov.inspect(plan)
                 gov_log.append(f"[step {self._runs}] {cmd.action}: {cmd.reason} {cmd.metrics}")
+                self._emit("governance", {"step": self._runs, "action": cmd.action, "reason": cmd.reason, "metrics": cmd.metrics})
                 if cmd.action == REVERT:
                     tgt = gov.revert_target(plan)
                     if tgt is not None:
@@ -259,6 +306,7 @@ class Orchestrator:
         summary = "\n\n".join(
             f"[{t.id}] {t.description}\n{t.result}" for t in plan.tasks if t.result
         )
+        self._emit("run_completed", {"status": status, "runs": self._runs})
         return OrchestrationResult(
             intent=intent,
             plan=plan,

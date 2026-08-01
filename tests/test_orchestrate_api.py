@@ -43,11 +43,12 @@ def client(manager):
 
     from coworker.server.app import create_app
 
-    return TestClient(create_app(manager))
+    with TestClient(create_app(manager)) as c:
+        yield c
 
 
 def test_orchestrate_returns_task_dag(client):
-    r = client.post("/v1/orchestrate", json={"intent": "Write a report"})
+    r = client.post("/v1/orchestrate", json={"intent": "Write a report", "sync": True})
     assert r.status_code == 200
     data = r.json()
     assert data["ok"] is True
@@ -65,3 +66,56 @@ def test_orchestrate_requires_intent(client):
     assert r.status_code == 200
     assert r.json()["ok"] is False
     assert "intent" in r.json()["error"]
+
+
+def test_orchestrate_async_poll_and_history(tmp_path, monkeypatch):
+    """Async POST returns a run_id; progress events + final state are pollable."""
+    from coworker.server.manager import SessionManager
+
+    from coworker.server.app import create_app
+
+    monkeypatch.setenv("COWORKER_STATE_DIR", str(tmp_path / "state"))
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    provider = ScriptedProvider(
+        [
+            AssistantTurn(text='[{"id":"t0","description":"Write a report","deps":[]}]'),
+            AssistantTurn(text="thinking about the outline… report draft", finish_reason="stop"),
+            AssistantTurn(text='{"accepted":true,"confidence":0.9,"reason":"ok","needs_human":false}'),
+        ]
+    )
+    manager = SessionManager(data_dir=tmp_path / "data", provider=provider, workspace=str(ws))
+    from fastapi.testclient import TestClient
+
+    with TestClient(create_app(manager)) as client:
+        # async start
+        r = client.post("/v1/orchestrate", json={"intent": "Write a report"})
+        data = r.json()
+        assert data["ok"] and data.get("async") is True
+        run_id = data["run_id"]
+
+        # poll until completed (background task runs on the event loop via create_task)
+        import time
+
+        snap = None
+        for _ in range(20):
+            snap = client.get(f"/v1/orchestrate/{run_id}").json()
+            if snap["ok"] and snap["status"] != "running":
+                break
+            time.sleep(0.2)
+        assert snap["ok"] and snap["status"] == "completed"
+        kinds = [e["kind"] for e in snap["events"]]
+        assert "run_started" in kinds and "plan_ready" in kinds and "run_completed" in kinds
+        # chain-of-thought: the executor's intermediate message was streamed.
+        thoughts = [e for e in snap["events"] if e["kind"] == "worker_thought"]
+        assert thoughts and "thinking about the outline" in thoughts[0]["payload"]["text"]
+
+        # history lists the run
+        hist = client.get("/v1/orchestrate/history").json()
+        assert any(h["run_id"] == run_id for h in hist["runs"])
+
+
+def test_orchestrate_run_not_found(client):
+    r = client.get("/v1/orchestrate/does-not-exist")
+    assert r.status_code == 200
+    assert r.json()["ok"] is False

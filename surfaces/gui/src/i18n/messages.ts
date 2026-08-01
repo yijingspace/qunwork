@@ -285,4 +285,7 @@ export const zh: Messages = {
   "Swarm working…": "蜂群工作中…",
   "depends on": "依赖",
   "Governance report": "治理报告",
+  "Task plan": "任务计划",
+  "Worker thoughts": "Worker 思维链",
+  "History": "历史记录",
 };

@@ -180,6 +180,10 @@ class SessionManager:
         self.scheduler = Scheduler(
             self.task_store, self._run_scheduled_task, extra_tick=self.resume_due_wakes
         )
+        # Multi-agent orchestration: run store for real-time progress + history.
+        from ..orchestrator.run_store import OrchestrationRunStore
+
+        self.orchestration_store = OrchestrationRunStore(base / "orchestration.db")
         # Personas: registry + lifecycle state under this manager's data dir. Installed as the
         # process singleton so agents.get_agent resolves persona ids (incl. third-party) here.
         self.personas = PersonaRegistry(state_path=base / "personas.json")

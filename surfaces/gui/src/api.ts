@@ -586,6 +586,8 @@ export interface OrchestrationResponse {
   status: string;
   runs: number;
   error?: string;
+  run_id?: string;
+  async?: boolean;
   tasks: OrchestratedTask[];
   governance_report: string;
   session_id?: string;
@@ -593,7 +595,7 @@ export interface OrchestrationResponse {
 
 export async function orchestrate(
   intent: string,
-  opts?: { workspace?: string; maxParallel?: number; memoryScope?: string },
+  opts?: { workspace?: string; maxParallel?: number; memoryScope?: string; sync?: boolean },
 ): Promise<OrchestrationResponse> {
   const res = await fetch(`${httpBase()}/v1/orchestrate`, {
     method: "POST",
@@ -603,8 +605,37 @@ export async function orchestrate(
       workspace: opts?.workspace,
       max_parallel: opts?.maxParallel,
       memory_scope: opts?.memoryScope,
+      sync: opts?.sync,
     }),
   });
+  return await res.json();
+}
+
+export interface OrchestrationRunSnapshot {
+  ok: boolean;
+  error?: string;
+  run_id: string;
+  intent: string;
+  status: string;
+  final?: string;
+  events: { kind: string; payload: Record<string, unknown> }[];
+}
+
+export async function getOrchestrateRun(runId: string): Promise<OrchestrationRunSnapshot> {
+  const res = await fetch(`${httpBase()}/v1/orchestrate/${runId}`);
+  return await res.json();
+}
+
+export interface OrchestrationHistoryItem {
+  run_id: string;
+  intent: string;
+  status: string;
+  created_at: number;
+  updated_at: number;
+}
+
+export async function getOrchestrateHistory(): Promise<{ runs: OrchestrationHistoryItem[] }> {
+  const res = await fetch(`${httpBase()}/v1/orchestrate/history`);
   return await res.json();
 }
 
