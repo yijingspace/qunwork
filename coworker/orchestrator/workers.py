@@ -18,7 +18,6 @@ from typing import Any, Optional
 
 import aisuite as ai
 
-from ..agent import build_engine
 from ..agents import get_agent
 from ..engine import TurnEngine
 from ..events import EventType
@@ -133,6 +132,8 @@ def build_executor_engine(
     model_settings: Optional[dict[str, Any]] = None,
 ) -> TurnEngine:
     """Executor with the full toolset + the caller's approval gate."""
+    from ..agent import build_engine  # lazy: avoids circular import (agent ↔ orchestrator)
+
     ws = str(Path(workspace).resolve())
     Path(ws).mkdir(parents=True, exist_ok=True)
     engine = build_engine(

@@ -207,3 +207,26 @@ async def test_governance_revert_redispatch_low_confidence(tmp_path):
     # The re-dispatched t0 finished with the high-confidence result.
     t0 = result.plan.tasks[0]
     assert t0.done and "final good intro" in t0.result
+
+
+def test_orchestrate_mounted_on_knowledge_engine(tmp_path):
+    """The orchestrate tool is mounted into knowledge-family engines (desktop
+    integration): a user can delegate a whole goal to the worker swarm in chat."""
+    from coworker.agent import build_engine
+    from coworker.agents import get_agent
+
+    class P(ProviderClient):
+        def complete(self, *, model, messages, tools=None, **settings):
+            return AssistantTurn(text="ok", finish_reason="stop")
+
+        def capabilities(self, model):
+            return ModelCapabilities()
+
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    engine = build_engine(agent=get_agent("cowork"), workspace=str(ws), provider=P())
+    names = engine.registry.names()
+    assert "orchestrate" in names  # knowledge family can fan out to the swarm
+    # Code family keeps its explorer-only delegation.
+    code_engine = build_engine(agent=get_agent("code"), workspace=str(ws), provider=P())
+    assert "orchestrate" not in code_engine.registry.names()

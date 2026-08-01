@@ -35,6 +35,7 @@ from .tools import ToolRegistry
 from .tools.ask import ask_user_tool
 from .tools.directories import request_directory_tool
 from .tools.plan import propose_plan_tool
+from .orchestrator import orchestration_tools
 from .tools.subagent import explorer_tools
 from .web import make_web_fetch_tool, make_web_search_tool
 from .workspace_trust import WorkspaceTrustStore
@@ -239,6 +240,20 @@ def build_engine(
     # on-completion / on-event). The scheduler tick resumes due wakes.
     if wake_store is not None and session_id and agent.family == "knowledge":
         registry.register_all(selfwake_tools(wake_store, session_id))
+
+    # Multi-agent orchestration: knowledge surfaces with a workspace can delegate a whole
+    # goal to a worker swarm (planner -> executors -> reviewer, governed). The swarm's
+    # executor writes still flow through this session's approval gate (approver).
+    if ws is not None and agent.family == "knowledge":
+        registry.register_all(
+            orchestration_tools(
+                workspace=ws,
+                provider=provider,
+                model=model,
+                model_settings=model_settings,
+                approver=approver,
+            )
+        )
 
     instructions = f"{agent.system_prompt}\n\n{_NARRATION_GUIDANCE}"
     if ws is not None:
