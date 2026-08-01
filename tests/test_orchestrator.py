@@ -528,3 +528,37 @@ async def test_report_persisted_to_intent_named_file(tmp_path):
     target = tmp_path / "ws" / "probe_test_1.md"
     assert target.is_file()
     assert "固态电池" in target.read_text(encoding="utf-8")
+
+
+def test_final_report_filters_process_text_and_stitches_products():
+    """A timed-out consolidator's plan sentence must never ship; real product
+    fragments are stitched into the deliverable instead."""
+    from coworker.orchestrator.models import Plan, Task, OrchestrationResult
+
+    plan = Plan(
+        goal="probe",
+        tasks=[
+            Task(id="t0", description="写开头", status="done", result="固态电池是以固体电解质取代液态电解质的电池。"),
+            Task(id="t1", description="写中间", status="done", result="其能量密度可达500Wh/kg以上。"),
+            Task(id="t2", description="拼接", status="done", result="三个片段已齐备,现在拼接为连贯文本并写入 probe_test.md。"),
+        ],
+    )
+    result = OrchestrationResult(intent="probe", plan=plan, status="completed")
+    report = result.final_report()
+    assert "现在拼接" not in report  # process text filtered out
+    assert "固态电池是以固体电解质" in report  # real fragments stitched in
+
+
+def test_final_report_uses_consolidation_output_when_real():
+    """A real (long) consolidation output is used as-is."""
+    from coworker.orchestrator.models import Plan, Task, OrchestrationResult
+
+    plan = Plan(
+        goal="report",
+        tasks=[
+            Task(id="t0", description="章节", status="done", result="第一章内容……"),
+            Task(id="t1", description="汇总", status="done", result="完整报告" + "详细内容" * 120),
+        ],
+    )
+    result = OrchestrationResult(intent="report", plan=plan, status="completed")
+    assert result.final_report().startswith("完整报告")

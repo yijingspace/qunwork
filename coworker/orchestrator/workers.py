@@ -61,6 +61,10 @@ knowledge. Only after the draft is written may you verify a few key figures onli
 to a file, STOP immediately and report the result. Do not keep re-reading files, \
 re-searching, or polishing — extra turns just burn the task budget and the timeout \
 drops your finished work.
+- YOUR FINAL MESSAGE IS THE DELIVERABLE ITSELF: the finished content, not a report \
+about it. Never end with process sentences like \"I will now write…\", \"now stitching \
+the fragments…\", \"verifying…\" — if you still need to write/stitch, DO it inside this \
+same turn and end with the product text.
 - Web/search are never a substitute for writing: cap them at 2 calls per task, each \
 at most once per query. If a call fails or is slow, proceed — mark uncertain figures \
 with \"~\" plus a note.

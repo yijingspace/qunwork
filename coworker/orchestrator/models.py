@@ -9,6 +9,39 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+# Process/planning utterances that must never be shipped as the deliverable.
+_PROCESS_MARKERS = (
+    "正在",
+    "即将",
+    "我准备",
+    "现在拼接",
+    "接下来",
+    "然后",
+    "用 shell",
+    "用shell",
+    "核验",
+    "确认",
+    "开始写",
+    "准备写",
+    "将写入",
+    "计划",
+    "Let me",
+    "I will",
+    "Now",
+    "checking",
+    "verifying",
+)
+
+
+def _is_process_text(text: str) -> bool:
+    """Heuristic: is this a process/plan sentence rather than a finished product?"""
+    t = text.strip()
+    if t.startswith("⚠ task timed out"):
+        return True
+    if len(t) >= 300:  # long outputs are almost certainly real content
+        return False
+    return any(m in t for m in _PROCESS_MARKERS)
+
 
 @dataclass
 class Task:
@@ -74,12 +107,26 @@ class OrchestrationResult:
     report_path: str = ""  # file the assembled report was written to (if any)
 
     def final_report(self) -> str:
-        """The finished deliverable: the consolidation task's full output if it
-        exists, else the assembled task summary."""
+        """The finished deliverable — with process-text filtering: a timed-out
+        consolidator's last message is often a plan sentence ("now stitching…"),
+        which must never be shipped as the deliverable. Real product fragments
+        are stitched instead."""
         done = [t for t in self.plan.tasks if t.done and t.result]
-        if done:
-            return done[-1].result
-        return self.summary
+        if not done:
+            return self.summary
+        products = [t for t in done if not _is_process_text(t.result)]
+        if not products:
+            # every result is process text / placeholders — keep any real fragments
+            real = [t.result for t in done if not t.result.startswith("⚠ task timed out")]
+            return "\n\n".join(real) if real else done[-1].result
+        if len(products) == 1:
+            return products[0].result
+        # consolidation task normally carries the full report; if it is short or
+        # process-like, stitch the product fragments into the deliverable instead
+        last = products[-1]
+        if len(last.result) >= 200:
+            return last.result
+        return "\n\n".join(t.result for t in products)
 
     def task_report(self) -> str:
         lines = [f"Goal: {self.plan.goal}"]
