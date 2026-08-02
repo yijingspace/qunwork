@@ -80,7 +80,7 @@ from ..providers import (
 )
 from ..secrets import SecretStore, state_dir
 from ..sessions import SessionRecord
-from ..skills import SkillLoader
+from ..skills import SkillLoader  # noqa: F401  (kept for API surface compatibility)
 
 _SCOPES = {s.value for s in Scope}
 
@@ -132,6 +132,23 @@ class SessionManager:
         self.audit_store = AuditStore(base / "coworker.db")
         self.session_store = ConversationStore(base)
         self.session_store.canonicalize_workspaces()  # collapse /tmp vs /private/tmp etc.
+        from ..skills.base import SkillLoader
+        from ..skills.market import SkillMarketStore
+        from ..knowledge.store import KnowledgeStore
+
+        self.skill_loader = SkillLoader(
+            [state_dir() / "skills"]
+            + (
+                [Path(self.default_workspace) / ".coworker" / "skills"]
+                if self.default_workspace
+                else []
+            )
+        )
+        self.skill_market = SkillMarketStore(base / "skills_market.db")
+        self.knowledge = KnowledgeStore(
+            base / "knowledge.db",
+            workspace=self.default_workspace,
+        )
         if self.default_workspace:
             self.session_store.touch_workspace(self.default_workspace)
         self._engines: dict[str, TurnEngine] = {}
@@ -3457,8 +3474,63 @@ class SessionManager:
         return _list_agents()
 
     def list_skills(self) -> list[dict[str, Any]]:
-        loader = SkillLoader([state_dir() / "skills"])
-        return loader.catalog()
+        """Catalog with extended metadata + marketplace stats, newest first."""
+        stats = self.skill_market.all_stats()
+        rows = [
+            {**row, **stats.get(row["name"], {"install_count": 0, "rating": None, "rating_count": 0})}
+            for row in self.skill_loader.catalog()
+        ]
+        return sorted(rows, key=lambda r: (-(r.get("install_count") or 0), r["name"]))
+
+    def skill_detail(self, name: str) -> Optional[dict[str, Any]]:
+        row = self.skill_loader.detail(name)
+        if row is None:
+            return None
+        return {**row, **self.skill_market.stats(name)}
+
+    def skill_export_zip(self, name: str) -> Optional[Path]:
+        import tempfile
+
+        dest = Path(tempfile.gettempdir()) / f"qunwork-skill-{name}.zip"
+        return self.skill_loader.export_skill(name, dest)
+
+    def skill_import_zip(self, zip_path: Path) -> Optional[dict[str, Any]]:
+        skill = self.skill_loader.import_skill(zip_path)
+        if skill is None:
+            return None
+        self.skill_market.record_install(skill.name)
+        return {**skill.catalog_row(), **self.skill_market.stats(skill.name)}
+
+    def skill_rate(self, name: str, score: float) -> Optional[dict[str, Any]]:
+        if self.skill_loader.get(name) is None:
+            return None
+        return self.skill_market.rate(name, score)
+
+    # -- knowledge file library --------------------------------------------
+    def knowledge_list(self, workspace: Optional[str] = None, limit: int = 100) -> list[dict[str, Any]]:
+        ws = self.resolve_workspace(workspace) or self.default_workspace
+        return self.knowledge.list_items(workspace=ws, limit=limit)
+
+    def knowledge_add(
+        self, title: str, content: str, workspace: Optional[str] = None
+    ) -> dict[str, Any]:
+        ws = self.resolve_workspace(workspace) or self.default_workspace
+        item_id = self.knowledge.add_text(title, content, workspace=ws)
+        return {"id": item_id, "title": title, "ok": True}
+
+    def knowledge_delete(self, item_id: int) -> bool:
+        return self.knowledge.delete(item_id)
+
+    def knowledge_scan(self, workspace: Optional[str] = None) -> dict[str, Any]:
+        ws = self.resolve_workspace(workspace) or self.default_workspace
+        summary = self.knowledge.scan_workspace(ws)
+        return {**summary, "workspace": ws}
+
+    def knowledge_search(
+        self, query: str, workspace: Optional[str] = None, k: int = 5
+    ) -> list[dict[str, Any]]:
+        ws = self.resolve_workspace(workspace) or self.default_workspace
+        return self.knowledge.search(query, k=k, workspace=ws)
 
     def list_memory(self) -> list[dict[str, Any]]:
         return [

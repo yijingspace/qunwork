@@ -653,6 +653,99 @@ def create_app(manager: SessionManager) -> FastAPI:
     def skills() -> dict[str, Any]:
         return {"skills": manager.list_skills()}
 
+    @app.get("/v1/skills/{name}")
+    def skill_detail(name: str) -> dict[str, Any]:
+        row = manager.skill_detail(name)
+        if row is None:
+            return {"ok": False, "error": f"unknown skill: {name}"}
+        return {"ok": True, **row}
+
+    @app.post("/v1/skills/import")
+    def skill_import(body: dict) -> dict[str, Any]:
+        from ..skills.base import SkillLoader as _SL
+
+        zip_b64 = body.get("zip_base64") or ""
+        if not zip_b64:
+            return {"ok": False, "error": "zip_base64 is required"}
+        import base64
+        import tempfile
+        import zipfile
+        from pathlib import Path
+
+        raw = base64.b64decode(zip_b64)
+        tmp = Path(tempfile.gettempdir()) / f"qunwork-import-{secrets.token_hex(6)}.zip"
+        tmp.write_bytes(raw)
+        try:
+            try:
+                skill = manager.skill_import_zip(tmp)
+            except (zipfile.BadZipFile, OSError, ValueError):
+                skill = None
+        finally:
+            tmp.unlink(missing_ok=True)
+        if skill is None:
+            return {"ok": False, "error": "invalid skill zip (no SKILL.md found)"}
+        return {"ok": True, **skill}
+
+    @app.post("/v1/skills/export")
+    def skill_export(body: dict) -> dict[str, Any]:
+        name = str(body.get("name") or "").strip()
+        if not name:
+            return {"ok": False, "error": "name is required"}
+        zip_path = manager.skill_export_zip(name)
+        if zip_path is None:
+            return {"ok": False, "error": f"unknown skill: {name}"}
+        import base64
+
+        return {
+            "ok": True,
+            "name": name,
+            "zip_base64": base64.b64encode(zip_path.read_bytes()).decode(),
+            "filename": zip_path.name,
+        }
+
+    @app.post("/v1/skills/{name}/rate")
+    def skill_rate(name: str, body: dict) -> dict[str, Any]:
+        score = float(body.get("score") or 0)
+        stats = manager.skill_rate(name, score)
+        if stats is None:
+            return {"ok": False, "error": f"unknown skill: {name}"}
+        return {"ok": True, **stats}
+
+    @app.delete("/v1/skills/{name}")
+    def skill_delete(name: str) -> dict[str, Any]:
+        removed = manager.skill_loader.delete_skill(name)
+        return {"ok": removed, "name": name} if removed else {"ok": False, "error": f"unknown skill: {name}"}
+
+    # -- knowledge file library --------------------------------------------
+    @app.get("/v1/knowledge")
+    def knowledge_list(request: Request) -> dict[str, Any]:
+        ws = request.query_params.get("workspace") or None
+        return {"items": manager.knowledge_list(workspace=ws)}
+
+    @app.post("/v1/knowledge/scan")
+    def knowledge_scan() -> dict[str, Any]:
+        return {"ok": True, **manager.knowledge_scan()}
+
+    @app.post("/v1/knowledge")
+    def knowledge_add(body: dict) -> dict[str, Any]:
+        title = str(body.get("title") or "").strip()
+        content = str(body.get("content") or "")
+        if not title or not content:
+            return {"ok": False, "error": "title and content are required"}
+        return {"ok": True, **manager.knowledge_add(title, content)}
+
+    @app.delete("/v1/knowledge/{item_id}")
+    def knowledge_delete(item_id: int) -> dict[str, Any]:
+        return {"ok": manager.knowledge_delete(item_id), "id": item_id}
+
+    @app.get("/v1/knowledge/search")
+    def knowledge_search(request: Request) -> dict[str, Any]:
+        query = (request.query_params.get("q") or "").strip()
+        if not query:
+            return {"ok": False, "error": "q is required", "results": []}
+        results = manager.knowledge_search(query, k=5)
+        return {"ok": True, "query": query, "results": results}
+
     @app.get("/v1/workspaces/recent")
     def recent_workspaces() -> dict[str, Any]:
         return {"workspaces": manager.recent_workspaces()}

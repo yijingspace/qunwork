@@ -136,7 +136,11 @@ interface Props {
   onOpenScheduled: () => void;
   // Multi-agent swarm panel.
   onOpenSwarm: () => void;
+  onOpenSkills: () => void;
+  onOpenKnowledge: () => void;
   swarmActive: boolean;
+  skillsActive: boolean;
+  knowledgeActive: boolean;
   // Scheduled-band row click: open the Automations surface ON that automation (UX-023).
   onOpenAutomation: (id: string) => void;
   onOpenIntegrations: () => void;
@@ -1058,6 +1062,32 @@ export function Sidebar(props: Props) {
         >
           <span className="text-[14px]">🐝</span>
           <span className="flex-1">{t("Multi-agent swarm")}</span>
+        </button>
+      </div>
+      <div className="px-2.5 mt-1">
+        <button
+          className={
+            "w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-[13px] text-left hover:bg-paper hover:text-ink " +
+            (props.skillsActive ? "text-ink bg-paper" : "text-muted")
+          }
+          data-testid="nav-skills"
+          onClick={props.onOpenSkills}
+        >
+          <span className="text-[14px]">🧩</span>
+          <span className="flex-1">{t("Skill marketplace")}</span>
+        </button>
+      </div>
+      <div className="px-2.5 mt-1">
+        <button
+          className={
+            "w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-[13px] text-left hover:bg-paper hover:text-ink " +
+            (props.knowledgeActive ? "text-ink bg-paper" : "text-muted")
+          }
+          data-testid="nav-knowledge"
+          onClick={props.onOpenKnowledge}
+        >
+          <span className="text-[14px]">📚</span>
+          <span className="flex-1">{t("Knowledge library")}</span>
         </button>
       </div>
       <div className="flex-1 overflow-y-auto px-2.5 mt-3 pb-2">

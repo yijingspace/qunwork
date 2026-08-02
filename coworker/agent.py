@@ -286,6 +286,16 @@ def build_engine(
         # UTF-8-safe Chinese text stats — replaces workers' fragile PowerShell
         # inline-script attempts (ANSI mojibake burned whole task budgets).
         registry.register(text_stats_tool())
+        # Knowledge file library: agent can search the workspace's indexed docs
+        # and manual knowledge entries via knowledge_search.
+        from .knowledge import knowledge_tools
+
+        registry.register_all(
+            knowledge_tools(
+                workspace=ws,
+                db_path=Path(ws) / ".qunwork" / "knowledge.db",
+            )
+        )
 
     instructions = f"{agent.system_prompt}\n\n{_NARRATION_GUIDANCE}"
     if ws is not None:

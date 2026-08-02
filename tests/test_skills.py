@@ -68,9 +68,11 @@ def test_skill_loader_catalog_and_load(tmp_path):
     )
     loader = SkillLoader([skills_dir])
 
-    assert loader.catalog() == [
-        {"name": "pdf", "description": "extract text from PDFs"}
-    ]
+    row = loader.catalog()[0]
+    assert row["name"] == "pdf"
+    assert row["description"] == "extract text from PDFs"
+    assert row["version"] == "0.1.0"
+    assert row["category"] == "general"
     assert "pdf: extract text from PDFs" in skill_catalog_text(loader)
 
     reg = ToolRegistry()

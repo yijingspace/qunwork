@@ -619,6 +619,126 @@ export async function orchestrate(
   return await res.json();
 }
 
+// -- skills marketplace ------------------------------------------------------
+
+export interface SkillInfo {
+  name: string;
+  description: string;
+  version: string;
+  category: string;
+  author: string;
+  tags: string[];
+  updated_at: string | null;
+  install_count: number;
+  rating: number | null;
+  rating_count: number;
+}
+
+export async function listSkills(): Promise<{ skills: SkillInfo[] }> {
+  const res = await fetch(`${httpBase()}/v1/skills`);
+  return await res.json();
+}
+
+export async function rateSkill(
+  name: string,
+  score: number,
+): Promise<{ ok: boolean; rating?: number; rating_count?: number; error?: string }> {
+  const res = await fetch(`${httpBase()}/v1/skills/${encodeURIComponent(name)}/rate`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ score }),
+  });
+  return await res.json();
+}
+
+export async function exportSkill(name: string): Promise<{ ok: boolean; zip_base64?: string; error?: string }> {
+  const res = await fetch(`${httpBase()}/v1/skills/export`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name }),
+  });
+  return await res.json();
+}
+
+export async function importSkill(
+  zipBase64: string,
+): Promise<{ ok: boolean; name?: string; error?: string }> {
+  const res = await fetch(`${httpBase()}/v1/skills/import`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ zip_base64: zipBase64 }),
+  });
+  return await res.json();
+}
+
+export async function deleteSkill(name: string): Promise<{ ok: boolean; error?: string }> {
+  const res = await fetch(`${httpBase()}/v1/skills/${encodeURIComponent(name)}`, {
+    method: "DELETE",
+  });
+  return await res.json();
+}
+
+// -- knowledge file library --------------------------------------------------
+
+export interface KnowledgeItem {
+  id: number;
+  kind: "manual" | "file";
+  source_path: string | null;
+  title: string;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface KnowledgeHit {
+  item_id: number;
+  chunk_index: number;
+  content: string;
+  score: number;
+  kind: string;
+  title: string;
+  source_path: string | null;
+}
+
+export async function listKnowledge(): Promise<{ items: KnowledgeItem[] }> {
+  const res = await fetch(`${httpBase()}/v1/knowledge`);
+  return await res.json();
+}
+
+export async function scanKnowledge(): Promise<{
+  ok: boolean;
+  added?: number;
+  skipped?: number;
+  failed?: number;
+  error?: string;
+}> {
+  const res = await fetch(`${httpBase()}/v1/knowledge/scan`, { method: "POST" });
+  return await res.json();
+}
+
+export async function addKnowledge(
+  title: string,
+  content: string,
+): Promise<{ ok: boolean; id?: number; error?: string }> {
+  const res = await fetch(`${httpBase()}/v1/knowledge`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ title, content }),
+  });
+  return await res.json();
+}
+
+export async function deleteKnowledge(id: number): Promise<{ ok: boolean }> {
+  const res = await fetch(`${httpBase()}/v1/knowledge/${id}`, { method: "DELETE" });
+  return await res.json();
+}
+
+export async function searchKnowledge(
+  query: string,
+): Promise<{ ok: boolean; results: KnowledgeHit[]; error?: string }> {
+  const res = await fetch(`${httpBase()}/v1/knowledge/search?q=${encodeURIComponent(query)}`);
+  return await res.json();
+}
+
 export interface OrchestrationRunSnapshot {
   ok: boolean;
   error?: string;
