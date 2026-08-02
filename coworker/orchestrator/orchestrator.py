@@ -527,6 +527,10 @@ class Orchestrator:
                 out_dir.mkdir(parents=True, exist_ok=True)
                 path = out_dir / f"{_time.strftime('%Y%m%d-%H%M%S')}-{slug}.md"
             path.write_text(report, encoding="utf-8")
+            # verify the write actually landed with the right content — an
+            # executor's "claimed success" must never mask an empty/hollow file.
+            if path.read_text(encoding="utf-8").strip() != report.strip():
+                path.write_text(report, encoding="utf-8")
             result.report_path = str(path)
             self._emit("report_saved", {"path": str(path), "status": result.status})
         except OSError:

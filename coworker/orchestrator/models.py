@@ -54,13 +54,24 @@ _TAIL_SHELL = (
     "字符数",
     "字数",
     "来源标注",
+    "已写入",
+    "已保存",
+    "草稿文件",
+    "读回核验",
+    "验收口径",
+    "衔接说明",
+    "内容要素",
+    "定义要素",
+    "独立完整",
+    "纯成品正文",
+    "草稿已保存",
 )
 
 
 def clean_deliverable(text: str) -> str:
     """Strip the delivery shell an executor may wrap around the product:
-    a '**Task [t0] 交付…**' header and trailing meta lines (字符数/核对结果…),
-    leaving the pure body text."""
+    a '**Task [t0] 交付…**' header, artifact links, and trailing meta lines
+    (字符数/核对结果/已写入…), leaving the pure body text."""
     import re
 
     t = re.sub(
@@ -68,11 +79,20 @@ def clean_deliverable(text: str) -> str:
         "",
         text,
     )
+    # artifact/file links -> bare text
+    t = re.sub(r"\[([^\]]*)\]\((?:artifact|file|attachment):[^)]*\)", r"\1", t)
+    # drop markdown blockquotes around the body (" > 正文")
+    t = re.sub(r"(?m)^\s*>\s?", "", t)
     lines = []
     for ln in t.splitlines():
-        if any(m in ln for m in _TAIL_SHELL) and len(ln) < 160:
+        s = ln.strip()
+        if not s:
             continue
-        lines.append(ln)
+        if any(m in s for m in _TAIL_SHELL) and len(s) < 160:
+            continue
+        if s.startswith(("- ", "* ", "**")):
+            continue  # bullet/list/emphasis meta lines
+        lines.append(s)
     return "\n".join(lines).strip()
 
 

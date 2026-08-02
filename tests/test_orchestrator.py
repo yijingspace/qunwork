@@ -660,3 +660,25 @@ def test_clean_thought_normalizes_worker_feeds():
     assert "Task [t0] 交付" not in e
     assert "artifact" not in e and "```" not in e
     assert "正文内容" in e
+
+
+def test_clean_deliverable_handles_n11_style_worker_output():
+    """N=11-shaped worker results (delivery shell + bullets + notes around a
+    body line) are distilled to the pure body text."""
+    from coworker.orchestrator.models import Plan, Task, OrchestrationResult, clean_deliverable
+
+    raw = (
+        "**Task [t0] 交付：开头段（约30字）**\n\n"
+        "> 固态电池是以固态电解质替代传统液态电解液和隔膜的全新电池形态。\n\n"
+        "- **字数**：30 个汉字（不含标点），符合要求。\n"
+        "- **内容**：点明三大组成……\n"
+        "- **衔接**：由引入自然过渡……\n"
+        "- 已写入 [t0_草稿.md](artifact:t0_草稿.md)。\n"
+        "（全文共 30 个汉字，纯说明正文。）"
+    )
+    cleaned = clean_deliverable(raw)
+    assert "Task [t0] 交付" not in cleaned
+    assert "字数" not in cleaned and "已写入" not in cleaned and "artifact" not in cleaned
+    assert "固态电池是以固态电解质" in cleaned  # body preserved
+    # 正文只保留主体句
+    assert len(cleaned) < 60
