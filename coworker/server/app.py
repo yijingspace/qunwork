@@ -284,6 +284,13 @@ def create_app(manager: SessionManager) -> FastAPI:
                 ),
                 memory_scope=body.get("memory_scope") or str(workspace),
                 event_sink=lambda kind, payload: store.append_event(run_id, kind, payload),
+                # Engineering-style executor (code persona) for programming tasks;
+                # 'cowork' (default) is the generalist. Validated in _build().
+                executor_agent=(
+                    str(body["executor_agent"])
+                    if body.get("executor_agent") in ("cowork", "code")
+                    else "cowork"
+                ),
             )
 
         async def _finalize(orch: "Orchestrator") -> dict[str, Any]:
@@ -713,7 +720,7 @@ def create_app(manager: SessionManager) -> FastAPI:
 
     @app.delete("/v1/skills/{name}")
     def skill_delete(name: str) -> dict[str, Any]:
-        removed = manager.skill_loader.delete_skill(name)
+        removed = manager.skill_delete(name)
         return {"ok": removed, "name": name} if removed else {"ok": False, "error": f"unknown skill: {name}"}
 
     # -- knowledge file library --------------------------------------------

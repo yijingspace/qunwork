@@ -137,3 +137,43 @@ async def test_parallel_execution_runs_independent_tasks_concurrently(tmp_path):
     batch1 = hints[1:5]  # two executors + two reviewers
     assert "A" in batch1 and "B" in batch1
     assert hints.index("C") > hints.index("B")
+
+
+async def test_code_executor_agent_runs_engineering_task(tmp_path):
+    """executor_agent='code' builds the code-persona engine as executor and
+    completes an engineering-style task end to end."""
+    from coworker.orchestrator.orchestrator import Orchestrator
+
+    class CodeProbe(ProviderClient):
+        def __init__(self):
+            self.planned = False
+
+        def complete(self, *, model, messages, tools=None, **settings):
+            last = str((messages or [{}])[-1].get("content", ""))
+            if "Validate the result" in last:
+                return AssistantTurn(text='{"accepted":true,"confidence":0.9,"reason":"ok","needs_human":false}')
+            if not self.planned:
+                self.planned = True
+                return AssistantTurn(
+                    text='[{"id":"t0","description":"Implement the module","deps":[]}]'
+                )
+            return AssistantTurn(text="def util(): return 42", finish_reason="stop")
+
+        def capabilities(self, model):
+            return ModelCapabilities()
+
+    provider = CodeProbe()
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    orch = Orchestrator(
+        provider=provider,
+        model="m",
+        workspace=str(ws),
+        executor_agent="code",
+        governance_config=None,
+        max_parallel=1,
+    )
+    result = await orch.run("Write a Python util module")
+    assert result.status == "completed"
+    assert result.plan.tasks[0].done
+    assert "42" in result.plan.tasks[0].result

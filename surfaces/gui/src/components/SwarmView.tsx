@@ -103,6 +103,7 @@ export function SwarmView({ onBack, workspace }: { onBack: () => void; workspace
   const [intent, setIntent] = useState("");
   const [maxParallel, setMaxParallel] = useState(4);
   const [timeoutSeconds, setTimeoutSeconds] = useState(300);
+  const [executorAgent, setExecutorAgent] = useState<"cowork" | "code">("cowork");
   const [busy, setBusy] = useState(false);
   const [runId, setRunId] = useState<string | null>(null);
   const [status, setStatus] = useState<string | null>(null);
@@ -199,6 +200,7 @@ export function SwarmView({ onBack, workspace }: { onBack: () => void; workspace
         workspace: ws || undefined,
         maxParallel,
         timeoutSeconds,
+        executorAgent,
       });
       if (!mounted.current) return;
       if (!res.ok || !res.run_id) {
@@ -319,6 +321,17 @@ export function SwarmView({ onBack, workspace }: { onBack: () => void; workspace
         />
         {/* swarm config */}
         <div className="flex items-center gap-4 mt-2 flex-wrap">
+          <label className="flex items-center gap-1.5 text-[12px] text-muted">
+            {t("Executor")}
+            <select
+              value={executorAgent}
+              onChange={(e) => setExecutorAgent(e.target.value === "code" ? "code" : "cowork")}
+              className="rounded border border-line bg-paper px-1.5 py-0.5 text-[12px] outline-none"
+            >
+              <option value="cowork">{t("Generalist")}</option>
+              <option value="code">{t("Code engineer")}</option>
+            </select>
+          </label>
           <label className="flex items-center gap-1.5 text-[12px] text-muted">
             {t("Max parallel")}
             <input

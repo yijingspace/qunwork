@@ -324,6 +324,9 @@ export const zh: Messages = {
     "描述目标,例如:撰写市场报告,包含调研、起草和评审步骤…",
   "Swarm running…": "蜂群运行中…",
   "Run swarm": "运行蜂群",
+  "Executor": "执行角色",
+  "Generalist": "通用执行",
+  "Code engineer": "工程化编程(Code)",
   "Status": "状态",
   "steps": "步",
   "Send a goal above — the swarm will split it into tasks, run them, validate and converge.":

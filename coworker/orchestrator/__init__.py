@@ -89,6 +89,7 @@ def orchestration_tools(
     model: str,
     model_settings: Optional[dict[str, Any]] = None,
     approver: Optional[Any] = None,
+    executor_agent: str = "cowork",
 ) -> list:
     """Tool-set entry: exposes `orchestrate` to a parent engine (like `explore`)."""
 
@@ -124,6 +125,7 @@ def orchestration_tools(
             memory_scope=str(workspace),
             approver=approver,
             event_sink=lambda kind, payload: store.append_event(run_id, kind, payload),
+            executor_agent=executor_agent,
         )
         store.update_status(run_id, result.status, final=result.final_report())
         out: dict[str, Any] = {

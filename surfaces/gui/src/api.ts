@@ -602,6 +602,7 @@ export async function orchestrate(
     memoryScope?: string;
     sync?: boolean;
     timeoutSeconds?: number;
+    executorAgent?: "cowork" | "code";
   },
 ): Promise<OrchestrationResponse> {
   const res = await fetch(`${httpBase()}/v1/orchestrate`, {
@@ -614,6 +615,7 @@ export async function orchestrate(
       memory_scope: opts?.memoryScope,
       sync: opts?.sync,
       timeout_seconds: opts?.timeoutSeconds,
+      executor_agent: opts?.executorAgent,
     }),
   });
   return await res.json();

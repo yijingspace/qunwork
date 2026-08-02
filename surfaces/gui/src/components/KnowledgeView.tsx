@@ -82,7 +82,7 @@ export default function KnowledgeView() {
     try {
       const path = await pickFolderViaServer();
       if (!path) {
-        flash(t("未选择文件夹"));
+        flash(t("No folder selected"));
         return;
       }
       setImportingFolder(true);
@@ -116,7 +116,7 @@ export default function KnowledgeView() {
         </div>
         <div className="flex items-center gap-2">
           <button className="btn-secondary" disabled={importingFolder} onClick={handleImportFolder}>
-            {importingFolder ? t("导入中…") : t("导入文件夹")}
+            {importingFolder ? t("Importing…") : t("Import folder")}
           </button>
           <button className="btn-secondary" disabled={scanning} onClick={handleScan}>
             {scanning ? t("Scanning…") : t("Scan workspace")}

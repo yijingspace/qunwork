@@ -80,6 +80,42 @@ def test_skill_import_rejects_invalid_zip(client):
     assert r.json()["ok"] is False
 
 
+def test_skill_import_delete_refreshes_live_engine_loaders(client, tmp_path):
+    """A running session's engine holds its own SkillLoader — importing/deleting a
+    skill via the API must refresh it so load_skill resolves immediately."""
+    from coworker.agent import build_engine
+    from coworker.agents import cowork_agent
+    from coworker.providers import ModelCapabilities
+
+    class _Stub:
+        def complete(self, **kwargs):  # pragma: no cover - not invoked
+            raise NotImplementedError
+
+        def capabilities(self, model):
+            return ModelCapabilities()
+
+    c, manager = client
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    engine = build_engine(agent=cowork_agent(), workspace=ws, provider=_Stub())
+    try:
+        manager._engines["fake-session"] = engine
+
+        r = c.post(
+            "/v1/skills/import",
+            json={"zip_base64": base64.b64encode(_skill_zip_bytes()).decode()},
+        )
+        assert r.json()["ok"] is True
+        assert engine.skill_loader.get("cool-skill") is not None
+
+        assert c.delete("/v1/skills/cool-skill").json()["ok"] is True
+        assert engine.skill_loader.get("cool-skill") is None
+    finally:
+        ex = getattr(engine, "executor", None)
+        if ex is not None:
+            ex.close()
+
+
 def test_knowledge_add_list_search_delete(client, tmp_path):
     c, manager = client
     ws = str(tmp_path / "ws")
@@ -123,3 +159,48 @@ def test_knowledge_import_folder_api(client, tmp_path):
     # searchable
     hits = c.get("/v1/knowledge/search", params={"q": "知识文件库"}).json()
     assert hits["ok"] is True and hits["results"]
+
+
+def test_knowledge_single_source_of_truth(client, tmp_path):
+    """UI/API writes and the agent's knowledge_search must share ONE database —
+    regression for the two-library split (state dir vs workspace .qunwork)."""
+    from coworker.knowledge import resolve_knowledge_db_path
+    from coworker.knowledge.store import KnowledgeStore
+
+    c, manager = client
+    # SessionManager's knowledge store lives at `base / knowledge.db`; the resolver
+    # (what agent builds default to) must agree with it for the same data_dir.
+    assert (manager._data_base / "knowledge.db") == resolve_knowledge_db_path(
+        data_dir=manager._data_base
+    )
+
+    ws = str(tmp_path / "ws")
+    (tmp_path / "ws").mkdir(parents=True, exist_ok=True)
+    manager.resolve_workspace = lambda x=None: ws
+
+    # an entry added via the UI/API ...
+    r = c.post("/v1/knowledge", json={"title": "统一库", "content": "知识库单一路径验证内容。"})
+    assert r.json()["ok"] is True
+
+    # ... is visible to a store opened on the resolver path (what knowledge_search uses)
+    s = KnowledgeStore(manager._data_base / "knowledge.db", workspace=ws)
+    try:
+        hits = s.search("单一路径", workspace=ws)
+        assert hits and hits[0]["title"] == "统一库"
+    finally:
+        s.close()
+
+    # empty add is rejected server-side
+    bad = c.post("/v1/knowledge", json={"title": "", "content": "x"}).json()
+    assert bad["ok"] is False
+
+
+def test_orchestrate_api_executor_agent_validation(client):
+    """POST /v1/orchestrate accepts executor_agent in ("cowork","code") and
+    falls back to cowork for anything else (no 500)."""
+    c, _ = client
+    r = c.post("/v1/orchestrate", json={"intent": "x", "executor_agent": "hacker"})
+    assert r.status_code == 200
+    assert r.json()["ok"] is True  # invalid value fell back to cowork without crashing
+    r2 = c.post("/v1/orchestrate", json={"intent": "x", "executor_agent": "code"})
+    assert r2.status_code == 200 and r2.json()["ok"] is True
