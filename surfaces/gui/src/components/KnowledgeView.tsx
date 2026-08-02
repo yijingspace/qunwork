@@ -15,6 +15,7 @@ import { useT } from "../i18n";
 export default function KnowledgeView() {
   const t = useT();
   const [items, setItems] = useState<KnowledgeItem[]>([]);
+  const [total, setTotal] = useState(0);
   const [hits, setHits] = useState<KnowledgeHit[]>([]);
   const [query, setQuery] = useState("");
   const [searched, setSearched] = useState(false);
@@ -34,8 +35,10 @@ export default function KnowledgeView() {
     try {
       const data = await listKnowledge();
       setItems(data.items ?? []);
+      setTotal(data.total ?? 0);
     } catch {
       setItems([]);
+      setTotal(0);
     }
   }, []);
 
@@ -43,12 +46,20 @@ export default function KnowledgeView() {
     refresh();
   }, [refresh]);
 
+  const loadMore = async () => {
+    const data = await listKnowledge(100, items.length);
+    setItems((prev) => [...prev, ...(data.items ?? [])]);
+  };
+
   const handleScan = async () => {
     setScanning(true);
     try {
       const res = await scanKnowledge();
       if (res.ok)
-        flash(t("Scan complete") + `: +${res.added ?? 0} ${t("added")}, ${res.skipped ?? 0} ${t("unchanged")}`);
+        flash(
+          t("Scan complete") +
+            `: +${res.added ?? 0} ${t("added")}, ${res.skipped ?? 0} ${t("skipped")}, ${res.failed ?? 0} ${t("failed")}`,
+        );
       else flash(t("Scan failed") + (res.error ? `: ${res.error}` : ""));
       refresh();
     } finally {
@@ -88,7 +99,10 @@ export default function KnowledgeView() {
       setImportingFolder(true);
       const res = await importKnowledgeFolder(path);
       if (res.ok)
-        flash(t("Folder imported") + `: +${res.added ?? 0} ${t("files")}`);
+        flash(
+          t("Folder imported") +
+            `: +${res.added ?? 0} ${t("files")}, ${res.skipped ?? 0} ${t("skipped")}, ${res.failed ?? 0} ${t("failed")}`,
+        );
       else flash(t("Folder import failed") + (res.error ? `: ${res.error}` : ""));
       refresh();
     } catch {
@@ -184,8 +198,13 @@ export default function KnowledgeView() {
 
       {/* items */}
       <div className="text-[12.5px] text-muted mb-2">
-        {t("Entries")} ({items.length})
+        {t("Entries")} ({items.length}/{total})
       </div>
+      {items.length > 0 && items.length < total && (
+        <button className="btn-secondary mb-2 self-start" onClick={loadMore}>
+          {t("Load more")} ({total - items.length})
+        </button>
+      )}
       {items.length === 0 ? (
         <div className="text-[12.5px] text-muted">{t("No entries yet — scan the workspace above, or add manually.")}</div>
       ) : (

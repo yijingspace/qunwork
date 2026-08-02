@@ -3531,9 +3531,14 @@ class SessionManager:
                     pass
 
     # -- knowledge file library --------------------------------------------
-    def knowledge_list(self, workspace: Optional[str] = None, limit: int = 100) -> list[dict[str, Any]]:
+    def knowledge_list(
+        self, workspace: Optional[str] = None, limit: int = 100, offset: int = 0
+    ) -> dict[str, Any]:
         ws = self.resolve_workspace(workspace) or self.default_workspace
-        return self.knowledge.list_items(workspace=ws, limit=limit)
+        return {
+            "items": self.knowledge.list_items(workspace=ws, limit=limit, offset=offset),
+            "total": self.knowledge.count_items(workspace=ws),
+        }
 
     def knowledge_add(
         self, title: str, content: str, workspace: Optional[str] = None

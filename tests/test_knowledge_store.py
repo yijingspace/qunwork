@@ -183,3 +183,19 @@ def test_index_folder_outside_workspace(tmp_path: Path):
     (external / "guide.md").unlink()
     hits2 = store.search("固态电池", k=1, workspace=str(ws))
     assert hits2 and "外部文件夹" in hits2[0]["content"]
+
+
+def test_list_items_pagination_and_total(tmp_path: Path):
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    store = KnowledgeStore(tmp_path / "k.db", workspace=str(ws))
+    for i in range(250):
+        store.add_text(f"条目{i}", f"内容 {i} 号", workspace=str(ws))
+
+    assert store.count_items(workspace=str(ws)) == 250
+    page1 = store.list_items(workspace=str(ws), limit=100, offset=0)
+    page2 = store.list_items(workspace=str(ws), limit=100, offset=100)
+    page3 = store.list_items(workspace=str(ws), limit=100, offset=200)
+    assert len(page1) == 100 and len(page2) == 100 and len(page3) == 50
+    ids = {it["id"] for it in page1 + page2 + page3}
+    assert len(ids) == 250  # no overlap, all 250 reachable via paging

@@ -727,7 +727,12 @@ def create_app(manager: SessionManager) -> FastAPI:
     @app.get("/v1/knowledge")
     def knowledge_list(request: Request) -> dict[str, Any]:
         ws = request.query_params.get("workspace") or None
-        return {"items": manager.knowledge_list(workspace=ws)}
+        try:
+            limit = max(1, min(int(request.query_params.get("limit") or 100), 1000))
+            offset = max(0, int(request.query_params.get("offset") or 0))
+        except ValueError:
+            limit, offset = 100, 0
+        return manager.knowledge_list(workspace=ws, limit=limit, offset=offset)
 
     @app.post("/v1/knowledge/scan")
     def knowledge_scan() -> dict[str, Any]:

@@ -302,18 +302,37 @@ class KnowledgeStore:
             self._con.commit()
         return cur.rowcount > 0
 
-    def list_items(self, workspace: Optional[str] = None, limit: int = 100) -> list[dict]:
+    def count_items(self, workspace: Optional[str] = None) -> int:
+        """Total number of knowledge items for the workspace (or all workspaces)."""
+        ws = str(workspace) if workspace else self._default_workspace
+        with self._lock:
+            if ws:
+                row = self._con.execute(
+                    "SELECT COUNT(*) FROM knowledge_items WHERE workspace=?", (ws,)
+                ).fetchone()
+            else:
+                row = self._con.execute("SELECT COUNT(*) FROM knowledge_items").fetchone()
+        return row[0] if row else 0
+
+    def list_items(
+        self,
+        workspace: Optional[str] = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[dict]:
         ws = str(workspace) if workspace else self._default_workspace
         with self._lock:
             if ws:
                 rows = self._con.execute(
-                    "SELECT id, kind, source_path, title, created_at, updated_at FROM knowledge_items WHERE workspace=? ORDER BY updated_at DESC LIMIT ?",
-                    (ws, limit),
+                    "SELECT id, kind, source_path, title, created_at, updated_at FROM knowledge_items "
+                    "WHERE workspace=? ORDER BY updated_at DESC LIMIT ? OFFSET ?",
+                    (ws, limit, offset),
                 ).fetchall()
             else:
                 rows = self._con.execute(
-                    "SELECT id, kind, source_path, title, created_at, updated_at FROM knowledge_items ORDER BY updated_at DESC LIMIT ?",
-                    (limit,),
+                    "SELECT id, kind, source_path, title, created_at, updated_at FROM knowledge_items "
+                    "ORDER BY updated_at DESC LIMIT ? OFFSET ?",
+                    (limit, offset),
                 ).fetchall()
         return [
             {

@@ -701,8 +701,11 @@ export interface KnowledgeHit {
   source_path: string | null;
 }
 
-export async function listKnowledge(): Promise<{ items: KnowledgeItem[] }> {
-  const res = await fetch(`${httpBase()}/v1/knowledge`);
+export async function listKnowledge(
+  limit = 100,
+  offset = 0,
+): Promise<{ items: KnowledgeItem[]; total?: number }> {
+  const res = await fetch(`${httpBase()}/v1/knowledge?limit=${limit}&offset=${offset}`);
   return await res.json();
 }
 
