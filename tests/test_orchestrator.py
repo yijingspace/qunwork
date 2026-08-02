@@ -714,3 +714,31 @@ def test_text_stats_mounted_on_knowledge_engine(tmp_path):
     ws.mkdir()
     engine = build_engine(agent=get_agent("cowork"), workspace=str(ws), provider=P())
     assert "text_stats" in engine.registry.names()
+
+
+async def test_persist_report_backs_up_existing_target(tmp_path):
+    """Overwriting an intent-named file keeps a timestamped backup first, so
+    dual-path runs writing the same file stay traceable (N=13 lesson)."""
+    from coworker.orchestrator.orchestrator import Orchestrator
+    from coworker.orchestrator import run_orchestration
+
+    target = tmp_path / "probe.md"
+    target.write_text("OLD version from an earlier run", encoding="utf-8")
+    ws = str(tmp_path)
+
+    # A run that names probe.md as its output file.
+    provider = ScriptedProvider(
+        [
+            AssistantTurn(text='[{"id":"t0","description":"Write the report","deps":[]}]'),
+            AssistantTurn(text="NEW content v2", finish_reason="stop"),
+            AssistantTurn(text='{"accepted":true,"confidence":0.9,"reason":"ok","needs_human":false}'),
+        ]
+    )
+    orch = Orchestrator(provider=provider, model="m", workspace=ws)
+    result = await orch.run("写入 probe.md")
+    # The target was overwritten…
+    assert target.read_text(encoding="utf-8").strip() == "NEW content v2"
+    # …and the old version was preserved in _swarm_reports/backups/.
+    backups = list((tmp_path / "_swarm_reports" / "backups").glob("probe.*.md"))
+    assert backups, "expected a timestamped backup of the overwritten file"
+    assert backups[0].read_text(encoding="utf-8").strip() == "OLD version from an earlier run"

@@ -526,6 +526,17 @@ class Orchestrator:
                 out_dir = Path(self.workspace) / "_swarm_reports"
                 out_dir.mkdir(parents=True, exist_ok=True)
                 path = out_dir / f"{_time.strftime('%Y%m%d-%H%M%S')}-{slug}.md"
+            # BEFORE overwriting an existing file, keep a timestamped backup so
+            # "who overwrote whom" stays traceable when two swarm runs target the
+            # same filename (dual-path A/B tests, retries, panel+main races).
+            if path.exists():
+                try:
+                    backup_dir = Path(self.workspace) / "_swarm_reports" / "backups"
+                    backup_dir.mkdir(parents=True, exist_ok=True)
+                    backup_path = backup_dir / f"{path.stem}.{_time.strftime('%Y%m%d-%H%M%S')}{path.suffix}"
+                    backup_path.write_bytes(path.read_bytes())
+                except Exception:
+                    pass  # backup is best-effort; never block the deliverable write
             path.write_text(report, encoding="utf-8")
             # verify the write actually landed with the right content — an
             # executor's "claimed success" must never mask an empty/hollow file.
