@@ -149,11 +149,56 @@ def test_index_file_pdf_docx_and_search(tmp_path: Path):
     assert any("PDF knowledge import works" in c for c in all_chunks)
 
 
-def test_index_file_skips_corrupt_pdf_without_aborting(tmp_path: Path):
+def test_index_file_corrupt_pdf_raises_and_scan_counts_failure(tmp_path: Path):
+    """A corrupt PDF raises ExtractionError (not silently skipped); the scan
+    driver counts it as failed with a reason."""
+    from coworker.knowledge.extractors import ExtractionError
+
     ws = tmp_path / "ws"
     ws.mkdir()
     store = KnowledgeStore(tmp_path / "k.db", workspace=str(ws))
     corrupt = tmp_path / "bad.pdf"
     corrupt.write_bytes(b"%PDF-1.4 not really a pdf")
-    assert store.index_file(corrupt, workspace=str(ws)) is None  # skipped, no crash
+    with pytest.raises(ExtractionError):
+        store.index_file(corrupt, workspace=str(ws))
     assert store.list_items(workspace=str(ws)) == []
+
+    folder = tmp_path / "mixed"
+    folder.mkdir()
+    (folder / "bad.pdf").write_bytes(b"%PDF-1.4 not really a pdf")
+    (folder / "ok.md").write_text("正常文档", encoding="utf-8")
+    summary = store.index_folder(folder, workspace=str(ws), max_total_bytes=2 * 1024**3)
+    assert summary["failed"] == 1
+    assert summary["added"] == 1
+    assert any("no extractable text" in f["reason"] or "cannot open" in f["reason"] for f in summary["failures"])
+
+
+def test_index_folder_truncated_reports_cap_and_failures(tmp_path: Path):
+    """Small max_total_bytes stops the scan early and reports truncated; corrupt
+    pdfs surface their reason in failures."""
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    store = KnowledgeStore(tmp_path / "k.db", workspace=str(ws))
+
+    folder = tmp_path / "big"
+    folder.mkdir()
+    for i in range(20):
+        (folder / f"d{i}.md").write_text("x" * 1024, encoding="utf-8")  # 1KB each
+
+    summary = store.index_folder(
+        folder, workspace=str(ws), max_total_bytes=5 * 1024, max_files=10000
+    )
+    assert summary["truncated"] is True
+    assert summary["added"] < 20  # stopped before finishing
+    assert summary["added"] > 0
+
+    # corrupt pdfs land in failures with a reason
+    bad = tmp_path / "bad"
+    bad.mkdir()
+    for i in range(2):
+        (bad / f"broken{i}.pdf").write_bytes(b"%PDF-1.4 not really a pdf")
+    summary2 = store.index_folder(bad, workspace=str(ws), max_total_bytes=2 * 1024 ** 3)
+    assert summary2["failed"] == 2
+    assert len(summary2["failures"]) == 2
+    assert all(f["reason"] for f in summary2["failures"])
+    assert summary2["added"] == 0

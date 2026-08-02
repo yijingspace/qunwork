@@ -182,8 +182,13 @@ class KnowledgeStore:
             from .extractors import ExtractionError, UnsupportedFormatError, extract_text
 
             content, _fmt = extract_text(p)
-        except (OSError, ExtractionError, UnsupportedFormatError):
-            return None
+        except UnsupportedFormatError:
+            return None  # unknown format: skip silently
+        except (ExtractionError, OSError):
+            # Extraction failures must NOT be silently dropped: scans count them
+            # as failed so the caller can surface the reason (e.g. a scanned PDF
+            # with no text layer, an encrypted file, a corrupt document).
+            raise
         fp = f"{p.stat().st_mtime_ns}:{p.stat().st_size}"
         with self._lock:
             row = self._con.execute(
@@ -222,15 +227,16 @@ class KnowledgeStore:
         folder: str | Path,
         *,
         workspace: Optional[str] = None,
-        max_files: Optional[int] = 5000,
-        max_total_bytes: Optional[int] = 100 * 1024 * 1024,
+        max_files: Optional[int] = 20000,
+        max_total_bytes: Optional[int] = 2 * 1024 * 1024 * 1024,
     ) -> dict:
         """Index every md/txt document under an arbitrary LOCAL folder (which may
         live outside the workspace). Files are chunked + vectorized into the
         knowledge library; the original path is kept as source_path. Re-scanning
         the same folder is idempotent (fingerprint dedup). `max_files` /
         `max_total_bytes` guard against accidentally importing an enormous tree
-        (e.g. a home directory)."""
+        (e.g. a home directory); when the cap is hit the scan STOPS and reports
+        `truncated` so the caller knows the folder wasn't fully imported."""
         root = Path(folder).resolve()
         if not root.is_dir():
             return {"added": 0, "updated": 0, "skipped": 0, "failed": 1}
@@ -258,25 +264,38 @@ class KnowledgeStore:
             }
         added = skipped = failed = updated = 0
         processed = total_bytes = 0
+        truncated = False
+        failures: list[dict[str, str]] = []
+        skip_reasons: dict[str, int] = {}
         for p in root.rglob("*"):
             if p.is_dir() or p.suffix.lower() not in _INDEX_EXTS:
+                if not p.is_dir():
+                    ext = p.suffix.lower() or "(none)"
+                    key = f"unsupported format {ext}"
+                    skip_reasons[key] = skip_reasons.get(key, 0) + 1
                 continue
             rel = p.relative_to(root)
             if any(part in _SKIP_DIRS for part in rel.parts):
+                skip_reasons["excluded directory"] = skip_reasons.get("excluded directory", 0) + 1
                 continue
             if max_files is not None and processed >= max_files:
+                truncated = True
                 break
             try:
                 st = p.stat()
                 if max_total_bytes is not None and total_bytes >= max_total_bytes:
+                    truncated = True
                     break
                 total_bytes += st.st_size
                 processed += 1
                 fp = f"{st.st_mtime_ns}:{st.st_size}"
             except OSError:
                 failed += 1
+                if len(failures) < 50:
+                    failures.append({"path": str(p), "reason": "cannot stat file"})
                 continue
             if snapshot.get(str(p)) == fp:
+                skip_reasons["unchanged"] = skip_reasons.get("unchanged", 0) + 1
                 skipped += 1
                 continue
             is_update = str(p) in snapshot
@@ -286,13 +305,18 @@ class KnowledgeStore:
                     updated += 1
                 else:
                     added += 1
-            except Exception:
+            except Exception as exc:
                 failed += 1
+                if len(failures) < 50:
+                    failures.append({"path": str(p), "reason": str(exc)[:200]})
         return {
             "added": added,
             "updated": updated,
             "skipped": skipped,
             "failed": failed,
+            "truncated": truncated,
+            "failures": failures,
+            "skip_reasons": dict(sorted(skip_reasons.items(), key=lambda kv: -kv[1])),
         }
 
     def delete(self, item_id: int) -> bool:

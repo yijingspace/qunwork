@@ -727,6 +727,7 @@ export async function importKnowledgeFolder(
   added?: number;
   skipped?: number;
   failed?: number;
+  truncated?: boolean;
   folder?: string;
   error?: string;
 }> {

@@ -98,12 +98,25 @@ export default function KnowledgeView() {
       }
       setImportingFolder(true);
       const res = await importKnowledgeFolder(path);
-      if (res.ok)
-        flash(
-          t("Folder imported") +
-            `: +${res.added ?? 0} ${t("files")}, ${res.skipped ?? 0} ${t("skipped")}, ${res.failed ?? 0} ${t("failed")}`,
-        );
-      else flash(t("Folder import failed") + (res.error ? `: ${res.error}` : ""));
+      if (res.ok) {
+        let msg = `${t("Folder imported")}: +${res.added ?? 0} ${t("files")}, ${res.skipped ?? 0} ${t("skipped")}, ${res.failed ?? 0} ${t("failed")}`;
+        if (res.truncated) msg += ` — ${t("stopped early (size/file cap)")}`;
+        const failures = (res as any).failures as { path?: string; reason?: string }[] | undefined;
+        if (failures?.length) {
+          const reasons = new Map<string, number>();
+          for (const f of failures) {
+            const r = (f.reason || "unknown").split(":")[0].slice(0, 60);
+            reasons.set(r, (reasons.get(r) ?? 0) + 1);
+          }
+          const top = [...reasons.entries()]
+            .sort((a, b) => b[1] - a[1])
+            .slice(0, 3)
+            .map(([r, n]) => `${n}x ${r}`)
+            .join(", ");
+          if (top) msg += ` — ${t("Failures")}: ${top}`;
+        }
+        flash(msg);
+      } else flash(t("Folder import failed") + (res.error ? `: ${res.error}` : ""));
       refresh();
     } catch {
       flash(t("Folder import failed"));

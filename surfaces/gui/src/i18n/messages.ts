@@ -302,6 +302,8 @@ export const zh: Messages = {
   "Folder imported": "已导入文件夹",
   "files": "个文件",
   "Folder import failed": "导入文件夹失败",
+  "stopped early (size/file cap)": "已达大小/文件上限，提前停止",
+  "Failures": "失败原因",
   "Search knowledge base…": "搜索知识库…",
   "No matches": "无匹配结果",
   "Manual entry": "手动条目",
