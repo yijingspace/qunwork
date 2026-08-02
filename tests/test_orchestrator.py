@@ -742,3 +742,36 @@ async def test_persist_report_backs_up_existing_target(tmp_path):
     backups = list((tmp_path / "_swarm_reports" / "backups").glob("probe.*.md"))
     assert backups, "expected a timestamped backup of the overwritten file"
     assert backups[0].read_text(encoding="utf-8").strip() == "OLD version from an earlier run"
+
+
+def test_orchestrate_tool_records_run_and_advises_no_overwrite(tmp_path):
+    """The main-session orchestrate tool now writes to a per-workspace run store
+    (traceable like panel runs) and explicitly tells the caller the deliverable
+    file is final — do-not-overwrite (the N=14 self-overwrite lesson)."""
+    from coworker.orchestrator import orchestration_tools
+    from coworker.orchestrator.run_store import OrchestrationRunStore
+    from coworker.providers import AssistantTurn
+
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    provider = ScriptedProvider(
+        [
+            AssistantTurn(text='[{"id":"t0","description":"Write the report","deps":[]}]'),
+            AssistantTurn(text="完整说明正文内容", finish_reason="stop"),
+            AssistantTurn(text='{"accepted":true,"confidence":0.9,"reason":"ok","needs_human":false}'),
+        ]
+    )
+    tools = orchestration_tools(workspace=str(ws), provider=provider, model="m")
+    fn = tools[0]
+    out = fn("写入 final.md 生成说明文本")
+    # The deliverable file was produced…
+    assert (ws / "final.md").exists()
+    # …the run was recorded in the per-workspace store…
+    db = ws / ".qunwork" / "orchestration.db"
+    assert db.exists()
+    con = __import__("sqlite3").connect(db)
+    row = con.execute("SELECT status, length(final) FROM orchestration_runs").fetchone()
+    assert row[0] == "completed" and row[1] > 0
+    # …and the caller is told the file is final (do not overwrite).
+    assert "Do NOT write or overwrite that file again" in out["note"]
+    assert out["report_path"].endswith("final.md")

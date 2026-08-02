@@ -7,7 +7,8 @@ so the main agent can delegate a whole goal to a swarm of worker agents.
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from pathlib import Path
+from typing import Any, Callable, Optional
 
 import aisuite as ai
 
@@ -58,6 +59,9 @@ def run_orchestration(
     max_retries: int = 2,
     executor_agent: str = "cowork",
     memory_scope: Optional[str] = None,
+    event_sink: Optional[Callable[[str, dict], None]] = None,
+    timeout_seconds: Optional[int] = None,
+    max_parallel: int = 1,
 ) -> OrchestrationResult:
     """Run one orchestrated goal synchronously (worker-thread context)."""
     orch = Orchestrator(
@@ -69,6 +73,9 @@ def run_orchestration(
         max_retries=max_retries,
         executor_agent=executor_agent,
         memory_scope=memory_scope,
+        event_sink=event_sink,
+        timeout_seconds=timeout_seconds,
+        max_parallel=max_parallel,
     )
     import asyncio
 
@@ -89,11 +96,20 @@ def orchestration_tools(
         """Delegate an entire multi-step goal to a swarm of worker agents: a planner
         decomposes it into a task plan, executor agents do the work, and a reviewer
         validates each result (rework up to the retry limit, escalate to you if a
-        task needs a human decision). Returns the converged task report.
+        task needs a human decision). The converged deliverable is WRITTEN to a file
+        and returned in full.
 
         Args:
             intent (str): The goal, with constraints and the expected deliverable.
+                Name the target output file inside the intent (e.g. 写入 report.md)
+                when you want the deliverable saved under a specific name.
         """
+        # Per-workspace run store so main-session runs are traceable & comparable
+        # with panel runs (duration, tasks, governance) — same SQLite schema.
+        from .run_store import OrchestrationRunStore
+
+        store = OrchestrationRunStore(Path(workspace) / ".qunwork" / "orchestration.db")
+        run_id = store.create_run(intent)
         result = run_orchestration(
             intent=intent,
             workspace=workspace,
@@ -107,14 +123,22 @@ def orchestration_tools(
             # runs (and the main session) benefit from earlier lessons
             memory_scope=str(workspace),
             approver=approver,
+            event_sink=lambda kind, payload: store.append_event(run_id, kind, payload),
         )
+        store.update_status(run_id, result.status, final=result.final_report())
         out: dict[str, Any] = {
             "status": result.status,
             # the finished deliverable (consolidation output) + where it was saved
             "report": result.final_report(),
             "report_path": result.report_path,
         }
-        if result.status != "completed":
+        if result.report_path:
+            out["note"] = (
+                "The complete deliverable has ALREADY been written to "
+                f"{result.report_path}. Do NOT write or overwrite that file again — "
+                "present the report to the user as-is."
+            )
+        elif result.status != "completed":
             out["note"] = (
                 "not fully completed — see the task report for what needs human attention"
             )
