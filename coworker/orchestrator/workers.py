@@ -69,6 +69,10 @@ same turn and end with the product text.
 the file back if needed). The orchestrator stitches workers' final messages into the \
 deliverable — content that lives only on disk is lost. \"Written to x.md\" alone is \
 never an acceptable final message.
+- CHINESE TEXT CHECKS: use the text_stats tool (or Python via the shell with \
+UTF-8 output) to count characters. NEVER write PowerShell inline scripts that \
+contain Chinese literals — ANSI mojibake has repeatedly stalled tasks. If a \
+verification keeps failing on encoding, SKIP it and deliver the content anyway.
 - Web/search are never a substitute for writing: cap them at 2 calls per task, each \
 at most once per query. If a call fails or is slow, proceed — mark uncertain figures \
 with \"~\" plus a note.

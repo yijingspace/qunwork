@@ -682,3 +682,35 @@ def test_clean_deliverable_handles_n11_style_worker_output():
     assert "固态电池是以固态电解质" in cleaned  # body preserved
     # 正文只保留主体句
     assert len(cleaned) < 60
+
+
+def test_text_stats_tool_counts_chinese():
+    """The UTF-8-safe stats tool replaces PowerShell inline scripts."""
+    from coworker.agent import text_stats_tool
+
+    tools = {getattr(t, "__name__", ""): t for t in [text_stats_tool()]}
+    assert "text_stats" in tools
+    out = tools["text_stats"]("固态电池是备受瞩目的新型储能技术。Solid state!")
+    assert out["han_chars"] == 16
+    assert out["total_chars"] == 29  # 16 han + "。Solid state!" = 13
+    assert out["has_non_ascii"] is True
+
+
+def test_text_stats_mounted_on_knowledge_engine(tmp_path):
+    """text_stats is available to swarm workers via the knowledge engine."""
+    from coworker.agent import build_engine
+    from coworker.agents import get_agent
+
+    from coworker.providers import AssistantTurn, ModelCapabilities, ProviderClient
+
+    class P(ProviderClient):
+        def complete(self, *, model, messages, tools=None, **settings):
+            return AssistantTurn(text="ok", finish_reason="stop")
+
+        def capabilities(self, model):
+            return ModelCapabilities()
+
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    engine = build_engine(agent=get_agent("cowork"), workspace=str(ws), provider=P())
+    assert "text_stats" in engine.registry.names()

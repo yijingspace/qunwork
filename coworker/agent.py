@@ -107,6 +107,31 @@ def _skill_dirs(workspace: Optional[Path]) -> list[Path]:
     return dirs
 
 
+def text_stats_tool() -> Any:
+    """UTF-8-safe Chinese text statistics — workers must use this instead of
+    PowerShell inline scripts (ANSI mojibake has repeatedly stalled them)."""
+    import aisuite as ai
+
+    def text_stats(text: str) -> dict:
+        """Count characters in a string safely (no shell). Useful to verify a
+        Chinese deliverable's length. Returns han_chars (CJK), total_chars,
+        lines, and a boolean has_non_ascii."""
+        han = sum(1 for c in text if "\u4e00" <= c <= "\u9fff")
+        return {
+            "han_chars": han,
+            "total_chars": len(text),
+            "lines": text.count("\n") + 1,
+            "has_non_ascii": any(ord(c) > 127 for c in text),
+        }
+
+    return ai.tool(
+        text_stats,
+        metadata=ai.ToolMetadata(
+            category="text", risk_level="low", capabilities=["text_stats"]
+        ),
+    )
+
+
 def build_engine(
     *,
     agent: Agent,
@@ -254,6 +279,9 @@ def build_engine(
                 approver=approver,
             )
         )
+        # UTF-8-safe Chinese text stats — replaces workers' fragile PowerShell
+        # inline-script attempts (ANSI mojibake burned whole task budgets).
+        registry.register(text_stats_tool())
 
     instructions = f"{agent.system_prompt}\n\n{_NARRATION_GUIDANCE}"
     if ws is not None:
