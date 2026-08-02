@@ -255,7 +255,7 @@ async def test_executor_writes_are_auto_approved(tmp_path):
 
 
 async def test_orchestrator_timeout_pauses(tmp_path):
-    """A run exceeding timeout_seconds returns paused instead of hanging forever."""
+    """A run that times out BEFORE producing any deliverable returns paused."""
     from coworker.orchestrator import Orchestrator
     from coworker.orchestrator.governance import GovernanceConfig
     from coworker.providers import AssistantTurn, ModelCapabilities, ProviderClient
@@ -264,7 +264,7 @@ async def test_orchestrator_timeout_pauses(tmp_path):
         def complete(self, *, model, messages, tools=None, **settings):
             import time
 
-            time.sleep(0.5)  # slow enough to trip a 0.1s timeout
+            time.sleep(2.0)  # planner never finishes within the 0.5s budget
             return AssistantTurn(text='[{"id":"t0","description":"Write a report","deps":[]}]')
 
         def capabilities(self, model):
@@ -278,7 +278,7 @@ async def test_orchestrator_timeout_pauses(tmp_path):
         governance_config=GovernanceConfig(),
     )
     result = await orch.run("Write a report")
-    assert result.status == "paused"
+    assert result.status == "paused"  # no plan, no deliverable -> paused
     assert "timed out" in result.summary
 
 
@@ -449,7 +449,8 @@ async def test_global_timeout_keeps_partial_drafts(tmp_path):
         governance_config=GovernanceConfig(),
     )
     result = await orch.run("Write a report")
-    assert result.status == "paused"
+    # timeout with a real deliverable (t0's draft) is now reported completed
+    assert result.status == "completed"
     # the completed task's result survived the global timeout
     assert any("固态电池2027量产" in t.result for t in result.plan.tasks)
 
@@ -562,3 +563,72 @@ def test_final_report_uses_consolidation_output_when_real():
     )
     result = OrchestrationResult(intent="report", plan=plan, status="completed")
     assert result.final_report().startswith("完整报告")
+
+
+def test_final_report_strips_delivery_shell():
+    """The '**Task [t0] 交付…**' header and trailing meta notes are stripped,
+    leaving pure body text."""
+    from coworker.orchestrator.models import Plan, Task, OrchestrationResult
+
+    plan = Plan(
+        goal="probe",
+        tasks=[
+            Task(
+                id="t0",
+                description="写正文",
+                status="done",
+                result="**Task [t0] 交付:约100字说明正文(成品)**\n\n"
+                "固态电池是备受瞩目的新型储能技术,正加速走向产业化。\n\n"
+                "(全文共 99 个汉字,纯说明正文。)\n\n"
+                "核对结果:草稿110字,略超上限,微调后落盘。",
+            ),
+        ],
+    )
+    result = OrchestrationResult(intent="probe", plan=plan, status="completed")
+    report = result.final_report()
+    assert "Task [t0] 交付" not in report  # header shell stripped
+    assert "核对结果" not in report  # meta note stripped
+    assert "固态电池是备受瞩目的" in report  # body preserved
+
+
+async def test_timeout_with_deliverable_reports_completed(tmp_path):
+    """A timed-out run that still produced a real deliverable reports completed."""
+    from coworker.orchestrator import Orchestrator
+    from coworker.orchestrator.governance import GovernanceConfig
+    from coworker.providers import AssistantTurn, ModelCapabilities, ProviderClient
+
+    class Slow(ProviderClient):
+        def __init__(self):
+            self.t0_done = False
+
+        def complete(self, *, model, messages, tools=None, **settings):
+            joined = str(messages)
+            if "Validate the result" in joined:
+                return AssistantTurn(text='{"accepted":true,"confidence":0.9,"reason":"ok","needs_human":false}')
+            if "Task [t0]" in joined and "Execute it now" in joined and not self.t0_done:
+                self.t0_done = True
+                return AssistantTurn(text="**Task [t0] 交付**\n\n固态电池正文内容……", finish_reason="stop")
+            if "Task [t1]" in joined:
+                import time
+
+                time.sleep(2.0)  # t1 hangs past the global timeout
+                return AssistantTurn(text="never", finish_reason="stop")
+            return AssistantTurn(text='[{"id":"t0","description":"写正文","deps":[]},'
+                                       '{"id":"t1","description":"核验","deps":["t0"]}]')
+
+        def capabilities(self, model):
+            return ModelCapabilities()
+
+    orch = Orchestrator(
+        provider=Slow(),
+        model="m",
+        workspace=str(tmp_path / "ws"),
+        timeout_seconds=1,
+        task_timeout_seconds=10,
+        governance_config=GovernanceConfig(),
+    )
+    result = await orch.run("生成正文并写入 probe_timeout.md")
+    assert result.status == "completed"  # timeout but deliverable exists
+    target = tmp_path / "ws" / "probe_timeout.md"
+    assert target.is_file()
+    assert "固态电池正文内容" in target.read_text(encoding="utf-8")

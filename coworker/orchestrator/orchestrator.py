@@ -261,6 +261,16 @@ class Orchestrator:
                     ),
                 )
                 self._persist_report(result)
+                # timeout with a real deliverable is still a delivery — report it
+                # as completed so callers treat the run as successful. A bare
+                # timeout note is not a deliverable.
+                report = result.final_report()
+                if (
+                    result.report_path
+                    and report.strip()
+                    and not report.startswith("swarm timed out")
+                ):
+                    result.status = "completed"
                 return result
         return await self._run(intent)
 

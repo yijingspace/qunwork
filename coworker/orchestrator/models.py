@@ -43,6 +43,39 @@ def _is_process_text(text: str) -> bool:
     return any(m in t for m in _PROCESS_MARKERS)
 
 
+# Meta/shell lines an executor may wrap around the real product (delivery headers,
+# character-count notes, verification notes). Never shipped.
+_TAIL_SHELL = (
+    "核对结果",
+    "全文共",
+    "以上为",
+    "以下为",
+    "共 ",
+    "字符数",
+    "字数",
+    "来源标注",
+)
+
+
+def clean_deliverable(text: str) -> str:
+    """Strip the delivery shell an executor may wrap around the product:
+    a '**Task [t0] 交付…**' header and trailing meta lines (字符数/核对结果…),
+    leaving the pure body text."""
+    import re
+
+    t = re.sub(
+        r"^\**\s*Task\s*\[[^\]]*\]\s*[^*\n]*\**\s*\n",
+        "",
+        text,
+    )
+    lines = []
+    for ln in t.splitlines():
+        if any(m in ln for m in _TAIL_SHELL) and len(ln) < 160:
+            continue
+        lines.append(ln)
+    return "\n".join(lines).strip()
+
+
 @dataclass
 class Task:
     """A single unit of work in the orchestrated plan (a node in the task DAG)."""
@@ -110,23 +143,23 @@ class OrchestrationResult:
         """The finished deliverable — with process-text filtering: a timed-out
         consolidator's last message is often a plan sentence ("now stitching…"),
         which must never be shipped as the deliverable. Real product fragments
-        are stitched instead."""
+        are stitched instead. Delivery shells (headers/notes) are stripped."""
         done = [t for t in self.plan.tasks if t.done and t.result]
         if not done:
-            return self.summary
+            return clean_deliverable(self.summary)
         products = [t for t in done if not _is_process_text(t.result)]
         if not products:
             # every result is process text / placeholders — keep any real fragments
             real = [t.result for t in done if not t.result.startswith("⚠ task timed out")]
-            return "\n\n".join(real) if real else done[-1].result
+            return clean_deliverable("\n\n".join(real) if real else done[-1].result)
         if len(products) == 1:
-            return products[0].result
+            return clean_deliverable(products[0].result)
         # consolidation task normally carries the full report; if it is short or
         # process-like, stitch the product fragments into the deliverable instead
         last = products[-1]
         if len(last.result) >= 200:
-            return last.result
-        return "\n\n".join(t.result for t in products)
+            return clean_deliverable(last.result)
+        return clean_deliverable("\n\n".join(t.result for t in products))
 
     def task_report(self) -> str:
         lines = [f"Goal: {self.plan.goal}"]
