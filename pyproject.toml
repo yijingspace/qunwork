@@ -30,6 +30,8 @@ dependencies = [
     # ships its own libpdfium — NOT PyMuPDF, whose AGPL license can't ride in the DMG).
     "pypdf>=5",
     "pypdfium2>=4",
+    # DOCX text extraction for the knowledge library (knowledge/extractors/docx.py).
+    "python-docx>=1.1",
     # IANA tz database for zoneinfo. Windows ships no system tz db, so without this every
     # named schedule timezone (UTC, Asia/Kolkata, …) silently falls back to local time.
     "tzdata; sys_platform == 'win32'",

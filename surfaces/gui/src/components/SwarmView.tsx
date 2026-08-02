@@ -101,6 +101,10 @@ function DAGDiagram({ tasks }: { tasks: TaskView[] }) {
 export function SwarmView({ onBack, workspace }: { onBack: () => void; workspace?: string }) {
   const t = useT();
   const [intent, setIntent] = useState("");
+  // The swarm runs INSIDE this workspace — its workers' file/read/grep tools are
+  // scoped to it. Editing the path here lets you point the swarm at the real
+  // project (the single most common failure: swarm working in the wrong folder).
+  const [workspacePath, setWorkspacePath] = useState(workspace ?? "");
   const [maxParallel, setMaxParallel] = useState(4);
   const [timeoutSeconds, setTimeoutSeconds] = useState(300);
   const [executorAgent, setExecutorAgent] = useState<"cowork" | "code">("cowork");
@@ -195,7 +199,7 @@ export function SwarmView({ onBack, workspace }: { onBack: () => void; workspace
       if (mounted.current) setElapsed((Date.now() - (startedAt ?? Date.now())) / 1000);
     }, 1000);
     try {
-      const ws = workspace?.trim() || (await defaultWorkspaceHint());
+      const ws = workspacePath?.trim() || (await defaultWorkspaceHint());
       const res = await orchestrate(goal, {
         workspace: ws || undefined,
         maxParallel,
@@ -319,6 +323,17 @@ export function SwarmView({ onBack, workspace }: { onBack: () => void; workspace
           onChange={(e) => setIntent(e.target.value)}
           placeholder={t("Describe the goal, e.g. Write a market report with research, draft and review steps…")}
         />
+        {/* workspace: the swarm works INSIDE this folder — keep it pointed at the real project */}
+        <label className="flex items-center gap-1.5 text-[12px] text-muted mt-2">
+          {t("Workspace")}
+          <input
+            type="text"
+            value={workspacePath}
+            onChange={(e) => setWorkspacePath(e.target.value)}
+            placeholder={t("e.g. E:\\QunWork\\QunWork (蜂群在此目录内工作)")}
+            className="flex-1 rounded border border-line bg-paper px-2 py-1 text-[12px] outline-none font-mono"
+          />
+        </label>
         {/* swarm config */}
         <div className="flex items-center gap-4 mt-2 flex-wrap">
           <label className="flex items-center gap-1.5 text-[12px] text-muted">

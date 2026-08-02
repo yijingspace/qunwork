@@ -21,7 +21,9 @@ from typing import Callable, Optional
 Embedder = Callable[[str], list[float]]
 
 # Extensions we index + directories we never descend into.
-_INDEX_EXTS = {".md", ".markdown", ".txt", ".rst"}
+# The authoritative route lives in coworker/knowledge/extractors (extract_text);
+# this set mirrors it so scans skip unknown formats cheaply before reading.
+_INDEX_EXTS = {".md", ".markdown", ".txt", ".rst", ".csv", ".log", ".json", ".pdf", ".docx"}
 _SKIP_DIRS = {
     ".git",
     ".svn",
@@ -165,8 +167,9 @@ class KnowledgeStore:
         return item_id
 
     def index_file(self, path: str | Path, *, workspace: Optional[str] = None, force: bool = False) -> Optional[int]:
-        """Index one document file (md/txt). Re-indexes only when the file changed
-        (mtime+size fingerprint). Returns the item id, or None when skipped."""
+        """Index one document file (md/txt/pdf/docx/...). Re-indexes only when the
+        file changed (mtime+size fingerprint). Returns the item id, or None when
+        skipped (unknown format, unreadable, or extraction failure)."""
         p = Path(path)
         if not p.is_file() or p.suffix.lower() not in _INDEX_EXTS:
             return None
@@ -176,8 +179,10 @@ class KnowledgeStore:
             else (self._default_workspace or str(p.parent))
         )
         try:
-            content = p.read_text(encoding="utf-8", errors="replace")
-        except OSError:
+            from .extractors import ExtractionError, UnsupportedFormatError, extract_text
+
+            content, _fmt = extract_text(p)
+        except (OSError, ExtractionError, UnsupportedFormatError):
             return None
         fp = f"{p.stat().st_mtime_ns}:{p.stat().st_size}"
         with self._lock:

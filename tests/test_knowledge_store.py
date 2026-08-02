@@ -157,7 +157,7 @@ def test_index_folder_outside_workspace(tmp_path: Path):
     (external / "sub").mkdir(parents=True)
     (external / "guide.md").write_text("固态电池导入说明：外部文件夹。", encoding="utf-8")
     (external / "sub" / "notes.txt").write_text("量子计算导入备忘。", encoding="utf-8")
-    (external / "skip.log").write_text("not indexed", encoding="utf-8")
+    (external / "skip.xyz").write_text("not indexed", encoding="utf-8")
 
     ws = tmp_path / "ws"
     ws.mkdir()
