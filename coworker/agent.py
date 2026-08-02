@@ -267,8 +267,13 @@ def build_engine(
         registry.register_all(selfwake_tools(wake_store, session_id))
 
     # Multi-agent orchestration: knowledge surfaces with a workspace can delegate a whole
-    # goal to a worker swarm (planner -> executors -> reviewer, governed). The swarm's
-    # executor writes still flow through this session's approval gate (approver).
+    # goal to a worker swarm (planner -> executors -> reviewer, governed).
+    # NOTE: we deliberately do NOT pass this session's interactive approver into the
+    # swarm. The Orchestrator's default (auto-approver) is what the panel path uses —
+    # passing the session Inbox approver made worker file-writes hang waiting for a
+    # click and stall the whole run (measured: a consolidate task burned 3×150s retries
+    # until timeout, vs 12-21s per task when writes auto-approve). Calling orchestrate
+    # IS the authorization; workers keep the session's permission allowlist.
     if ws is not None and agent.family == "knowledge":
         registry.register_all(
             orchestration_tools(
@@ -276,7 +281,6 @@ def build_engine(
                 provider=provider,
                 model=model,
                 model_settings=model_settings,
-                approver=approver,
             )
         )
         # UTF-8-safe Chinese text stats — replaces workers' fragile PowerShell

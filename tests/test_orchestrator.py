@@ -775,3 +775,42 @@ def test_orchestrate_tool_records_run_and_advises_no_overwrite(tmp_path):
     # …and the caller is told the file is final (do not overwrite).
     assert "Do NOT write or overwrite that file again" in out["note"]
     assert out["report_path"].endswith("final.md")
+
+
+def test_build_engine_does_not_pass_session_approver_to_swarm(tmp_path, monkeypatch):
+    """The main-session orchestrator tool must NOT inherit the session's Inbox
+    approver — worker file-writes then hang waiting for a click (measured: 3x150s
+    retry timeouts). It must use the Orchestrator's default auto-approver, exactly
+    like the panel path."""
+    import coworker.agent as agent_mod
+    from coworker.agents import get_agent
+    from coworker.providers import AssistantTurn, ModelCapabilities, ProviderClient
+
+    class P(ProviderClient):
+        def complete(self, *, model, messages, tools=None, **settings):
+            return AssistantTurn(text="ok", finish_reason="stop")
+
+        def capabilities(self, model):
+            return ModelCapabilities()
+
+    async def session_approver(_req):
+        from coworker.engine import ApprovalOutcome
+        return ApprovalOutcome.DENY  # the OLD behavior that stalled the swarm
+
+    captured = {}
+
+    def spy_orchestration_tools(**kw):
+        captured.update(kw)
+        return []
+
+    monkeypatch.setattr(agent_mod, "orchestration_tools", spy_orchestration_tools)
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    agent_mod.build_engine(
+        agent=get_agent("cowork"),
+        workspace=str(ws),
+        provider=P(),
+        approver=session_approver,
+    )
+    # The session approver must NOT be forwarded into the swarm tools.
+    assert "approver" not in captured, captured
