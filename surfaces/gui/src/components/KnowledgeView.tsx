@@ -2,7 +2,9 @@ import { useCallback, useEffect, useState } from "react";
 import {
   addKnowledge,
   deleteKnowledge,
+  importKnowledgeFolder,
   listKnowledge,
+  pickFolderViaServer,
   scanKnowledge,
   searchKnowledge,
   type KnowledgeHit,
@@ -21,6 +23,7 @@ export default function KnowledgeView() {
   const [content, setContent] = useState("");
   const [adding, setAdding] = useState(false);
   const [scanning, setScanning] = useState(false);
+  const [importingFolder, setImportingFolder] = useState(false);
 
   const flash = (msg: string) => {
     setNotice(msg);
@@ -75,6 +78,26 @@ export default function KnowledgeView() {
     refresh();
   };
 
+  const handleImportFolder = async () => {
+    try {
+      const path = await pickFolderViaServer();
+      if (!path) {
+        flash(t("未选择文件夹"));
+        return;
+      }
+      setImportingFolder(true);
+      const res = await importKnowledgeFolder(path);
+      if (res.ok)
+        flash(t("Folder imported") + `: +${res.added ?? 0} ${t("files")}`);
+      else flash(t("Folder import failed") + (res.error ? `: ${res.error}` : ""));
+      refresh();
+    } catch {
+      flash(t("Folder import failed"));
+    } finally {
+      setImportingFolder(false);
+    }
+  };
+
   const handleSearch = async () => {
     if (!query.trim()) return;
     const res = await searchKnowledge(query.trim());
@@ -91,9 +114,14 @@ export default function KnowledgeView() {
             {t("Workspace docs indexed automatically + manual entries — searchable by the swarm and chat")}
           </p>
         </div>
-        <button className="btn-secondary" disabled={scanning} onClick={handleScan}>
-          {scanning ? t("Scanning…") : t("Scan workspace")}
-        </button>
+        <div className="flex items-center gap-2">
+          <button className="btn-secondary" disabled={importingFolder} onClick={handleImportFolder}>
+            {importingFolder ? t("导入中…") : t("导入文件夹")}
+          </button>
+          <button className="btn-secondary" disabled={scanning} onClick={handleScan}>
+            {scanning ? t("Scanning…") : t("Scan workspace")}
+          </button>
+        </div>
       </div>
 
       {notice && <div className="mb-3 px-3 py-2 rounded-lg bg-surface border border-line text-[12.5px]">{notice}</div>}

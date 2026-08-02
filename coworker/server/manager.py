@@ -3526,6 +3526,17 @@ class SessionManager:
         summary = self.knowledge.scan_workspace(ws)
         return {**summary, "workspace": ws}
 
+    def knowledge_import_folder(self, folder: str) -> dict[str, Any]:
+        """Index every md/txt under an arbitrary local folder into the knowledge
+        library (files may live outside the workspace)."""
+        folder = str(folder or "").strip()
+        if not folder:
+            return {"ok": False, "error": "folder path is required"}
+        if not Path(folder).is_dir():
+            return {"ok": False, "error": f"folder not found: {folder}"}
+        summary = self.knowledge.index_folder(folder)
+        return {"ok": True, **summary, "folder": folder}
+
     def knowledge_search(
         self, query: str, workspace: Optional[str] = None, k: int = 5
     ) -> list[dict[str, Any]]:

@@ -198,7 +198,21 @@ class KnowledgeStore:
         ws = workspace or self._default_workspace
         if not ws:
             return {"added": 0, "updated": 0, "skipped": 0, "failed": 0}
-        root = Path(ws).resolve()
+        return self._scan_tree(Path(ws), ws)
+
+    def index_folder(self, folder: str | Path, *, workspace: Optional[str] = None) -> dict:
+        """Index every md/txt document under an arbitrary LOCAL folder (which may
+        live outside the workspace). Files are chunked + vectorized into the
+        knowledge library; the original path is kept as source_path. Re-scanning
+        the same folder is idempotent (fingerprint dedup)."""
+        root = Path(folder).resolve()
+        if not root.is_dir():
+            return {"added": 0, "updated": 0, "skipped": 0, "failed": 1}
+        ws = workspace or self._default_workspace or ""
+        return self._scan_tree(root, ws)
+
+    def _scan_tree(self, root: Path, ws: str) -> dict:
+        """Shared scan driver: fingerprint-snapshot dedup + per-file re-index."""
         with self._lock:
             snapshot = {
                 src: fp

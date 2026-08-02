@@ -726,6 +726,10 @@ def create_app(manager: SessionManager) -> FastAPI:
     def knowledge_scan() -> dict[str, Any]:
         return {"ok": True, **manager.knowledge_scan()}
 
+    @app.post("/v1/knowledge/import-folder")
+    def knowledge_import_folder(body: dict) -> dict[str, Any]:
+        return manager.knowledge_import_folder(str(body.get("path") or ""))
+
     @app.post("/v1/knowledge")
     def knowledge_add(body: dict) -> dict[str, Any]:
         title = str(body.get("title") or "").strip()

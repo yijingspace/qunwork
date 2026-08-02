@@ -104,3 +104,22 @@ def test_knowledge_add_list_search_delete(client, tmp_path):
     # delete one
     item_id = items[0]["id"]
     assert c.delete(f"/v1/knowledge/{item_id}").json()["ok"] is True
+
+
+def test_knowledge_import_folder_api(client, tmp_path):
+    c, manager = client
+    external = tmp_path / "docs"
+    external.mkdir()
+    (external / "readme.md").write_text("本地文件夹导入：知识文件库指南。", encoding="utf-8")
+
+    r = c.post("/v1/knowledge/import-folder", json={"path": str(external)})
+    data = r.json()
+    assert data["ok"] is True and data["added"] >= 1
+
+    # bad path -> ok false
+    bad = c.post("/v1/knowledge/import-folder", json={"path": str(tmp_path / "nope")})
+    assert bad.json()["ok"] is False
+
+    # searchable
+    hits = c.get("/v1/knowledge/search", params={"q": "知识文件库"}).json()
+    assert hits["ok"] is True and hits["results"]

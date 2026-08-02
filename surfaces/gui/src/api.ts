@@ -715,6 +715,24 @@ export async function scanKnowledge(): Promise<{
   return await res.json();
 }
 
+export async function importKnowledgeFolder(
+  path: string,
+): Promise<{
+  ok: boolean;
+  added?: number;
+  skipped?: number;
+  failed?: number;
+  folder?: string;
+  error?: string;
+}> {
+  const res = await fetch(`${httpBase()}/v1/knowledge/import-folder`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ path }),
+  });
+  return await res.json();
+}
+
 export async function addKnowledge(
   title: string,
   content: string,

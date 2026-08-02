@@ -93,3 +93,38 @@ def test_embedder_injection(tmp_path: Path):
     store.add_text("A", "alpha beta", workspace="ws")
     store.search("alpha", k=1, workspace="ws")
     assert calls, "embedder should be used when injected"
+
+
+def test_index_folder_outside_workspace(tmp_path: Path):
+    """A local folder OUTSIDE the workspace can be imported into the knowledge
+    library; re-importing is idempotent (fingerprint dedup)."""
+    external = tmp_path / "external-docs"
+    (external / "sub").mkdir(parents=True)
+    (external / "guide.md").write_text("固态电池导入说明：外部文件夹。", encoding="utf-8")
+    (external / "sub" / "notes.txt").write_text("量子计算导入备忘。", encoding="utf-8")
+    (external / "skip.log").write_text("not indexed", encoding="utf-8")
+
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    store = KnowledgeStore(tmp_path / "k.db", workspace=str(ws))
+
+    first = store.index_folder(external, workspace=str(ws))
+    assert first["added"] == 2, first
+    assert first["failed"] == 0
+
+    # items carry the external source paths
+    paths = {it["source_path"] for it in store.list_items(workspace=str(ws))}
+    assert any(p.endswith("guide.md") for p in paths)
+
+    # searchable
+    hits = store.search("固态电池", k=1, workspace=str(ws))
+    assert hits and "外部文件夹" in hits[0]["content"]
+
+    # idempotent re-import
+    second = store.index_folder(external, workspace=str(ws))
+    assert second["added"] == 0
+
+    # deleting the original file does NOT break retrieval (content already stored)
+    (external / "guide.md").unlink()
+    hits2 = store.search("固态电池", k=1, workspace=str(ws))
+    assert hits2 and "外部文件夹" in hits2[0]["content"]
