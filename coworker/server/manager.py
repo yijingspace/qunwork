@@ -465,6 +465,9 @@ class SessionManager:
             routing_targets=self._routing_targets(session_id, agent),
             # Per-session connection hierarchy: expose only effective-enabled connectors' tools.
             connector_filter=self.effective_connectors(session_id, agent_name),
+            # Single source of truth for the knowledge library — the same SQLite the
+            # /v1/knowledge API writes, so UI-added entries surface in knowledge_search.
+            knowledge_db_path=self._data_base / "knowledge.db",
         )
         # An automation run rebuilt here (manual "Run now" over WS, durable resume) still
         # carries its task's standing allowances — the rules live on the task record.
@@ -2464,6 +2467,7 @@ class SessionManager:
             # Scheduled runs respect the same per-session connection hierarchy as live sessions:
             # expose only the persona's effective-enabled connectors' tools (§4.3).
             connector_filter=self.effective_connectors(session_id, task.agent),
+            knowledge_db_path=self._data_base / "knowledge.db",
         )
         self._seed_task_permissions(engine, task)
         return engine
@@ -3499,12 +3503,32 @@ class SessionManager:
         if skill is None:
             return None
         self.skill_market.record_install(skill.name)
+        # A running session's engine holds its own loader instance over the same dirs —
+        # refresh them all so `load_skill` resolves the newly imported skill immediately.
+        self._refresh_engine_skill_loaders()
         return {**skill.catalog_row(), **self.skill_market.stats(skill.name)}
 
     def skill_rate(self, name: str, score: float) -> Optional[dict[str, Any]]:
         if self.skill_loader.get(name) is None:
             return None
         return self.skill_market.rate(name, score)
+
+    def skill_delete(self, name: str) -> bool:
+        """Delete a skill from disk and refresh every live engine's loader."""
+        removed = self.skill_loader.delete_skill(name)
+        if removed:
+            self._refresh_engine_skill_loaders()
+        return removed
+
+    def _refresh_engine_skill_loaders(self) -> None:
+        """Re-scan skill dirs in every live engine so mid-session imports/deletes apply."""
+        for engine in self._engines.values():
+            loader = getattr(engine, "skill_loader", None)
+            if loader is not None:
+                try:
+                    loader.refresh()
+                except Exception:
+                    pass
 
     # -- knowledge file library --------------------------------------------
     def knowledge_list(self, workspace: Optional[str] = None, limit: int = 100) -> list[dict[str, Any]]:
@@ -3515,7 +3539,10 @@ class SessionManager:
         self, title: str, content: str, workspace: Optional[str] = None
     ) -> dict[str, Any]:
         ws = self.resolve_workspace(workspace) or self.default_workspace
-        item_id = self.knowledge.add_text(title, content, workspace=ws)
+        try:
+            item_id = self.knowledge.add_text(title, content, workspace=ws)
+        except ValueError as exc:
+            return {"ok": False, "error": str(exc)}
         return {"id": item_id, "title": title, "ok": True}
 
     def knowledge_delete(self, item_id: int) -> bool:

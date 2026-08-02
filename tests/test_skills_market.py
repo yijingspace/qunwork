@@ -120,6 +120,76 @@ def test_import_rejects_zip_without_skill_md(loader: SkillLoader, tmp_path: Path
     assert loader.import_skill(bogus) is None
 
 
+def test_import_rejects_path_traversal_entries(loader: SkillLoader, tmp_path: Path):
+    """zip-slip regression: `../` and backslash entries must never escape the skill folder."""
+    import io
+
+    for entry, label in [
+        ("../OUTSIDE/pwned.txt", "dotdot"),
+        ("..\\OUTSIDE\\pwned.txt", "backslash"),
+        ("myskill/../../OUTSIDE/pwned.txt", "nested-dotdot"),
+    ]:
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.writestr("SKILL.md", "---\nname: safe\n---\nbody")
+            zf.writestr(entry, "YOU_WERE_HIT")
+        buf.seek(0)
+        zip_path = tmp_path / f"evil-{label}.zip"
+        zip_path.write_bytes(buf.getvalue())
+
+        out_dir = tmp_path / f"out-{label}"
+        fresh = SkillLoader([out_dir])
+        with pytest.raises(ValueError):
+            fresh.import_skill(zip_path)
+        # nothing may exist outside the target dir (and no OUTSIDE folder anywhere)
+        assert not list(out_dir.parent.rglob("OUTSIDE")), label
+        assert not any(p.name == "pwned.txt" for p in out_dir.parent.rglob("*")), label
+
+
+def test_import_rejects_dotdot_skill_name(loader: SkillLoader, tmp_path: Path):
+    """A frontmatter name like `..` must not become a directory that escapes the target."""
+    import io
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("SKILL.md", "---\nname: ..\n---\nbody")
+    buf.seek(0)
+    zip_path = tmp_path / "evil-name.zip"
+    zip_path.write_bytes(buf.getvalue())
+
+    out_dir = tmp_path / "out-name"
+    fresh = SkillLoader([out_dir])
+    skill = fresh.import_skill(zip_path)
+    # falls back to a safe name inside the target dir, never escapes it
+    assert skill is not None
+    assert skill.name != ".."
+    assert Path(skill.path).is_relative_to(out_dir.resolve())
+
+
+def test_load_skill_surfaces_allowed_tools_hint(loader: SkillLoader):
+    loader.save_skill(
+        "guarded",
+        "guarded skill",
+        "do the guarded thing",
+        allowed_tools=["read_file", "write_file"],
+    )
+    from coworker.skills import skill_tools
+    from coworker.tools import ToolRegistry
+
+    reg = ToolRegistry()
+    reg.register_all(skill_tools(loader))
+    loaded = reg.execute("load_skill", {"name": "guarded"})
+    assert loaded["allowed_tools"] == ["read_file", "write_file"]
+    assert "read_file" in loaded["instructions"]
+    assert "Tool policy" in loaded["instructions"]
+
+    # a skill without allowed-tools gets no policy block
+    loader.save_skill("plain", "plain skill", "plain body")
+    plain = reg.execute("load_skill", {"name": "plain"})
+    assert "allowed_tools" not in plain
+    assert "Tool policy" not in plain["instructions"]
+
+
 # -- market stats -----------------------------------------------------------
 
 

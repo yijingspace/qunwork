@@ -64,7 +64,12 @@ def _cosine(a, b) -> float:
         keys = set(a) & set(b)
         if not keys:
             return 0.0
-        return sum(a[k] * b[k] for k in keys)
+        # Query-coverage similarity: the share of the QUERY's char n-grams present in the
+        # document. Deliberately not length-normalized on the document side — a long doc
+        # with the query's n-grams once would otherwise be diluted below any threshold,
+        # which is fatal for short Chinese queries ("固态电池" → only 2 trigrams).
+        # Query vectors are L2-normalized, so len(a) is the query's distinct n-gram count.
+        return len(keys) / len(a)
     # dense float lists (real embedder)
     if len(a) != len(b):
         return 0.0
@@ -104,8 +109,9 @@ class KnowledgeStore:
         workspace: Optional[str] = None,
     ) -> None:
         self._path = Path(db_path)
+        self._path.parent.mkdir(parents=True, exist_ok=True)
         self._embedder = embedder
-        self._default_workspace = workspace
+        self._default_workspace = str(workspace) if workspace else None
         self._lock = threading.Lock()
         self._con = sqlite3.connect(str(self._path), check_same_thread=False)
         self._con.execute(
@@ -145,7 +151,9 @@ class KnowledgeStore:
     # -- indexing --------------------------------------------------------------
     def add_text(self, title: str, content: str, *, kind: str = "manual", workspace: Optional[str] = None) -> int:
         """Index a free-text entry (manual knowledge). Returns the item id."""
-        ws = workspace or self._default_workspace or ""
+        if not title or not content:
+            raise ValueError("title and content are required")
+        ws = str(workspace) if workspace else (self._default_workspace or "")
         with self._lock:
             cur = self._con.execute(
                 "INSERT INTO knowledge_items (workspace, kind, title, created_at, updated_at) VALUES (?,?,?,?,?)",
@@ -162,7 +170,11 @@ class KnowledgeStore:
         p = Path(path)
         if not p.is_file() or p.suffix.lower() not in _INDEX_EXTS:
             return None
-        ws = workspace or self._default_workspace or str(p.parent)
+        ws = (
+            str(workspace)
+            if workspace
+            else (self._default_workspace or str(p.parent))
+        )
         try:
             content = p.read_text(encoding="utf-8", errors="replace")
         except OSError:
@@ -194,24 +206,42 @@ class KnowledgeStore:
 
     def scan_workspace(self, workspace: Optional[str] = None) -> dict:
         """Index every md/txt document under the workspace. Returns a summary
-        (added = files actually (re)indexed this pass, skipped = unchanged/ignored)."""
-        ws = workspace or self._default_workspace
+        (added = new files indexed, updated = changed files re-indexed, skipped = unchanged)."""
+        ws = str(workspace) if workspace else self._default_workspace
         if not ws:
             return {"added": 0, "updated": 0, "skipped": 0, "failed": 0}
         return self._scan_tree(Path(ws), ws)
 
-    def index_folder(self, folder: str | Path, *, workspace: Optional[str] = None) -> dict:
+    def index_folder(
+        self,
+        folder: str | Path,
+        *,
+        workspace: Optional[str] = None,
+        max_files: Optional[int] = 5000,
+        max_total_bytes: Optional[int] = 100 * 1024 * 1024,
+    ) -> dict:
         """Index every md/txt document under an arbitrary LOCAL folder (which may
         live outside the workspace). Files are chunked + vectorized into the
         knowledge library; the original path is kept as source_path. Re-scanning
-        the same folder is idempotent (fingerprint dedup)."""
+        the same folder is idempotent (fingerprint dedup). `max_files` /
+        `max_total_bytes` guard against accidentally importing an enormous tree
+        (e.g. a home directory)."""
         root = Path(folder).resolve()
         if not root.is_dir():
             return {"added": 0, "updated": 0, "skipped": 0, "failed": 1}
-        ws = workspace or self._default_workspace or ""
-        return self._scan_tree(root, ws)
+        ws = str(workspace) if workspace else (self._default_workspace or "")
+        return self._scan_tree(
+            root, ws, max_files=max_files, max_total_bytes=max_total_bytes
+        )
 
-    def _scan_tree(self, root: Path, ws: str) -> dict:
+    def _scan_tree(
+        self,
+        root: Path,
+        ws: str,
+        *,
+        max_files: Optional[int] = None,
+        max_total_bytes: Optional[int] = None,
+    ) -> dict:
         """Shared scan driver: fingerprint-snapshot dedup + per-file re-index."""
         with self._lock:
             snapshot = {
@@ -221,27 +251,44 @@ class KnowledgeStore:
                     (ws,),
                 ).fetchall()
             }
-        added = skipped = failed = 0
+        added = skipped = failed = updated = 0
+        processed = total_bytes = 0
         for p in root.rglob("*"):
             if p.is_dir() or p.suffix.lower() not in _INDEX_EXTS:
                 continue
             rel = p.relative_to(root)
             if any(part in _SKIP_DIRS for part in rel.parts):
                 continue
+            if max_files is not None and processed >= max_files:
+                break
             try:
-                fp = f"{p.stat().st_mtime_ns}:{p.stat().st_size}"
+                st = p.stat()
+                if max_total_bytes is not None and total_bytes >= max_total_bytes:
+                    break
+                total_bytes += st.st_size
+                processed += 1
+                fp = f"{st.st_mtime_ns}:{st.st_size}"
             except OSError:
                 failed += 1
                 continue
             if snapshot.get(str(p)) == fp:
                 skipped += 1
                 continue
+            is_update = str(p) in snapshot
             try:
                 self.index_file(p, workspace=ws, force=True)
-                added += 1
+                if is_update:
+                    updated += 1
+                else:
+                    added += 1
             except Exception:
                 failed += 1
-        return {"added": added, "updated": 0, "skipped": skipped, "failed": failed}
+        return {
+            "added": added,
+            "updated": updated,
+            "skipped": skipped,
+            "failed": failed,
+        }
 
     def delete(self, item_id: int) -> bool:
         with self._lock:
@@ -251,7 +298,7 @@ class KnowledgeStore:
         return cur.rowcount > 0
 
     def list_items(self, workspace: Optional[str] = None, limit: int = 100) -> list[dict]:
-        ws = workspace or self._default_workspace
+        ws = str(workspace) if workspace else self._default_workspace
         with self._lock:
             if ws:
                 rows = self._con.execute(
@@ -276,10 +323,20 @@ class KnowledgeStore:
         ]
 
     # -- search ----------------------------------------------------------------
-    def search(self, query: str, k: int = 5, workspace: Optional[str] = None) -> list[dict]:
-        """Top-k chunks matching the query, with the owning item's metadata."""
+    def search(
+        self,
+        query: str,
+        k: int = 5,
+        workspace: Optional[str] = None,
+        min_score: float = 0.1,
+    ) -> list[dict]:
+        """Top-k ITEMS matching the query (best chunk per item), with metadata.
+
+        `min_score` filters out weak n-gram matches; per-item dedup keeps a long
+        document's many chunks from crowding out the whole result list.
+        """
         qv = self._embed(query)
-        ws = workspace or self._default_workspace
+        ws = str(workspace) if workspace else self._default_workspace
         with self._lock:
             if ws:
                 rows = self._con.execute(
@@ -317,7 +374,18 @@ class KnowledgeStore:
                     )
                 )
         scored.sort(key=lambda t: -t[0])
-        return [hit for _, hit in scored[:k]]
+        seen: set[int] = set()
+        results: list[dict] = []
+        for _, hit in scored:
+            if hit["score"] < min_score:
+                continue
+            if hit["item_id"] in seen:
+                continue
+            seen.add(hit["item_id"])
+            results.append(hit)
+            if len(results) >= k:
+                break
+        return results
 
     # -- internals -------------------------------------------------------------
     def _index_chunks(self, item_id: int, title: str, content: str) -> None:

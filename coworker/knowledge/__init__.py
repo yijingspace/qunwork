@@ -10,6 +10,25 @@ import aisuite as ai
 from .store import KnowledgeStore
 
 
+def resolve_knowledge_db_path(
+    *, workspace: Optional[str | Path] = None, data_dir: Optional[str | Path] = None
+) -> Path:
+    """Single source of truth for the knowledge-library SQLite path.
+
+    The GUI/API (SessionManager) and the agent's ``knowledge_search`` tool must read the
+    SAME database — otherwise entries added in the UI never show up for the swarm/chat.
+    Resolution order: explicit ``data_dir`` (server state dir) → workspace
+    ``.coworker/knowledge.db`` → user state dir. Mirrors SessionManager's `base` logic.
+    """
+    if data_dir is not None:
+        return Path(data_dir) / "knowledge.db"
+    if workspace is not None:
+        return Path(workspace) / ".coworker" / "knowledge.db"
+    from ..secrets import state_dir
+
+    return state_dir() / "knowledge.db"
+
+
 def knowledge_tools(
     workspace: str,
     db_path: str | Path,
@@ -29,6 +48,8 @@ def knowledge_tools(
             hits = store.search(query, k=int(k), workspace=workspace)
         except Exception as exc:  # pragma: no cover - defensive
             return {"error": str(exc), "results": []}
+        finally:
+            store.close()
         if not hits:
             return {
                 "query": query,

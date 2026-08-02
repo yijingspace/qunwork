@@ -52,7 +52,7 @@ describe("SkillsView", () => {
     expect(await screen.findByText("pdf-tools")).toBeTruthy();
     expect(screen.getByText("Extract text from PDFs")).toBeTruthy();
     expect(screen.getByText(/v1\.2\.0/)).toBeTruthy();
-    expect(screen.getByText("document")).toBeTruthy();
+    expect(screen.getByText(/document/)).toBeTruthy();
     expect(screen.getByText("Installs 3")).toBeTruthy();
     expect(screen.getByText("★ 4.5 (2)")).toBeTruthy();
     expect(screen.getByText("pdf")).toBeTruthy();

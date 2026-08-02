@@ -76,6 +76,9 @@ class TurnEngine:
         # Called (thread-safe, best-effort) when the user stops the turn — e.g. the
         # executor's kill for a running shell command.
         interrupt_hooks: Optional[list[Callable[[], None]]] = None,
+        # The session's skill-catalog loader (progressive disclosure). Held so surfaces can
+        # refresh it when skills change mid-session (e.g. an API import); optional.
+        skill_loader: Optional[Any] = None,
     ) -> None:
         self.provider = provider
         self.registry = registry
@@ -103,6 +106,7 @@ class TurnEngine:
         # (answerable inline in a live session or from the Inbox when unattended). None on surfaces
         # that can't ask (the tool then no-ops).
         self.question_asker = question_asker
+        self.skill_loader = skill_loader
         self.audit_context: dict[str, Any] = {}
         if instructions and not (
             self.messages and self.messages[0].get("role") == "system"

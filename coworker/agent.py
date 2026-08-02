@@ -159,6 +159,10 @@ def build_engine(
     channel_buffer: Optional[Any] = None,
     routing_targets: Optional[list[str]] = None,
     connector_filter: Optional[set[str]] = None,
+    # The knowledge-library SQLite file the agent's `knowledge_search` reads. Must match
+    # the SessionManager's store or UI-added entries never surface for the agent.
+    # Defaults to the single source of truth (workspace `.coworker/knowledge.db`).
+    knowledge_db_path: Optional[str | Path] = None,
 ) -> TurnEngine:
     ws = Path(workspace).expanduser().resolve() if workspace else None
     if agent.needs_workspace and ws is None:
@@ -288,12 +292,13 @@ def build_engine(
         registry.register(text_stats_tool())
         # Knowledge file library: agent can search the workspace's indexed docs
         # and manual knowledge entries via knowledge_search.
-        from .knowledge import knowledge_tools
+        from .knowledge import knowledge_tools, resolve_knowledge_db_path
 
         registry.register_all(
             knowledge_tools(
                 workspace=ws,
-                db_path=Path(ws) / ".qunwork" / "knowledge.db",
+                db_path=knowledge_db_path
+                or resolve_knowledge_db_path(workspace=str(ws)),
             )
         )
 
@@ -318,9 +323,6 @@ def build_engine(
 
     skill_loader = SkillLoader(_skill_dirs(ws))
     registry.register_all(skill_tools(skill_loader))
-    catalog = skill_catalog_text(skill_loader)
-    if catalog:
-        instructions = f"{instructions}\n\n{catalog}"
 
     # User-local risk overrides (mainly to relax MCP's conservative default). Empty store →
     # no-op; never written by persona loading (the no-self-grant rule).
@@ -361,6 +363,11 @@ def build_engine(
             ctx = roots_context()
             if ctx:
                 parts.append(ctx)
+        # Skills are progressive-disclosure: only the catalog (name+description) rides in,
+        # refreshed every turn so skills created/imported mid-session appear immediately.
+        catalog = skill_catalog_text(skill_loader)
+        if catalog:
+            parts.append(catalog)
         return "\n\n".join(parts)
 
     engine = TurnEngine(
@@ -382,6 +389,7 @@ def build_engine(
         directory_requester=directory_requester,
         plan_approver=plan_approver,
         question_asker=question_asker,
+        skill_loader=skill_loader,
     )
     engine.executor = executor  # type: ignore[attr-defined]
     engine.todo = todo  # type: ignore[attr-defined]
@@ -392,7 +400,6 @@ def build_engine(
         "agent": agent.name,
         "workspace": str(ws) if ws else "",
     }
-    engine.skill_loader = skill_loader  # type: ignore[attr-defined]
     return engine
 
 

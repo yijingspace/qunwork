@@ -6,6 +6,12 @@
 
 **产品愿景：多 Agent 协同、蜂群智能。** 当前版本聚焦于单人桌面的可靠执行；后续版本将逐步支持多个 Agent 协同分工，像蜂群一样把复杂任务拆解、并行、汇聚成最终成品。
 
+**蜂群协同（多 Agent）**：内置 Orchestrator（planner 拆解 → executor 并行执行 → reviewer 校验 → 治理回路监控），支持工程化编程执行角色（Code persona）与并行 worker 池，进度/思维链/历史实时可见（🐝 面板）。
+
+**技能市场**（🧩 面板）：SKILL.md 技能创建/编辑/删除、zip 导出导入、安装数与评分统计——让蜂群把重复性工作沉淀为可复用技能。
+
+**知识文件库**（📚 面板）：工作区文档自动索引 + 本地文件夹导入 + 手动知识条目，分块向量化检索（中文开箱即用），蜂群与对话通过 `knowledge_search` 直接检索。
+
 它运行在你的机器上，不锁定任何模型：自带 OpenAI、Anthropic、Google 或开源模型的 API Key，也可以完全本地运行（Ollama）。你的数据只会通过你自己选择的模型与集成离开机器。
 
 ## 下载
@@ -105,3 +111,13 @@ QunWork 是 [OpenWorker](https://github.com/andrewyng/openworker)（MIT License�
 ## License
 
 MIT —— 保留上游原版权声明，详见 [LICENSE](LICENSE) 与 [NOTICE.md](NOTICE.md)。
+
+## 记忆系统（三套并存）
+
+| 系统 | 位置 | 用途 |
+|---|---|---|
+| 结构化记忆 | `coworker/memory/`(SQLite `coworker.db`) | 事实/偏好,`remember`/`forget` 工具,scope 隔离(global/workspace/session) |
+| 向量记忆(episodic) | `coworker/orchestrator/memory_store.py`(`.qunwork/memory.db`) | 蜂群跨会话任务经验,embedder 可注入、n-gram 兜底 |
+| 知识文件库 | `coworker/knowledge/store.py`(`.coworker/knowledge.db`) | 工作区文档/导入文件/手动条目的分块向量检索,`knowledge_search` 工具 |
+
+三者职责分离:记忆存"事实",向量记忆存"经验",知识库存"文档"。知识库是蜂群与对话的共享检索源(单一数据源,避免双库分裂)。

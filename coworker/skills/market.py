@@ -3,6 +3,11 @@
 The skill catalog itself lives on disk (SKILL.md folders); this store keeps the
 marketplace numbers that don't belong in the skill file: install_count, ratings,
 last installed timestamp. Keys are skill names.
+
+Product decision: stats are keyed by skill NAME, not name+version — a new version
+of the same skill inherits its installs/rating, since users install "the skill",
+not a specific release. Version-aware stats would need a per-release key and a
+migration; revisit only if the marketplace grows real publisher accounts.
 """
 
 from __future__ import annotations

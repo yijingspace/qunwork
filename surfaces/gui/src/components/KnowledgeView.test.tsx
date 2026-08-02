@@ -73,12 +73,12 @@ describe("KnowledgeView", () => {
 
   it("searches the knowledge base and renders hits", async () => {
     const calls = stubFetch([
-      { match: "/v1/knowledge", method: "GET", json: { items: [] } },
       {
         match: "/v1/knowledge/search",
         method: "GET",
         json: { ok: true, results: [HIT] },
       },
+      { match: "/v1/knowledge", method: "GET", json: { items: [] } },
     ]);
     render(<KnowledgeView />);
     await screen.findByText(/No entries yet/);

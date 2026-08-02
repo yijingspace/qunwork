@@ -67,10 +67,11 @@ def test_index_file_and_scan(tmp_path: Path):
     summary2 = store.scan_workspace(str(ws))
     assert summary2["added"] == 0
 
-    # edit the file -> re-indexed
+    # edit the file -> re-indexed (counted as updated, not added)
     (ws / "docs" / "guide.md").write_text("安装步骤：全新内容。", encoding="utf-8")
     summary3 = store.scan_workspace(str(ws))
-    assert summary3["added"] == 1
+    assert summary3["added"] == 0
+    assert summary3["updated"] == 1
 
 
 def test_delete_item(store: KnowledgeStore):
@@ -93,6 +94,60 @@ def test_embedder_injection(tmp_path: Path):
     store.add_text("A", "alpha beta", workspace="ws")
     store.search("alpha", k=1, workspace="ws")
     assert calls, "embedder should be used when injected"
+
+
+def test_search_dedups_by_item_and_min_score(store: KnowledgeStore):
+    # one long doc → several chunks; a second doc with a matching phrase
+    store.add_text("多段文档", "固态电池是新型储能技术。" + "补充内容。" * 300, workspace="ws")
+    store.add_text("另一篇", "固态电池在另一篇文档中的应用。", workspace="ws")
+
+    hits = store.search("固态电池", k=3, workspace="ws")
+    # top-k counts ITEMS, not chunks: both docs appear exactly once each
+    item_ids = {h["item_id"] for h in hits}
+    assert len(item_ids) == 2, hits
+    assert len(hits) == 2
+
+    # min_score filters out weak matches
+    none = store.search("毫无关联的查询词xyz", k=5, workspace="ws", min_score=0.9)
+    assert none == []
+
+
+def test_add_text_rejects_empty(store: KnowledgeStore):
+    with pytest.raises(ValueError):
+        store.add_text("", "内容", workspace="ws")
+    with pytest.raises(ValueError):
+        store.add_text("标题", "", workspace="ws")
+
+
+def test_agent_knowledge_tool_reads_unified_db(tmp_path: Path):
+    """The agent's knowledge_search must read the SAME db the API/UI writes —
+    regression for the UI/agent 'two libraries' split."""
+    from coworker.agent import build_engine
+    from coworker.agents import cowork_agent
+    from coworker.knowledge import resolve_knowledge_db_path
+    from coworker.providers import ModelCapabilities
+
+    class _Stub:
+        def complete(self, **kwargs):  # pragma: no cover - not invoked
+            raise NotImplementedError
+
+        def capabilities(self, model):
+            return ModelCapabilities()
+
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    db = resolve_knowledge_db_path(workspace=str(ws))
+    KnowledgeStore(db, workspace=str(ws)).add_text(
+        "测试条目", "固态电池是新型储能技术。", workspace=str(ws)
+    )
+
+    engine = build_engine(agent=cowork_agent(), workspace=ws, provider=_Stub())
+    try:
+        result = engine.registry.execute("knowledge_search", {"query": "固态电池"})
+        assert result["results"], result
+        assert result["results"][0]["title"] == "测试条目"
+    finally:
+        engine.executor.close()
 
 
 def test_index_folder_outside_workspace(tmp_path: Path):

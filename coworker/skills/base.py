@@ -138,6 +138,7 @@ class SkillLoader:
     def delete_skill(self, name: str) -> bool:
         """Remove a skill folder entirely (all dirs; returns True when something was
         deleted)."""
+        name = re.sub(r"[^\w\-.]", "_", name).strip("_").strip(".")
         removed = False
         for directory in self._dirs:
             target = directory / name
@@ -187,15 +188,24 @@ class SkillLoader:
                 fm_text = zf.read(skill_md).decode("utf-8", "replace")
                 m = re.search(r"^name:\s*(.+)$", fm_text, re.M)
                 skill_name = m.group(1).strip() if m else zip_path.stem
-            skill_name = re.sub(r"[^\w\-.]", "_", skill_name).strip("_") or "skill"
-            out_dir = target_dir / skill_name
+            skill_name = re.sub(r"[^\w\-.]", "_", skill_name).strip("_").strip(".")
+            if skill_name in ("", ".", ".."):
+                skill_name = "skill"
+            base_dir = target_dir.resolve()
+            out_dir = (base_dir / skill_name).resolve()
+            if not out_dir.is_relative_to(base_dir):
+                raise ValueError(f"invalid skill name: {skill_name!r}")
             for name in names:
                 if not _is_under(name, top):
                     continue
                 rel = name[len(top) :].lstrip("/")
                 if not rel:
                     continue
-                target = out_dir / rel
+                # zip-slip guard: no entry may escape the skill's own folder
+                # (rejects "..", absolute paths, and backslash variants).
+                target = (out_dir / rel).resolve()
+                if not target.is_relative_to(out_dir):
+                    raise ValueError(f"zip entry escapes skill folder: {name!r}")
                 if name.endswith("/"):
                     target.mkdir(parents=True, exist_ok=True)
                 else:
@@ -250,6 +260,8 @@ def _zip_root(names: list[str]) -> str:
 def _is_under(name: str, prefix: str) -> bool:
     if not prefix:
         return True
+    if ".." in name.split("/"):
+        return False
     return name == prefix.rstrip("/") or name.startswith(prefix)
 
 
@@ -268,7 +280,9 @@ def _parse_skill(md: Path) -> Skill:
                 key, value = line.split(":", 1)
                 key, value = key.strip().lower(), value.strip()
                 if key == "name" and value:
-                    name = value
+                    cleaned = re.sub(r"[^\w\-.]", "_", value).strip("_").strip(".")
+                    if cleaned and cleaned not in (".", ".."):
+                        name = cleaned
                 elif key == "description":
                     description = value
                 elif key in ("allowed-tools", "allowed_tools"):
@@ -312,14 +326,29 @@ def skill_tools(loader: SkillLoader) -> list:
     def load_skill(name: str) -> dict:
         """Load a skill's full instructions + resources path by name. Call this when a
         skill from the catalog is relevant to the current task."""
+        # Re-scan so skills imported via the API or written by another engine become
+        # visible to this running session without a restart (fresh loader each call).
+        loader.refresh()
         skill = loader.get(name)
         if skill is None:
             return {"error": f"unknown skill: {name}", "available": loader.names()}
-        return {
+        result: dict = {
             "name": skill.name,
             "instructions": skill.instructions,
             "resources_path": skill.path,
         }
+        if skill.allowed_tools:
+            # Advisory tool policy, surfaced in the loaded instructions: the skill author
+            # declares which tools this skill needs; the model is steered to stick to them.
+            # Not a hard security boundary — real tool gating stays in the permission engine.
+            result["allowed_tools"] = skill.allowed_tools
+            result["instructions"] = (
+                f"{skill.instructions}\n\n"
+                f"Tool policy (declared by this skill): use ONLY the following tools — "
+                f"{', '.join(skill.allowed_tools)}. If the task genuinely needs something "
+                f"else, explain why instead of reaching for it.\n"
+            )
+        return result
 
     def create_skill(name: str, description: str, body: str) -> dict:
         """Create a reusable skill and register it in the system catalog on the fly.
