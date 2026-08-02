@@ -632,3 +632,31 @@ async def test_timeout_with_deliverable_reports_completed(tmp_path):
     target = tmp_path / "ws" / "probe_timeout.md"
     assert target.is_file()
     assert "固态电池正文内容" in target.read_text(encoding="utf-8")
+
+
+def test_clean_thought_normalizes_worker_feeds():
+    """Chain-of-thought is normalized: reviewer/planner JSON becomes readable,
+    artifact links / code fences / delivery shells are stripped."""
+    from coworker.orchestrator.orchestrator import clean_thought
+
+    # reviewer verdict JSON -> readable verdict line
+    v = clean_thought(
+        '{"accepted": true, "confidence": 0.95, "reason": "三段自然衔接", "needs_human": false}',
+        worker="reviewer",
+    )
+    assert v.startswith("✓ 通过") and "0.95" in v and "三段自然衔接" in v
+
+    # planner JSON array -> task summary
+    p = clean_thought(
+        '[{"id":"t0","description":"起草开头段"},{"id":"t1","description":"起草结尾段","deps":["t0"]}]',
+        worker="planner",
+    )
+    assert p.startswith("规划 2 个任务") and "t0" in p
+
+    # executor: artifact links + delivery shell + code fences stripped
+    e = clean_thought(
+        "**Task [t0] 交付**\n\n正文内容……\n\n```python\nprint('x')\n```\n已写入 [草稿.md](artifact:草稿.md)"
+    )
+    assert "Task [t0] 交付" not in e
+    assert "artifact" not in e and "```" not in e
+    assert "正文内容" in e

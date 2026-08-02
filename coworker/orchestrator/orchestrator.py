@@ -113,6 +113,43 @@ def parse_verdict(text: str) -> ReviewVerdict:
     )
 
 
+def clean_thought(text: str, worker: str = "") -> str:
+    """Normalize a worker's raw chain-of-thought line for display: verdict/plan
+    JSON becomes a readable sentence; artifact links, code fences, delivery
+    shells and debugging noise are stripped; long lines are truncated."""
+    t = text.strip()
+    if not t:
+        return ""
+    if worker == "reviewer" and t.startswith("{"):
+        try:
+            d = json.loads(t)
+            mark = "✓ 通过" if d.get("accepted") else ("⚠ 需人工" if d.get("needs_human") else "↻ 重做")
+            conf = d.get("confidence")
+            reason = str(d.get("reason") or "").strip()
+            tail = f": {reason}" if reason else ""
+            return f"{mark}（置信度 {conf}）{tail}"[:300]
+        except Exception:
+            pass
+    if worker == "planner" and t.startswith("["):
+        try:
+            tasks = json.loads(t)
+            names = []
+            for i, x in enumerate(tasks):
+                if isinstance(x, dict) and x.get("description"):
+                    names.append(f"t{i} {str(x['description'])[:24]}")
+            if names:
+                return f"规划 {len(names)} 个任务: " + "; ".join(names)[:300]
+        except Exception:
+            pass
+    # artifact/file links -> bare text
+    t = re.sub(r"\[([^\]]*)\]\((?:artifact|file|attachment):[^)]*\)", r"\1", t)
+    # code fences -> placeholder
+    t = re.sub(r"```[a-zA-Z]*\n.*?```", "［代码已省略］", t, flags=re.DOTALL)
+    # delivery-shell header line ("**Task [t0] 交付…**")
+    t = re.sub(r"^\**\s*Task\s*\[[^\]]*\]\s*[^*\n]*\**\s*\n", "", t)
+    return t[:400]
+
+
 @dataclass
 class Orchestrator:
     """Runs one orchestrated goal to convergence, with an optional governance loop."""
@@ -145,11 +182,20 @@ class Orchestrator:
                 pass
 
     def _worker_feed(self, worker: str, task_id: str = "") -> Callable[[str, dict], None]:
-        """Wrap a worker engine's on_event into sink events (chain-of-thought feed)."""
+        """Wrap a worker engine's on_event into sink events (chain-of-thought feed),
+        normalized for display: raw JSON, code, artifact links and delivery shells
+        are distilled into readable lines."""
 
         def feed(kind: str, payload: dict[str, Any]) -> None:
             if kind == "worker_thought":
-                self._emit("worker_thought", {"worker": worker, "task_id": task_id, **payload})
+                self._emit(
+                    "worker_thought",
+                    {
+                        "worker": worker,
+                        "task_id": task_id,
+                        "text": clean_thought(str(payload.get("text", "")), worker),
+                    },
+                )
 
         return feed
 
@@ -204,9 +250,13 @@ class Orchestrator:
 
         def feed(kind: str, payload: dict[str, Any]) -> None:
             if kind == "worker_thought" and payload.get("text"):
+                raw = str(payload["text"])
                 if on_text is not None:
-                    on_text(str(payload["text"]))
-                self._emit("worker_thought", {"worker": "executor", "task_id": task.id, **payload})
+                    on_text(raw)  # keep raw for the timeout-degradation draft
+                self._emit(
+                    "worker_thought",
+                    {"worker": "executor", "task_id": task.id, "text": clean_thought(raw, "executor")},
+                )
 
         text, status = await _run_engine_async(engine, prompt, on_event=feed)
         if not text:
