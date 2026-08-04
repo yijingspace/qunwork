@@ -224,7 +224,7 @@ export function Sidebar(props: Props) {
   }, []);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editValue, setEditValue] = useState("");
-  // Two-step delete inside the row's ⋮ menu: Delete arms ("Delete?"), a second click deletes.
+  // Two-step delete inside the row's ⋮ menu: Delete arms (t("Delete?")), a second click deletes.
   // Archive is the primary way to put a conversation away — one click, reversible.
   const [confirmDelId, setConfirmDelId] = useState<string | null>(null);
   // The open row-actions ⋮ menu (one at a time). Fixed-position, not absolute: the expanded
@@ -518,7 +518,7 @@ export function Sidebar(props: Props) {
                   onClick={() => setConfirmDelId(s.session_id)}
                 >
                   <Icon name="trash" size={13} className="shrink-0" />
-                  <span className="flex-1">Delete</span>
+                  <span className="flex-1">{t("Delete")}</span>
                 </button>
               )}
             </div>

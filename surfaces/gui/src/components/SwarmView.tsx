@@ -48,10 +48,10 @@ const STATUS_COLOR: Record<string, string> = {
   pending: "#cbd5e1",
 };
 
-function fmtDuration(sec: number): string {
+function fmtDuration(sec: number, t: (k: string) => string): string {
   const m = Math.floor(sec / 60);
   const s = Math.round(sec % 60);
-  return m > 0 ? `${m}分${s}秒` : `${s}秒`;
+  return m > 0 ? `${m}${t("m")}${s}${t("s")}` : `${s}${t("s")}`;
 }
 
 /** Simple vertical DAG: each task is a row; dependency arrows link parent -> child. */
@@ -381,7 +381,7 @@ export function SwarmView({ onBack, workspace }: { onBack: () => void; workspace
             <span className={"text-[12px] " + (status === "completed" ? "text-ok" : status === "failed" ? "text-danger" : "text-muted")}>
               {t("Status")}: {status}
               {runId && <span className="text-faint"> · {runId}</span>}
-              {elapsed > 0 && <span className="text-faint"> · {fmtDuration(elapsed)}</span>}
+              {elapsed > 0 && <span className="text-faint"> · {fmtDuration(elapsed, t)}</span>}
             </span>
           )}
         </div>
@@ -414,7 +414,7 @@ export function SwarmView({ onBack, workspace }: { onBack: () => void; workspace
                 <div className="grid grid-cols-3 gap-2 text-[12px]">
                   <div>
                     <div className="text-faint">{t("Elapsed")}</div>
-                    <div className="font-semibold">{fmtDuration(elapsed)}</div>
+                    <div className="font-semibold">{fmtDuration(elapsed, t)}</div>
                   </div>
                   <div>
                     <div className="text-faint">{t("Confidence")}</div>

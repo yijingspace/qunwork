@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useT } from "../i18n";
 import { getConnectors } from "../api";
 import { McpTab } from "./ManageTabs";
 import { ConnectorsSection } from "./connectors/ConnectorsSection";
@@ -19,6 +20,7 @@ const INT_TABS: { key: IntTab; label: string; icon: "plug" | "code" }[] = [
 ];
 
 export function IntegrationsView() {
+  const t = useT();
   const [tab, setTab] = useState<IntTab>("connectors");
   // Sub-nav count: how many connectors exist. Polled so the badge stays live.
   const [connCount, setConnCount] = useState<number | null>(null);
@@ -69,7 +71,7 @@ export function IntegrationsView() {
           {tab === "connectors" ? (
             <section>
               <PanelHead
-                title="Connectors"
+                title={t("Connectors")}
                 sub="Apps and tools your coworkers can use. Connected ones come first."
               />
               <ConnectorsSection />
@@ -77,7 +79,7 @@ export function IntegrationsView() {
           ) : (
             <section>
               <PanelHead
-                title="MCP servers"
+                title={t("MCP servers")}
                 sub="External tool servers (stdio or HTTP), shared across all agents."
               />
               <McpTab />

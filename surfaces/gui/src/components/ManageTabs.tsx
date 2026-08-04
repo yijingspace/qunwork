@@ -31,6 +31,7 @@ import { CloudSignInInline, CloudStatusPending } from "./connectors/CloudSignIn"
 import { ModelChecklist } from "./ModelChecklist";
 import { ProviderCards, ProviderForm, useProviderSetup } from "../providers/ProviderSetup";
 import { Toggle } from "./Toggle";
+import { useT } from "../i18n";
 
 // "2h ago"-style label for the providers' Last-used line (null when never used).
 const relTime = (epoch?: number | null): string | null => {
@@ -244,6 +245,7 @@ const MCP_PRESETS: { name: string; label: string; blurb: string; config: Record<
 ];
 
 export function McpTab() {
+  const t = useT();
   const [servers, setServers] = useState<McpServer[]>([]);
   const [adding, setAdding] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -258,8 +260,8 @@ export function McpTab() {
   const authorizing = servers.some((s) => s.status === "authorizing");
   useEffect(() => {
     if (!authorizing) return;
-    const t = window.setInterval(refresh, 2000);
-    return () => window.clearInterval(t);
+    const iv = window.setInterval(refresh, 2000);
+    return () => window.clearInterval(iv);
   }, [authorizing]);
 
   const toggle = async (s: McpServer) => {
@@ -274,22 +276,21 @@ export function McpTab() {
   return (
     <div className="space-y-3">
       <p className="text-[12.5px] text-muted leading-relaxed">
-        External tool servers (stdio or HTTP), shared across all agents. Enabled servers' tools are
-        permission-gated. Changes apply to new sessions —{" "}
+        {t("External tool servers (stdio or HTTP), shared across all agents. Enabled servers' tools are permission-gated. Changes apply to new sessions —")}{" "}
         <button
           className="text-accent font-medium hover:underline"
           onClick={() => reloadMcp().then(refresh)}
         >
-          reload now
+          {t("reload now")}
         </button>
         .
       </p>
 
       {servers.length === 0 && !adding ? (
         <div className={CARD + " p-4 text-[13px] text-muted"}>
-          No MCP servers configured.{" "}
+          {t("No MCP servers configured.")}{" "}
           <button className="text-accent font-medium" onClick={() => setAdding(true)}>
-            Add a server
+            {t("Add a server")}
           </button>
         </div>
       ) : (
@@ -341,7 +342,7 @@ export function McpTab() {
         />
       ) : servers.length > 0 ? (
         <button className={BTN_ACCENT} onClick={() => setAdding(true)}>
-          + Add server
+          {t("+ Add server")}
         </button>
       ) : null}
       {error && <div className="text-[12.5px] text-danger">{error}</div>}
@@ -360,6 +361,7 @@ function McpRow({
   onRemove: () => void;
   onRefresh: () => void;
 }) {
+  const t = useT();
   const [tools, setTools] = useState<{ name: string; description: string }[] | null>(null);
   const [busy, setBusy] = useState(false);
   const [toolErr, setToolErr] = useState<string | null>(null);
@@ -391,30 +393,30 @@ function McpRow({
   return (
     <div className={CARD + " p-3.5"}>
       <div className="flex items-center gap-3">
-        <Toggle checked={server.enabled} onChange={onToggle} title="Enable this server" />
+        <Toggle checked={server.enabled} onChange={onToggle} title={t("Enable this server")} />
         <div className="flex-1 min-w-0">
           <div className="text-[14px] font-medium">{server.name}</div>
           <div className="text-[11.5px] text-faint">
-            {server.transport} · {authorizing ? "signing in…" : server.status.replace("_", " ")}
-            {server.tool_count != null ? ` · ${server.tool_count} tools` : ""}
-            {server.requires_approval ? " · asks" : ""}
+            {server.transport} · {authorizing ? t("signing in…") : server.status.replace("_", " ")}
+            {server.tool_count != null ? ` · ${t("{n} tools", { n: server.tool_count })}` : ""}
+            {server.requires_approval ? ` · ${t("asks")}` : ""}
             {isOauth ? " · oauth" : ""}
           </div>
         </div>
         {isOauth &&
           (server.status === "needs_auth" ? (
             <button className={BTN_ACCENT} onClick={signIn} data-testid={`mcp-signin-${server.name}`}>
-              Sign in
+              {t("Sign in")}
             </button>
           ) : authorizing ? (
-            <span className="text-[12px] text-muted shrink-0">waiting for browser…</span>
+            <span className="text-[12px] text-muted shrink-0">{t("waiting for browser…")}</span>
           ) : server.status === "connected" ? (
             <button
               className="text-[12px] text-muted hover:text-ink shrink-0"
               onClick={signOut}
               data-testid={`mcp-signout-${server.name}`}
             >
-              sign out
+              {t("sign out")}
             </button>
           ) : null)}
         <button
@@ -422,10 +424,10 @@ function McpRow({
           onClick={loadTools}
           disabled={busy}
         >
-          {busy ? "…" : tools ? "hide tools" : "tools"}
+          {busy ? "…" : tools ? t("hide tools") : t("tools")}
         </button>
         <button className={BTN_DANGER} onClick={onRemove}>
-          remove
+          {t("remove")}
         </button>
       </div>
       {server.last_error && server.status !== "connected" && (
@@ -459,6 +461,7 @@ function AddForm({
   onAdded: () => void;
   onError: (e: string | null) => void;
 }) {
+  const t = useT();
   const [text, setText] = useState(EXAMPLE);
 
   const save = async () => {
@@ -467,7 +470,7 @@ function AddForm({
     try {
       parsed = JSON.parse(text);
     } catch (e: any) {
-      onError("Invalid JSON: " + e.message);
+      onError(t("Invalid JSON: {msg}", { msg: e.message }));
       return;
     }
     // Accept either {mcpServers:{...}}, {name:{...}}, or a single bare config.
@@ -477,7 +480,7 @@ function AddForm({
         ? Object.entries(map)
         : null;
     if (!entries || entries.length === 0) {
-      onError('Paste a `{ "<name>": { … } }` object (or a full mcpServers block).');
+      onError(t('Paste a `{ "<name>": { … } }` object (or a full mcpServers block).'));
       return;
     }
     for (const [name, config] of entries) {
@@ -488,7 +491,7 @@ function AddForm({
 
   return (
     <div className="space-y-2">
-      <div className="text-[12.5px] text-muted">Paste server JSON (name → config):</div>
+      <div className="text-[12.5px] text-muted">{t("Paste server JSON (name → config):")}</div>
       <textarea
         value={text}
         onChange={(e) => setText(e.target.value)}

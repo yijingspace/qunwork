@@ -22,6 +22,7 @@ import { Icon } from "./Icon";
 import { PersonaGlyph } from "./personaIcon";
 import { Toggle } from "./Toggle";
 import { indexConnectors, labelFor, visualFor, type ConnectorMap } from "../connectors/visuals";
+import { useT } from "../i18n";
 
 // Shared section-heading + tag + button utility strings (mock parity).
 const SEC_H = "text-[11px] uppercase tracking-[0.05em] text-faint font-semibold";
@@ -41,6 +42,7 @@ export function PersonaView({
   onBack?: () => void;
   onOpenIntegrations?: () => void;
 }) {
+  const t = useT();
   const [detail, setDetail] = useState<PersonaDetail | null>(null);
   const [byName, setByName] = useState<ConnectorMap>({});
   const [error, setError] = useState<string | null>(null);
@@ -119,7 +121,7 @@ export function PersonaView({
             </div>
             <div className="ml-auto flex items-center gap-2">
               <span className="text-[12px] text-muted">{detail.enabled ? "Enabled" : "Disabled"}</span>
-              <Toggle checked={detail.enabled} onChange={toggleEnabled} title="Enable this persona" />
+              <Toggle checked={detail.enabled} onChange={toggleEnabled} title={t("Enable this persona")} />
             </div>
           </header>
 

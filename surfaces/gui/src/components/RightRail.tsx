@@ -9,6 +9,7 @@ import {
   type ArtifactInfo,
 } from "../api";
 import type { TodoItem } from "../types";
+import { useT } from "../i18n";
 import { AccessSection } from "./AccessSection";
 import { Icon } from "./Icon";
 import { Markdown, OPEN_ARTIFACT_EVENT } from "./Markdown";
@@ -76,6 +77,7 @@ export function RightRail({
   openAccessKey = 0,
   onOpenIntegrations,
 }: Props) {
+  const t = useT();
   const [open, setOpen] = useState<Record<Panel, boolean>>({
     progress: true,
     artifacts: true,
@@ -162,7 +164,7 @@ export function RightRail({
         />
       ) : (
         <>
-          <RailSection title="Progress" open={open.progress} onToggle={() => setOpen({ ...open, progress: !open.progress })}>
+          <RailSection title={t("Progress")} open={open.progress} onToggle={() => setOpen({ ...open, progress: !open.progress })}>
             <ProgressSummary running={running} toolNames={toolNames} todo={todo} />
           </RailSection>
 
@@ -182,7 +184,7 @@ export function RightRail({
                     <Icon name="folder" size={13} />
                   </button>
                 )}
-                <button className="rail-mini-btn" onClick={(e) => { e.stopPropagation(); refreshArtifacts(); }} title="Refresh artifacts"><Icon name="refresh" size={13} /></button>
+                <button className="rail-mini-btn" onClick={(e) => { e.stopPropagation(); refreshArtifacts(); }} title={t("Refresh artifacts")}><Icon name="refresh" size={13} /></button>
               </>
             }
           >
@@ -298,6 +300,7 @@ function ArtifactViewer({
   onReload: () => Promise<void>;
   onBack: () => void;
 }) {
+  const t = useT();
   const [reloadKey, setReloadKey] = useState(0);
   const isHtml = content?.kind === "html" && !content.error;
   // Best viewed in a real app: spreadsheets, PDFs, and Office docs (pptx/docx can't preview inline)
@@ -306,7 +309,7 @@ function ArtifactViewer({
   return (
     <div className="artifact-viewer">
       <div className="artifact-head">
-        <button className="artifact-icon-btn" onClick={onBack} aria-label="Back to artifacts" title="Back">
+        <button className="artifact-icon-btn" onClick={onBack} aria-label={t("Back to artifacts")} title={t("Back")}>
           <Icon name="arrowLeft" size={16} />
         </button>
         <div className="artifact-heading">
@@ -321,8 +324,8 @@ function ArtifactViewer({
                 await onReload();
                 setReloadKey((k) => k + 1);
               }}
-              aria-label="Reload preview"
-              title="Reload"
+              aria-label={t("Reload preview")}
+              title={t("Reload")}
             >
               <Icon name="refresh" size={16} />
             </button>
@@ -331,7 +334,7 @@ function ArtifactViewer({
             <button
               className="artifact-icon-btn"
               onClick={() => revealArtifact(sessionId, artifact.path, "open")}
-              aria-label="Open in default app"
+              aria-label={t("Open in default app")}
               title="Open in default app"
             >
               <Icon name="panelOpen" size={16} />
@@ -342,15 +345,15 @@ function ArtifactViewer({
           <button
             className="artifact-icon-btn"
             onClick={() => navigator.clipboard?.writeText(artifact.abs_path || artifact.path)}
-            aria-label="Copy path"
-            title="Copy full path"
+            aria-label={t("Copy path")}
+            title={t("Copy full path")}
           >
             <Icon name="copy" size={16} />
           </button>
           <button
             className="artifact-icon-btn"
             onClick={() => revealArtifact(sessionId, artifact.path, "reveal")}
-            aria-label="Show in folder"
+            aria-label={t("Show in folder")}
             title="Show in folder"
           >
             <Icon name="folder" size={16} />

@@ -27,7 +27,7 @@ const PERMISSION_OPTIONS: Option[] = [
 ];
 
 // No hardcoded model fallback: until the server supplies the list (a few seconds after a
-// cold app boot), the picker renders a disabled "Loading models…" chip. A baked-in list
+// cold app boot), the picker renders a disabled t("Loading models…") chip. A baked-in list
 // goes stale and silently offers ids the backend never confirmed (caught 2026-07-21).
 
 // Drop the provider prefix for display (anthropic:claude-opus-4-8 → claude-opus-4-8); full id on hover.
@@ -292,7 +292,7 @@ export function Composer(props: Props) {
     setDictationError(null);
     try {
       if (dictation?.recording) {
-        setDictationBusy("Transcribing…");
+        setDictationBusy(t("Transcribing…"));
         const transcript = await stopDictation();
         if (transcript === null) throw new Error(t("Could not transcribe your recording."));
         if (transcript.trim()) {
@@ -549,7 +549,7 @@ export function Composer(props: Props) {
 }
 
 // The composer's Mode menu (§22): a quiet "Mode ⌄" chip opening the five permission options with
-// the current one marked, plus — when the session supports it — the "Send approvals to Inbox"
+// the current one marked, plus — when the session supports it — the t("Send approvals to Inbox")
 // toggle at the bottom (the old standalone InboxControl, folded in).
 function ModeMenu({
   mode,
@@ -617,9 +617,9 @@ function ModeMenu({
                 <div className="my-1 border-t border-line" />
                 <div className="flex items-center gap-2 px-2.5 py-1.5">
                   <span className="flex-1 min-w-0">
-                    <span className="block text-[13px] text-ink">Send approvals to Inbox</span>
+                    <span className="block text-[13px] text-ink">{t("Send approvals to Inbox")}</span>
                     <span className="block text-[11px] text-faint leading-snug">
-                      Approvals &amp; questions go to the Inbox; the agent keeps working.
+                      {t("Approvals & questions go to the Inbox; the agent keeps working.")}
                     </span>
                   </span>
                   <Toggle

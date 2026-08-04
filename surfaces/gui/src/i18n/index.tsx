@@ -29,7 +29,11 @@ export interface I18n {
   t: (key: string, vars?: Record<string, string | number>) => string;
 }
 
-const LanguageContext = createContext<I18n>({ lang: "en", t: (k) => k });
+const LanguageContext = createContext<I18n>({
+  lang: "en",
+  t: (key: string, vars?: Record<string, string | number>) =>
+    vars ? key.replace(/\{(\w+)\}/g, (_, k: string) => String(vars[k] ?? "")) : key,
+});
 
 export const useLanguage = (): I18n => useContext(LanguageContext);
 export const useT = (): I18n["t"] => useContext(LanguageContext).t;

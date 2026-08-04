@@ -1,4 +1,5 @@
 import { useState, type ReactNode } from "react";
+import { useT } from "../i18n";
 import type { InboxItem } from "../api";
 import { humanizeApprovalTitle } from "../humanize";
 import { PreviewBlock, scopeNote, TitleText } from "./ApprovalCard";
@@ -36,6 +37,7 @@ export function InboxItemCard({
   chip?: ReactNode; // optional "go to session" affordance (shown in the Inbox list, not inline)
   compact?: boolean;
 }) {
+  const t = useT();
   const [answer, setAnswer] = useState("");
   const [selected, setSelected] = useState<string[]>([]);
   const options = item.options || [];
@@ -74,7 +76,7 @@ export function InboxItemCard({
         <div className="flex items-center justify-between gap-3">
           <TitleText line={humanizeApprovalTitle(item.data.tool, item.data.arguments)} />
           {(() => {
-            const s = scopeNote(item.data.tool, item.data.arguments);
+            const s = scopeNote(item.data.tool, item.data.arguments, undefined, t);
             return (
               <span className={"text-[11px] whitespace-nowrap pt-0.5 " + (s.external ? "text-warnInk" : "text-faint")}>
                 {s.text}
