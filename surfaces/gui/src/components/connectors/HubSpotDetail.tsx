@@ -1,3 +1,4 @@
+import { useT } from "../../i18n";
 import { useState } from "react";
 import {
   disconnectHubSpotPortal,
@@ -20,6 +21,7 @@ import { FOOT, GRP, GRP_H, PILL_ACCENT, ROW, TAG_ACCENT, TAG_QUIET, TAG_WARN, XB
 const LABEL = "text-[12.5px] text-muted w-24 shrink-0";
 
 export function HubSpotDetail({ c, cloud, slack: _slack, onChanged }: DetailProps) {
+  const t = useT();
   const [adding, setAdding] = useState(false);
   const portals = c.portals ?? [];
 
@@ -38,7 +40,7 @@ export function HubSpotDetail({ c, cloud, slack: _slack, onChanged }: DetailProp
                 </span>
               </>
             ) : (
-              <span>Not connected</span>
+              <span>{t("Not connected")}</span>
             )}
           </div>
         </div>
@@ -136,6 +138,7 @@ function PortalRow({ p, onChanged }: { p: HubSpotPortal; onChanged: () => void }
 }
 
 function PrivacyGroup({ c, onChanged }: Pick<DetailProps, "c" | "onChanged">) {
+  const t = useT();
   const fields = c.hidden_fields ?? [];
   const [draft, setDraft] = useState("");
   const save = async (next: string[]) => {
@@ -150,10 +153,10 @@ function PrivacyGroup({ c, onChanged }: Pick<DetailProps, "c" | "onChanged">) {
   };
   return (
     <>
-      <div className={GRP_H}>Access &amp; privacy</div>
+      <div className={GRP_H}>{t("Access & privacy")}</div>
       <div className={GRP}>
         <div className={ROW} data-testid="hubspot-hidden-fields">
-          <span className={LABEL}>Hidden fields</span>
+          <span className={LABEL}>{t("Hidden fields")}</span>
           <span className="min-w-0 flex-1 flex flex-wrap items-center gap-1.5">
             {fields.map((f) => (
               <span
@@ -179,7 +182,7 @@ function PrivacyGroup({ c, onChanged }: Pick<DetailProps, "c" | "onChanged">) {
           </span>
         </div>
       </div>
-      <div className={FOOT}>Stripped from every record agents read, across all portals.</div>
+      <div className={FOOT}>{t("Stripped from every record agents read, across all portals.")}</div>
     </>
   );
 }

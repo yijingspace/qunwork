@@ -1,3 +1,4 @@
+import { useT } from "../../i18n";
 import { useState } from "react";
 import {
   connectManaged,
@@ -19,6 +20,7 @@ import { FOOT, GRP, GRP_H, PILL_ACCENT, ROW, TAG_ACCENT, TAG_WARN, XBTN } from "
 const LABEL = "text-[12.5px] text-muted w-24 shrink-0";
 
 export function GmailDetail({ c, cloud, slack: _slack, onChanged }: DetailProps) {
+  const t = useT();
   const [busy, setBusy] = useState(false);
   const accounts = (c.accounts ?? []) as GmailAccount[]; // email-keyed (pre-generic-layer shape)
 
@@ -43,7 +45,7 @@ export function GmailDetail({ c, cloud, slack: _slack, onChanged }: DetailProps)
                 </span>
               </>
             ) : (
-              <span>Not connected</span>
+              <span>{t("Not connected")}</span>
             )}
           </div>
         </div>
@@ -135,15 +137,16 @@ function AccountRow({ a, onChanged }: { a: GmailAccount; onChanged: () => void }
 }
 
 function FiltersGroup({ c, onChanged }: Pick<DetailProps, "c" | "onChanged">) {
+  const t = useT();
   const filters = c.filters ?? { senders: [], labels: [] };
   return (
     <>
-      <div className={GRP_H}>Never show agents</div>
+      <div className={GRP_H}>{t("Never show agents")}</div>
       <div className={GRP} data-testid="gmail-filters">
         <ChipListRow
-          label="Senders"
+          label={t("Senders")}
           testid="gmail-filter-senders"
-          placeholder="name@example.com or @domain.com"
+          placeholder={t("name@example.com or @domain.com")}
           values={filters.senders}
           onSave={async (senders) => {
             await setGmailFilters({ senders });

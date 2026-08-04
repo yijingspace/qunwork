@@ -1,3 +1,4 @@
+import { useT } from "../../i18n";
 import { useState } from "react";
 import {
   connectManaged,
@@ -19,6 +20,7 @@ import { FOOT, GRP, GRP_H, PILL_ACCENT, ROW, TAG_ACCENT, XBTN } from "./ui";
 // always available underneath — signed out or in, local-only stays first-class.
 
 export function AccountsDetail({ c, cloud, slack: _slack, onChanged }: DetailProps) {
+  const t = useT();
   const [busy, setBusy] = useState(false);
   const [showManual, setShowManual] = useState(false);
   const accounts = (c.accounts ?? []) as AccountRow[];
@@ -47,7 +49,7 @@ export function AccountsDetail({ c, cloud, slack: _slack, onChanged }: DetailPro
                 </span>
               </>
             ) : (
-              <span>Not connected</span>
+              <span>{t("Not connected")}</span>
             )}
           </div>
         </div>
@@ -58,11 +60,11 @@ export function AccountsDetail({ c, cloud, slack: _slack, onChanged }: DetailPro
           disabled={busy}
           title={
             c.managed && !cloud?.signed_in
-              ? "Sign in to QunWork Cloud for one-click — or add a token below"
+              ? t("Sign in to QunWork Cloud for one-click — or add a token below")
               : ""
           }
         >
-          {busy ? "Check your browser…" : "＋ Add account"}
+          {busy ? t("Check your browser…") : t("＋ Add account")}
         </button>
       </div>
 
@@ -80,7 +82,7 @@ export function AccountsDetail({ c, cloud, slack: _slack, onChanged }: DetailPro
       {(showManual || !c.connected) && (
         <>
           <div className={GRP_H + (accounts.length ? "" : " !mt-0")}>
-            {c.managed ? "Add manually" : "Add an account"}
+            {c.managed ? t("Add manually") : t("Add an account")}
           </div>
           <div className={GRP} data-testid="accounts-manual-add">
             <div className="px-1.5 py-1">
@@ -115,6 +117,7 @@ function Row({
   a: AccountRow;
   onChanged: () => void;
 }) {
+  const t = useT();
   const [busy, setBusy] = useState(false);
   return (
     <div className={ROW} data-testid={`account-${a.account_id}`}>
@@ -125,7 +128,7 @@ function Row({
             {a.account_id}
           </span>
         )}
-        {a.default && <span className={TAG_ACCENT}>Default</span>}
+        {a.default && <span className={TAG_ACCENT}>{t("Default")}</span>}
       </span>
       {!a.default && (
         <button
@@ -136,12 +139,12 @@ function Row({
             onChanged();
           }}
         >
-          Make default
+          {t("Make default")}
         </button>
       )}
       <button
         className={XBTN}
-        title="Disconnect this account"
+        title={t("Disconnect this account")}
         data-testid={`account-disconnect-${a.account_id}`}
         disabled={busy}
         onClick={async () => {

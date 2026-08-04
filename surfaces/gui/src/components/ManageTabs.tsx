@@ -77,6 +77,7 @@ const EXAMPLE = `{
 // key…" affordance, the global composer-picker card (gallery view), and the
 // per-provider ModelChecklist / read-only model preview (form view).
 export function ModelsTab() {
+  const t = useT();
   const [settings, setSettings] = useState<ModelSettings | null>(null);
   const refreshSettings = () => getSettings().then(setSettings).catch(() => setSettings(null));
   const ps = useProviderSetup({ onSaved: refreshSettings });
@@ -109,10 +110,10 @@ export function ModelsTab() {
               className="text-[12.5px] text-danger/80 hover:text-danger hover:underline underline-offset-2"
               data-testid="set-remove-key"
               onClick={() => {
-                if (window.confirm(`Remove the ${info?.title} key from this computer?`)) ps.removeKey();
+                if (window.confirm(t("Remove the {name} key from this computer?", { name: info?.title || "" }))) ps.removeKey();
               }}
             >
-              Remove key…
+              {t("Remove key…")}
             </button>
           ) : null
         }
@@ -312,7 +313,7 @@ export function McpTab() {
         <div key={p.name} className={CARD + " p-3.5 flex items-center gap-3"} data-testid={`mcp-preset-${p.name}`}>
           <div className="flex-1 min-w-0">
             <div className="text-[14px] font-medium">{p.label}</div>
-            <div className="text-[11.5px] text-faint">{p.blurb}</div>
+            <div className="text-[11.5px] text-faint">{t(p.blurb)}</div>
           </div>
           <button
             className={BTN_ACCENT}
@@ -531,6 +532,7 @@ export function UnauthorizedBlock({
   onChanged: () => void;
   teamId?: string;
 }) {
+  const t = useT();
   const items = (c.unauthorized ?? []).filter(
     (m) => teamId === undefined || m.team_id === teamId,
   );
@@ -545,7 +547,7 @@ export function UnauthorizedBlock({
       data-testid={teamId ? `unauthorized-${c.name}-${teamId}` : `unauthorized-${c.name}`}
     >
       <div className={SEC_H + " mb-2"}>
-        Messages from senders you haven't allowed · {items.length}
+        {t("Messages from senders you haven't allowed · {n}", { n: items.length })}
       </div>
       <div className="space-y-2">
         {items.map((m) => (
@@ -654,6 +656,7 @@ export function AllowlistBlock({
   allowed?: string[];
   allowedNames?: Record<string, string | null>;
 }) {
+  const t = useT();
   const allowedUsers = allowed ?? c.allowed_users;
   const names = allowedNames ?? c.allowed_user_names;
   const recent = (c.recent ?? []).filter(
@@ -664,7 +667,7 @@ export function AllowlistBlock({
   return (
     <div className="border-t border-line px-3.5 py-3 grid grid-cols-2 gap-5">
       <div>
-        <div className={SEC_H + " mb-2"}>Allowed to message</div>
+        <div className={SEC_H + " mb-2"}>{t("Allowed to message")}</div>
         <div className="flex flex-wrap gap-1.5">
           {allowedUsers.length === 0 && (
             <span className="text-[12px] text-faint">nobody yet — Allow a recent sender →</span>
@@ -694,7 +697,7 @@ export function AllowlistBlock({
         </div>
       </div>
       <div>
-        <div className={SEC_H + " mb-2"}>Recent senders</div>
+        <div className={SEC_H + " mb-2"}>{t("Recent senders")}</div>
         {unknownRecent.length === 0 ? (
           <div className="text-[12px] text-faint">None yet. Message the bot once and it'll show here.</div>
         ) : (
@@ -726,6 +729,7 @@ export function AllowlistBlock({
 }
 
 export function ConnectorTools({ c, onChanged }: { c: Connector; onChanged: () => void }) {
+  const t = useT();
   const toggle = async (toolName: string, enabled: boolean) => {
     await updateConnectorTools(c.name, { [toolName]: enabled });
     onChanged();
@@ -733,12 +737,12 @@ export function ConnectorTools({ c, onChanged }: { c: Connector; onChanged: () =
   if (!c.tools?.length)
     return (
       <div className="border-t border-line px-3.5 py-3 text-[12.5px] text-muted">
-        No tools for this connector yet.
+        {t("No tools for this connector yet.")}
       </div>
     );
   return (
     <div className="border-t border-line px-3.5 py-3">
-      <div className={SEC_H + " mb-2"}>Tools exposed to QunWork</div>
+      <div className={SEC_H + " mb-2"}>{t("Tools exposed to QunWork")}</div>
       <div className="space-y-1.5">
         {c.tools.map((tool) => (
           <label

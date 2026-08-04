@@ -1,3 +1,4 @@
+import { useT } from "../../i18n";
 import { useEffect, useState } from "react";
 import {
   disallowUser,
@@ -28,18 +29,19 @@ import { FOOT, GRP, GRP_H, PILL_ACCENT, PILL_LINE, ROW, TAG_WARN, XBTN } from ".
 const LABEL = "text-[12.5px] text-muted w-24 shrink-0";
 
 /** The relay status line, one honest layer at a time (the Slack rule). */
-function relayHealth(gh: GithubStatus | null): { dot: string; text: string } {
-  if (!gh) return { dot: "bg-ok", text: "Live · managed relay" };
+function relayHealth(gh: GithubStatus | null, t?: (k: string) => string): { dot: string; text: string } {
+  if (!gh) return { dot: "bg-ok", text: t ? t("Live · managed relay") : "Live · managed relay" };
   if (!gh.signed_in)
-    return { dot: "bg-warnInk", text: "Sign-in needed — relaying is paused" };
+    return { dot: "bg-warnInk", text: t ? t("Sign-in needed — relaying is paused") : "Sign-in needed — relaying is paused" };
   if (gh.relay.state === "offline")
-    return { dot: "bg-faint/60", text: "Offline — can't reach the relay" };
+    return { dot: "bg-faint/60", text: t ? t("Offline — can't reach the relay") : "Offline — can't reach the relay" };
   if (gh.relay.state === "reconnecting")
-    return { dot: "bg-warnInk", text: "Reconnecting to the relay…" };
-  return { dot: "bg-ok", text: "Live · managed relay" };
+    return { dot: "bg-warnInk", text: t ? t("Reconnecting to the relay…") : "Reconnecting to the relay…" };
+  return { dot: "bg-ok", text: t ? t("Live · managed relay") : "Live · managed relay" };
 }
 
 export function GithubDetail({ c, cloud, onChanged }: DetailProps) {
+  const t = useT();
   const [adding, setAdding] = useState(false);
   const [subs, setSubs] = useState<Subscription[]>([]);
   const [status, setStatus] = useState<GithubStatus | null>(null);
@@ -75,12 +77,12 @@ export function GithubDetail({ c, cloud, onChanged }: DetailProps) {
                 />
                 <span data-testid="github-mode-badge">
                   {relay
-                    ? relayHealth(status).text
-                    : "Connected · personal access token"}
+                    ? relayHealth(status, t).text
+                    : t("Connected · personal access token")}
                 </span>
               </>
             ) : (
-              <span>Not connected</span>
+              <span>{t("Not connected")}</span>
             )}
           </div>
         </div>
@@ -90,7 +92,7 @@ export function GithubDetail({ c, cloud, onChanged }: DetailProps) {
             data-testid="add-installation-btn"
             onClick={() => setAdding(true)}
           >
-            ＋ Add installation
+            {t("＋ Add installation")}
           </button>
         )}
       </div>
@@ -98,9 +100,8 @@ export function GithubDetail({ c, cloud, onChanged }: DetailProps) {
       {!c.connected && (
         <div className={GRP}>
           <div className={ROW + " text-[12.5px] text-muted"}>
-            One @ocw-agent App, installed per account or org — you pick the repos on
-            GitHub; each installation keeps its own allow-list.
-            {cloud?.signed_in ? "" : " One-click needs cloud sign-in; a PAT works without it."}
+            {t("One @ocw-agent App, installed per account or org — you pick the repos on GitHub; each installation keeps its own allow-list.")}
+            {cloud?.signed_in ? "" : " " + t("One-click needs cloud sign-in; a PAT works without it.")}
           </div>
         </div>
       )}
@@ -167,6 +168,7 @@ function InstallationGroup({
   tokenOk: boolean;
   onChanged: () => void;
 }) {
+  const t = useT();
   const [busy, setBusy] = useState(false);
   const parked = (c.unauthorized ?? []).filter((m) => m.team_id === inst.installation_id);
   const empty = inst.allowed_users.length === 0 && parked.length === 0;
@@ -189,7 +191,7 @@ function InstallationGroup({
         </span>
         {!tokenOk && (
           <span className={TAG_WARN} data-testid={`token-warn-${inst.installation_id}`}>
-            ⚠ Installation revoked — reinstall
+            ⚠ {t("Installation revoked — reinstall")}
           </span>
         )}
       </div>
@@ -223,15 +225,16 @@ function InstallationGroup({
 }
 
 function DisconnectBtn({ id, busy, onClick }: { id: string; busy: boolean; onClick: () => void }) {
+  const t = useT();
   return (
     <button
       className="text-[12.5px] text-danger/80 hover:text-danger shrink-0"
       data-testid={`disconnect-install-${id}`}
-      title="Stops relaying this installation to this computer. The App stays installed on GitHub."
+      title={t("Stops relaying this installation to this computer. The App stays installed on GitHub.")}
       onClick={onClick}
       disabled={busy}
     >
-      {busy ? "Disconnecting…" : "Disconnect installation"}
+      {busy ? t("Disconnecting…") : t("Disconnect installation")}
     </button>
   );
 }
@@ -274,6 +277,7 @@ function PeopleRow({
 }
 
 function WaitingRow({ m, onChanged }: { m: ParkedMessage; onChanged: () => void }) {
+  const t = useT();
   const act = async (action: "dismiss" | "allow" | "allow_deliver") => {
     await resolveUnauthorized("github", m.id, action);
     onChanged();
@@ -289,10 +293,10 @@ function WaitingRow({ m, onChanged }: { m: ParkedMessage; onChanged: () => void 
       <button
         className={PILL_ACCENT + " !py-1"}
         data-testid={`parked-allow-deliver-${m.id}`}
-        title="Allow the sender and deliver this mention now"
+        title={t("Allow the sender and deliver this mention now")}
         onClick={() => act("allow_deliver")}
       >
-        Allow & deliver
+        {t("Allow & deliver")}
       </button>
       <button
         className={PILL_LINE + " !py-1"}

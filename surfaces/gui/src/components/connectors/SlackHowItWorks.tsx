@@ -1,3 +1,4 @@
+import { useT } from "../../i18n";
 import { useEffect, useRef, useState } from "react";
 import type { SlackWorkspace } from "../../api";
 
@@ -24,6 +25,7 @@ function readCollapsed(): boolean {
 }
 
 export function SlackHowItWorks({ workspaces }: { workspaces: SlackWorkspace[] }) {
+  const t = useT();
   const [collapsed, setCollapsed] = useState(readCollapsed);
   const [tab, setTab] = useState(0);
   const [cycle, setCycle] = useState(0); // bump = remount the scene = restart its animations
@@ -79,10 +81,10 @@ export function SlackHowItWorks({ workspaces }: { workspaces: SlackWorkspace[] }
         <button
           className="ml-auto shrink-0 inline-flex items-center gap-1.5 text-[12px] text-muted hover:text-ink"
           data-testid="hiw-collapse"
-          title={collapsed ? "Show how mentions work" : "Collapse — reopen anytime"}
+          title={collapsed ? t("Show how mentions work") : t("Collapse — reopen anytime")}
           onClick={toggle}
         >
-          {collapsed ? "How it works" : "Hide"}
+          {collapsed ? t("How it works") : t("Hide")}
           <span
             className="text-[9px] transition-transform"
             style={collapsed ? { transform: "rotate(-90deg)" } : undefined}
@@ -102,15 +104,15 @@ export function SlackHowItWorks({ workspaces }: { workspaces: SlackWorkspace[] }
       {!collapsed && (
         <div className="mt-3">
           <div className="flex gap-1 border-b border-line mb-3">
-            {TABS.map((t, i) => (
+            {TABS.map((label, i) => (
               <button
-                key={t}
+                key={label}
                 className={"hiw-tab" + (i === tab ? " on" : "")}
                 data-testid={`hiw-tab-${i}`}
                 style={{ "--hiw-dur": `${DUR}ms` } as React.CSSProperties}
                 onClick={() => jump(i)}
               >
-                {t}
+                {t(label)}
                 <span className="hiw-prog"><i /></span>
               </button>
             ))}
@@ -122,7 +124,7 @@ export function SlackHowItWorks({ workspaces }: { workspaces: SlackWorkspace[] }
             {tab === 2 && <SceneTeammates />}
           </div>
           <div className="mt-2.5 text-[12px] text-muted" data-testid="hiw-caption">
-            {CAPTIONS[tab]}
+            {CAPTIONS[tab] && t(CAPTIONS[tab])}
           </div>
         </div>
       )}

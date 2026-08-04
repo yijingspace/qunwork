@@ -1,3 +1,4 @@
+import { useT } from "../../i18n";
 import { useState } from "react";
 import {
   connectManaged,
@@ -15,6 +16,7 @@ import { FOOT, GRP, GRP_H, PILL_ACCENT, ROW, TAG_ACCENT, TAG_WARN, XBTN } from "
 // Adding an account launches managed OAuth DIRECTLY (one connect mode, no modal).
 
 export function CalendarDetail({ c, cloud, slack: _slack, onChanged }: DetailProps) {
+  const t = useT();
   const [busy, setBusy] = useState(false);
   const accounts = (c.accounts ?? []) as GmailAccount[]; // email-keyed (pre-generic-layer shape)
 
@@ -41,7 +43,7 @@ export function CalendarDetail({ c, cloud, slack: _slack, onChanged }: DetailPro
                 </span>
               </>
             ) : (
-              <span>Not connected</span>
+              <span>{t("Not connected")}</span>
             )}
           </div>
         </div>
@@ -55,18 +57,18 @@ export function CalendarDetail({ c, cloud, slack: _slack, onChanged }: DetailPro
               ? "One-click Google sign-in is coming soon"
               : cloud?.signed_in
                 ? ""
-                : "Sign in to QunWork Cloud first"
+                : t("Sign in to QunWork Cloud first")
           }
         >
-          {c.managed_paused ? "＋ Add account · Coming soon" : busy ? "Check your browser…" : "＋ Add account"}
+          {c.managed_paused ? t("＋ Add account · Coming soon") : busy ? t("Check your browser…") : t("＋ Add account")}
         </button>
       </div>
 
       {!c.connected && (
         <div className={GRP}>
           <div className={ROW + " text-[12.5px] text-muted"}>
-            Sign in with Google — each account stays separate, agents say which one they use.
-            {cloud?.signed_in ? "" : " Requires cloud sign-in."}
+            {t("Sign in with Google — each account stays separate, agents say which one they use.")}
+            {cloud?.signed_in ? "" : " " + t("Requires cloud sign-in.")}
           </div>
         </div>
       )}
@@ -84,8 +86,7 @@ export function CalendarDetail({ c, cloud, slack: _slack, onChanged }: DetailPro
 
       <ToolsDisclosure c={c} onChanged={onChanged} />
       <div className={FOOT + " mt-2"}>
-        Creating, changing, or deleting events always asks for your approval first, and the
-        approval names the account.
+        {t("Creating, changing, or deleting events always asks for your approval first, and the approval names the account.")}
       </div>
     </div>
   );

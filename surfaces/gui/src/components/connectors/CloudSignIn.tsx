@@ -1,3 +1,4 @@
+import { useT } from "../../i18n";
 import { useEffect, useRef, useState } from "react";
 import { announceCloudChanged, cloudLogin, waitForCloudSignIn } from "../../api";
 
@@ -8,6 +9,7 @@ import { announceCloudChanged, cloudLogin, waitForCloudSignIn } from "../../api"
 // relying on "some other section's 5s poll" left the rail stuck on the prompt
 // (FB-013).
 export function CloudSignInInline({ blurb }: { blurb?: string }) {
+  const t = useT();
   const [waiting, setWaiting] = useState(false);
   const cancelRef = useRef<(() => void) | null>(null);
   useEffect(() => () => cancelRef.current?.(), []);
@@ -26,10 +28,10 @@ export function CloudSignInInline({ blurb }: { blurb?: string }) {
           });
         }}
       >
-        {waiting ? "Check your browser…" : "Sign in to QunWork Cloud"}
+        {waiting ? t("Check your browser…") : t("Sign in to QunWork Cloud")}
       </button>
       <div className="text-[11.5px] text-faint">
-        {blurb || "Sign-in unlocks one-click connects — or switch to Manual, which works without it."}
+        {blurb || t("Sign-in unlocks one-click connects — or switch to Manual, which works without it.")}
       </div>
     </div>
   );
