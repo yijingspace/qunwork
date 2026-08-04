@@ -39,7 +39,7 @@ import { ModelsTab } from "./ManageTabs";
 import { GalleryModal } from "./GalleryModal";
 import { PersonasTab } from "./PersonasTab";
 import { showPersonas } from "../flags";
-import { useT } from "../i18n";
+import { useT, useLanguage } from "../i18n";
 
 // Settings, restructured (Option 2) into a full-page surface that mirrors IntegrationsView's shell:
 // a left sub-nav (Appearance · Files · Models · Personas) + centered panel, replacing the old
@@ -393,6 +393,7 @@ function PersonasSection({ onOpenPersona }: { onOpenPersona?: (id: string) => vo
 // -- Appearance + app behaviour ------------------------------------------------
 function AppearanceSection() {
   const t = useT();
+  const { pref: langPref, setLanguage } = useLanguage();
   const [theme, setTheme] = useThemePref();
   const [autostart, setAuto] = useState(false);
   const [keepAwake, setKeep] = useState(false);
@@ -426,6 +427,18 @@ function AppearanceSection() {
           ))}
         </div>
         <div className={FIELD_HELP}>{t("Auto follows your device's appearance.")}</div>
+      </div>
+
+      <div className={CARD + " p-4 mb-4"}>
+        <div className={FIELD_LABEL}>{t("Language")}</div>
+        <div className="seg mt-2.5" role="radiogroup" aria-label={t("Language")} data-testid="settings-language">
+          {(["auto", "zh", "en"] as const).map((p) => (
+            <button key={p} className={langPref === p ? "active" : ""} onClick={() => setLanguage(p)}>
+              {p === "auto" ? t("Follow system") : p === "zh" ? "中文" : "English"}
+            </button>
+          ))}
+        </div>
+        <div className={FIELD_HELP}>{t("Language setting is saved on this device.")}</div>
       </div>
 
       <SidebarCard />
