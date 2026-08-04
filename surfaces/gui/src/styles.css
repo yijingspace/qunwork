@@ -997,7 +997,7 @@ button.btn.sm.danger-btn:hover { border-color: var(--danger); }
   display: flex;
 }
 .boot-mark-img { width: 42px; height: 42px; object-fit: contain; }
-.brand-logo { width: 18px; height: 18px; object-fit: contain; flex: none; }}
+.brand-logo { width: 18px; height: 18px; object-fit: contain; flex: none; }
 .boot-text {
   font-size: 14px;
   opacity: 0.6;
