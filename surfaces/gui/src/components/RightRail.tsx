@@ -122,13 +122,24 @@ export function RightRail({
   // seconds old), then fall back to a minimal record — readArtifact validates the path.
   useEffect(() => {
     if (!active) return;
-    const minimal = (path: string): ArtifactInfo => ({
-      path,
-      name: path.split("/").pop() || path,
-      kind: kindFromPath(path),
-      size: 0,
-      modified_at: 0,
-    });
+    const minimal = (path: string): ArtifactInfo => {
+      // A model may echo a URL-encoded artifact path (%E7%AA%81… for Chinese names);
+      // decode for the display name, keep the raw path for the read call (the server
+      // now accepts encoded variants too).
+      let display = path;
+      try {
+        display = decodeURIComponent(path);
+      } catch {
+        // not an encoded string — keep as-is
+      }
+      return {
+        path,
+        name: display.split("/").pop() || display,
+        kind: kindFromPath(path),
+        size: 0,
+        modified_at: 0,
+      };
+    };
     const match = (list: ArtifactInfo[], path: string) =>
       list.find((a) => a.path === path || a.path.endsWith("/" + path) || a.name === path);
     const onOpen = (e: Event) => {

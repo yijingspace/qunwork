@@ -175,13 +175,16 @@ def test_artifacts_list_and_read_previewable_files(tmp_path):
     assert "<h1>Preview</h1>" in html["content"]
 
 
-def test_artifact_read_rejects_path_escape(tmp_path):
+def test_artifact_read_rejects_missing_file(tmp_path):
+    # Traversal-style paths that don't resolve to a real file are rejected (the resolver
+    # accepts absolute + cross-workspace reads — a deliverable may live outside the
+    # session workspace — but still refuses nonexistent targets).
     client = _client(tmp_path, [])
     escaped = client.get(
         "/v1/sessions/unknown/artifacts/read", params={"path": "../outside.md"}
     ).json()
     assert escaped["ok"] is False
-    assert "escapes" in escaped["error"]
+    assert escaped["error"] == "not found"
 
 
 def test_sessions_hide_scheduled_internal_runs(tmp_path):

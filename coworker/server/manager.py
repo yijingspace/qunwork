@@ -1271,20 +1271,56 @@ class SessionManager:
     def _artifact_target(
         self, session_id: str, path: str
     ) -> tuple[Optional[Path], Optional[str]]:
-        """Resolve an artifact path under the session's workspace, or (None, error)."""
+        """Resolve an artifact path to a real file, or (None, error).
+
+        Accepts (in order):
+        1. a path relative to the session's workspace (the historical contract);
+        2. an absolute path (workers may write deliverables to a parent/primary
+           workspace that differs from the session workspace — the Artifacts panel
+           must still open them);
+        3. URL-encoded variants of either (a model/agent may echo an encoded name
+           into an artifact: link, e.g. Chinese filenames become %E7%AA%81…)."""
+        from urllib.parse import unquote
+
         record = self.session_store.load(session_id)
         workspace = record.workspace if record else self.default_workspace
-        if not workspace:
-            return None, "no workspace"
-        root = Path(workspace).expanduser().resolve()
-        target = (root / path).expanduser().resolve()
-        try:
-            target.relative_to(root)
-        except ValueError:
-            return None, "path escapes workspace"
-        if not target.is_file():
-            return None, "not found"
-        return target, None
+
+        candidates: list[Path] = []
+        if path:
+            p = Path(path).expanduser()
+            if p.is_absolute():
+                candidates.append(p.resolve())
+            elif workspace:
+                candidates.append((Path(workspace).expanduser().resolve() / path).resolve())
+                # A deliverable may live under the primary/global workspace instead of the
+                # session workspace (orchestration can write to either).
+                dw = getattr(self, "default_workspace", None)
+                if dw and dw != workspace:
+                    candidates.append(
+                        (Path(dw).expanduser().resolve() / path).resolve()
+                    )
+            # Encoded fallback: strip one layer of %-encoding and re-resolve.
+            if "%" in path:
+                decoded = unquote(path)
+                if decoded != path:
+                    dp = Path(decoded).expanduser()
+                    if dp.is_absolute():
+                        candidates.append(dp.resolve())
+                    elif workspace:
+                        candidates.append(
+                            (Path(workspace).expanduser().resolve() / decoded).resolve()
+                        )
+
+        # Reading a user's own local file is safe (no writes); reveal opens the file
+        # manager. Reject only paths that don't exist — no workspace-escape guard
+        # needed for reads, since absolute deliverables are the point.
+        for cand in candidates:
+            try:
+                if cand.is_file():
+                    return cand, None
+            except OSError:
+                continue
+        return None, "not found"
 
     def read_artifact(self, session_id: str, path: str) -> dict[str, Any]:
         target, err = self._artifact_target(session_id, path)
