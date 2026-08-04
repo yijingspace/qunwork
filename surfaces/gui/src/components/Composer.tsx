@@ -392,7 +392,7 @@ export function Composer(props: Props) {
         <textarea
           ref={textareaRef}
           className="w-full block px-3.5 pt-3.5 pb-1.5 text-[14.5px]"
-          placeholder={props.placeholder || "Ask the coworker…  (drop or paste files)"}
+          placeholder={props.placeholder || t("Describe a task — paste text or drop files…")}
           value={text}
           onChange={(e) => setText(e.target.value)}
           onKeyDown={onKey}

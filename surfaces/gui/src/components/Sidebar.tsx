@@ -1364,7 +1364,7 @@ function NewSessionSplit({
           }
           onClick={() => onNew(solo && enabled.length === 1 ? enabled[0].id : current)}
         >
-          <Icon name="plus" size={15} className="shrink-0" /> {t("New session")}
+          <Icon name="plus" size={15} className="shrink-0" /> {t("New task")}
         </button>
         {!solo && (
           <button

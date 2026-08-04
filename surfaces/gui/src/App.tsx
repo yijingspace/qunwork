@@ -1119,7 +1119,7 @@ export function App() {
   const subtitleParts = [modelDisplay];
   if (isProjectScoped(personaOf(agent)) && workspace) subtitleParts.push(baseName(workspace));
   const activeInfo = sessions.find((s) => s.session_id === sessionId);
-  const activeTitle = activeInfo?.title || t("New session");
+  const activeTitle = activeInfo?.title || t("New task");
 
   const desktop = isTauri();
   // Dev-only: `?overlay=1` simulates the desktop overlay layout in the browser (adds the
@@ -1362,8 +1362,8 @@ export function App() {
                 <button
                   className="topbar-icon-btn"
                   onClick={() => startNewSession()}
-                  aria-label={t("New session")}
-                  title={t("New session")}
+                  aria-label={t("New task")}
+                  title={t("New task")}
                 >
                   <Icon name="plus" size={16} />
                 </button>
@@ -1478,7 +1478,7 @@ export function App() {
                     </h1>
                     {needsWorkspace(agent) && (
                       <div className="suggestions">
-                        <div className="suggest-head">{t("Try a task")}</div>
+                        <div className="suggest-head">{t("Start with a task")}</div>
                         {SUGGESTIONS.map((s, i) => (
                           <div className="suggest" key={i} onClick={() => workspace && send(s.text)}>
                             <span className="ico">{s.ico}</span>
@@ -1679,7 +1679,7 @@ function WaitingForAgent() {
     <div className="waiting-transcript">
       <div className="waiting-row" aria-live="polite">
         <span className="waiting-spinner" />
-        <span>{t("Waiting for agent...")}</span>
+        <span>{t("Working on your task...")}</span>
       </div>
     </div>
   );

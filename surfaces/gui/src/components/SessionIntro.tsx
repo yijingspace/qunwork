@@ -67,10 +67,10 @@ export function SessionIntro({
   return (
     <div className="intro">
       <h1 className="greeting">
-        <span className="mark">✦</span> {t("What should we produce?")}
+        <span className="mark">✦</span> {t("What task can I help you solve?")}
       </h1>
       <p className="intro-lede">
-        {t("Pick a task to start — I'll do the work and save the result. Or just type what you need below.")}
+        {t("Tell me what you need done — I'll plan it, do the work, and save the result. Or pick a task below.")}
       </p>
 
       <div className="intro-tasks">
