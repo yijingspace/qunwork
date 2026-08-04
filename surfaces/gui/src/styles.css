@@ -11,7 +11,9 @@
   font-weight: 700;
   letter-spacing: -0.015em;
   white-space: nowrap; /* the BETA chip rides the same line, never wraps under */
+  display: inline-flex; align-items: center; gap: 6px;
 }
+.brand-wordmark .mark { color: var(--accent); }
 
 :root {
   color-scheme: light;
@@ -992,7 +994,10 @@ button.btn.sm.danger-btn:hover { border-color: var(--danger); }
   color: var(--accent);
   opacity: 0.9;
   animation: boot-pulse 1.4s ease-in-out infinite;
+  display: flex;
 }
+.boot-mark-img { width: 42px; height: 42px; object-fit: contain; }
+.brand-logo { width: 18px; height: 18px; object-fit: contain; flex: none; }}
 .boot-text {
   font-size: 14px;
   opacity: 0.6;

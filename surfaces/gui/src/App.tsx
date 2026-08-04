@@ -30,6 +30,7 @@ import {
 } from "./api";
 import type { ApprovalDecision, Attachment, Item, SessionInfo, TodoItem, WsEvent } from "./types";
 import { isProjectScoped } from "./personaScope";
+import qunworkMark from "./assets/qunwork-mark.png";
 import { baseName } from "./paths";
 import { itemsFromMessages } from "./itemsFromMessages";
 import { streamMode } from "./streamGate";
@@ -1152,10 +1153,10 @@ export function App() {
             <span /><span /><span />
           </div>
         )}
-        {/* The real QunWork mark (6-point star, same as the app/tray icon) — the old
+        {/* The real QunWork mark (Q + swarm, same as the app/tray icon) — the old
             ✦ text glyph was a 4-point sparkle that read as another product's logo. */}
         <div className="boot-mark">
-          <Icon name="logo" size={38} />
+          <img src={qunworkMark} alt="QunWork" className="boot-mark-img" />
         </div>
         <div className="boot-text">
           {resumedExisting ? t("Restoring your session…") : t("Starting QunWork…")}

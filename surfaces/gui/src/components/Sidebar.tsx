@@ -23,6 +23,7 @@ import type { SessionInfo } from "../types";
 import { isProjectScoped, shortPersonaName } from "../personaScope";
 import { ConnectorIcon } from "../connectors/ConnectorIcon";
 import { Icon, type IconName } from "./Icon";
+import qunworkMark from "../assets/qunwork-mark.png";
 import { PersonaGlyph, personaGlyph } from "./personaIcon";
 import { SearchModal } from "./SearchModal";
 import { baseName } from "../paths";
@@ -1012,7 +1013,9 @@ export function Sidebar(props: Props) {
             <Icon name="sidebar" size={16} />
           </button>
         )}
-        <div className="brand-wordmark text-[15px]">QunWork<span className="beta-tag">BETA</span></div>
+        <div className="brand-wordmark text-[15px]">
+          <img src={qunworkMark} alt="QunWork" className="brand-logo" /> QunWork<span className="beta-tag">BETA</span>
+        </div>
         <div className="brand-slogan">{t("QunWork — collaboration, naturally.")}</div>
       </div>
 
