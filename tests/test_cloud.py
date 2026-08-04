@@ -412,6 +412,7 @@ def test_emit_sends_nothing_when_opted_out(secrets, config, monkeypatch):
 
 def test_emit_is_content_free_and_hashes_session_id(secrets, config, monkeypatch):
     _signed_in(secrets)
+    cloud.set_telemetry_enabled(secrets, True)  # opt-in (default is now OFF, #116)
     sent = {}
 
     def fake_post(url, **kwargs):
@@ -433,13 +434,39 @@ def test_emit_is_content_free_and_hashes_session_id(secrets, config, monkeypatch
     body = sent["body"]
     assert body["event"] == "coworker_session_created"
     assert body["install_id"].startswith("ins_")
-    assert "sess-secret-id" not in str(body)  # raw id never leaves the device
+    # #116: persona/workspace metadata is no longer transmitted
+    assert "persona_id" not in body["session"]
+    assert "persona_family" not in body["session"]
+    assert "workspace_kind" not in body["session"]
+
+
+def test_telemetry_defaults_to_opt_out(secrets, config, monkeypatch):
+    """#116: telemetry must be OFF by default; only an explicit opt-in sends."""
+    _signed_in(secrets)
+    sent = {}
+
+    def fake_post(url, **kwargs):
+        sent["url"] = url
+        sent["body"] = kwargs.get("json")
+        return FakeResponse(200, {"ok": True})
+
+    monkeypatch.setattr(cloud.httpx, "post", fake_post)
+    ok = cloud.emit_session_created(
+        secrets, config, session_id="s", persona_id="p", persona_family="f", workspace_kind="w"
+    )
+    assert ok is False  # no telemetry by default
+    assert not sent
+
+    # opt-in then verify the payload drops persona/workspace metadata (#116)
+    cloud.set_telemetry_enabled(secrets, True)
+    ok2 = cloud.emit_session_created(
+        secrets, config, session_id="s", persona_id="p", persona_family="f", workspace_kind="w"
+    )
+    assert ok2 is True
+    body = sent["body"]
     assert body["session"]["session_id_hash"].startswith("sha256:")
     assert set(body["session"]) == {
         "session_id_hash",
-        "persona_id",
-        "persona_family",
-        "workspace_kind",
     }
 
 

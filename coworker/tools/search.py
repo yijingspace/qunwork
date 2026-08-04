@@ -136,10 +136,16 @@ def _rel(path: str, root: Path) -> str:
 
 def _parse_rg(stdout: str, root: Path, n: int) -> dict[str, Any]:
     matches: list[dict[str, Any]] = []
+    # ripgrep emits `<path>:<line>:<text>`. Windows drive letters contain a colon
+    # (C:\...), so a naive split(":", 2) would truncate the path at the drive —
+    # upstream #17. Match greedily: everything up to the LAST path:line boundary
+    # (the colon directly before the line number) is the file.
+    import re as _re
+
     for line in stdout.splitlines():
-        parts = line.split(":", 2)
-        if len(parts) == 3:
-            f, ln, txt = parts
+        m = _re.match(r"^(.+):(\d+):(.*)$", line)
+        if m:
+            f, ln, txt = m.group(1), m.group(2), m.group(3)
             matches.append(
                 {
                     "file": _rel(f, root),

@@ -13,7 +13,7 @@ export const en: Messages = {};
 export const zh: Messages = {
   // ---- Onboarding -----------------------------------------------------
   "Welcome to QunWork": "欢迎使用 QunWork",
-  "Pick a model provider to get started — QunWork runs on your own key, and your\n              key and your data stay on this Mac.":
+  "Pick a model provider to get started — QunWork runs on your own key, and your\n              key and your data stay on this device.":
     "选择一个模型提供商开始 — QunWork 使用你自己的 Key,你的 Key 和数据都留在本机。",
   "Skip setup": "跳过设置",
   "Nothing works without a model —": "没有模型什么都做不了 —",
@@ -43,7 +43,7 @@ export const zh: Messages = {
   "Coming soon — pending Google's app verification.": "即将推出 — 等待 Google 应用审核。",
   "Coming soon": "即将推出",
   "Sign in for one-click connections": "登录以使用一键连接",
-  "QunWork handles the OAuth for 20+ tools — no dev consoles, no pasted keys.\n                  Tokens stay on this Mac.":
+  "QunWork handles the OAuth for 20+ tools — no dev consoles, no pasted keys.\n                  Tokens stay on this device.":
     "QunWork 处理 20+ 工具的 OAuth — 无需开发者后台,无需粘贴 Key。Token 留在本机。",
   "Opening browser…": "正在打开浏览器…",
   "Waiting…": "等待中…",
@@ -53,7 +53,7 @@ export const zh: Messages = {
   "Connect a tool above with one click — or add them anytime later from the\n                  Connectors page.":
     "点击上方工具一键连接 — 或稍后在「连接器」页面随时添加。",
   "Continue without sign-in": "不登录继续",
-  "30+ more tools on the Connectors page — add or remove anytime. Tokens stay on\n              this Mac.":
+  "30+ more tools on the Connectors page — add or remove anytime. Tokens stay on\n              this device.":
     "「连接器」页面还有 30+ 工具 — 可随时添加或移除。Token 留在本机。",
   "You're set up": "设置完成",
   "Two good ways to start:": "两种开始方式:",

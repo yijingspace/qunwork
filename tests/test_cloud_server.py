@@ -31,7 +31,7 @@ def test_cloud_status_signed_out(client):
         "signed_in": False,
         "account": "",
         "user_id": "",
-        "telemetry_enabled": True,  # local default; nothing is sent while signed out
+        "telemetry_enabled": False,  # #116: opt-in by default
     }
 
 
@@ -207,10 +207,10 @@ def test_delete_persona_after_gallery_install(client, monkeypatch):
 
 
 def test_cloud_status_carries_telemetry_pref_and_toggle_flips_it(client):
+    assert client.get("/v1/cloud/status").json()["telemetry_enabled"] is False  # #116: opt-in
+    body = client.post("/v1/cloud/telemetry", json={"enabled": True}).json()
+    assert body["ok"] and body["telemetry_enabled"] is True
     assert client.get("/v1/cloud/status").json()["telemetry_enabled"] is True
-    body = client.post("/v1/cloud/telemetry", json={"enabled": False}).json()
-    assert body["ok"] and body["telemetry_enabled"] is False
-    assert client.get("/v1/cloud/status").json()["telemetry_enabled"] is False
 
 
 def test_delete_persona_refuses_builtin_and_unknown(client):

@@ -130,7 +130,7 @@ def _browser_page(
         "</style></head><body>"
         '<div class="card"><div class="mark"><i></i>QunWork</div>'
         f"{icon}<h1>{_html.escape(title)}</h1><p>{_html.escape(detail)}</p>{err}</div>"
-        '<div class="foot">Served locally by QunWork on your Mac</div>'
+        '<div class="foot">Served locally by QunWork on your device</div>'
         "</body></html>"
     )
 

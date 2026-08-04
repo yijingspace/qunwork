@@ -283,7 +283,10 @@ def install_id(secrets: SecretStore) -> str:
 
 def telemetry_enabled(secrets: SecretStore) -> bool:
     profile = secrets.get(TELEMETRY_PROFILE) or {}
-    return bool(profile.get("enabled", True))  # default-on (only matters signed in)
+    # Default OFF (opt-in): upstream #116 — telemetry used to ship persona/session
+    # metadata by default after sign-in; privacy-sensitive users had no UI to
+    # disable it. Users who want it can opt in via set_telemetry_enabled.
+    return bool(profile.get("enabled", False))  # opt-in (only matters signed in)
 
 
 def set_telemetry_enabled(secrets: SecretStore, enabled: bool) -> dict[str, Any]:
@@ -322,9 +325,8 @@ def emit_session_created(
         "session": {
             "session_id_hash": "sha256:"
             + hashlib.sha256(session_id.encode()).hexdigest(),
-            "persona_id": persona_id,
-            "persona_family": persona_family,
-            "workspace_kind": workspace_kind,
+            # persona/workspace metadata deliberately NOT sent (upstream #116):
+            # the event identifies the session hashing only.
         },
     }
     try:

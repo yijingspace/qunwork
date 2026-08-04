@@ -14,6 +14,8 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Optional
 
+from .risk import WRITE_TOOLS
+
 # Shell metacharacters that turn one "allowlisted" command into several. Any of these in a
 # command disqualifies it from allowlist auto-run — approval is required instead. Covers
 # chaining (`;` `&` `&&` `||`), pipes (`|`), redirection (`>` `<`), command substitution
@@ -123,7 +125,11 @@ class PermissionEngine:
         arguments = arguments or {}
         is_connector = getattr(metadata, "category", "") == "connector"
         risk = classify(tool_name, metadata, self.risk_overrides)
-        is_write = risk is RiskClass.WRITE_LOCAL
+        # Path scoping must be decided by the TOOL NAME, not by the (overrideable)
+        # risk classification: an override downgrading write_file to "read" would
+        # otherwise skip the workspace check and let the write escape the root
+        # (upstream #116). Built-in write tools are always path-scoped.
+        is_write = risk is RiskClass.WRITE_LOCAL or tool_name in WRITE_TOOLS
         is_shell = risk is RiskClass.EXEC
         consequential = is_consequential(risk)
 
@@ -228,6 +234,18 @@ class PermissionEngine:
             return False  # unbalanced quotes etc. — treat as not-allowlisted
         if not argv:
             return False
+        # An allowlisted binary may still be dangerous with exec-like flags.
+        # `find . -exec cmd {} +` runs arbitrary commands while argv-prefix matching
+        # sees only ["find", ...] — exactly the upstream CVE (#281). Also block
+        # -execdir/-okdir, find's -delete, and common shell-outs from other tools.
+        _DANGEROUS_FLAGS = {
+            "-exec", "-execdir", "-ok", "-okdir",  # find: run commands
+            "-delete",  # find: destructive
+            "-execut",  # partial token guard (covers "-execute" typos)
+        }
+        for tok in argv[1:]:
+            if tok in _DANGEROUS_FLAGS or tok.startswith("-exec") or tok.startswith("-ok"):
+                return False
         for allowed in self.allowed_commands:
             try:
                 prefix = shlex.split(allowed)

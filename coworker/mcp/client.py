@@ -70,7 +70,15 @@ class MCPManager:
         conn = self._conns.get(name)
         if conn is None:
             raise RuntimeError(f"MCP server not connected: {name}")
-        result = await conn.session.call_tool(tool, arguments or {})
+        # Upstream #275: a hanging tool call used to leak forever (result dropped,
+        # request never cancelled). Cap the call and cancel the underlying future
+        # so the transport can shut down instead of dangling.
+        try:
+            result = await asyncio.wait_for(
+                conn.session.call_tool(tool, arguments or {}), timeout=60
+            )
+        except asyncio.TimeoutError:
+            raise TimeoutError(f"MCP tool '{tool}' on '{name}' timed out after 60s")
         return _result_payload(result)
 
     async def aclose(self) -> None:

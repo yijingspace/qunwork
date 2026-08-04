@@ -202,3 +202,23 @@ def test_index_folder_truncated_reports_cap_and_failures(tmp_path: Path):
     assert len(summary2["failures"]) == 2
     assert all(f["reason"] for f in summary2["failures"])
     assert summary2["added"] == 0
+
+
+def test_grep_parse_windows_drive_path():
+    """Upstream #17: ripgrep output with a Windows drive path must not be
+    truncated at the drive colon."""
+    from coworker.tools.search import _parse_rg
+    from pathlib import Path
+
+    out = _parse_rg(
+        "C:\repo\src\app.py:42:def main():\nE:\docs\readme.md:7:Install guide",
+        Path("C:\repo"),
+        10,
+    )
+    assert out["count"] == 2
+    assert out["matches"][0]["file"].endswith("src\app.py")
+    assert out["matches"][0]["line"] == 42
+    assert out["matches"][0]["text"] == "def main():"
+    # unix-style still works
+    out2 = _parse_rg("/repo/a.py:3:x", Path("/repo"), 10)
+    assert out2["matches"][0]["line"] == 3
