@@ -585,4 +585,12 @@ export const zh: Messages = {
   "Start with a task": "从一个任务开始",
   "Working on your task...": "正在处理你的任务…",
   "Describe a task — paste text or drop files…": "描述一个任务——粘贴文本或拖入文件…",
+  "Failed to save template": "保存模板失败",
+  "Delete template": "删除模板",
+  "Custom template": "自定义模板",
+  "Save a task you run often — click to fill the composer": "保存一个你经常执行的任务——点击即可填充输入框",
+  "Template title": "模板标题",
+  "The task prompt": "任务提示词",
+  "Save template": "保存模板",
+  "Together, we craft the future": "群策群力,沃客未来",
 };

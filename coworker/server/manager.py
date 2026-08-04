@@ -3439,7 +3439,7 @@ class SessionManager:
         return [
             {
                 "session_id": r.session_id,
-                "title": r.title or "New session",
+                "title": r.title or "New task",
                 "workspace": r.workspace,
                 "agent": r.agent,
                 "model": r.model,
@@ -3531,6 +3531,15 @@ class SessionManager:
                     pass
 
     # -- knowledge file library --------------------------------------------
+    def list_task_templates(self) -> list[dict[str, Any]]:
+        return self.session_store.list_task_templates()
+
+    def add_task_template(self, title: str, prompt: str) -> dict[str, Any]:
+        return self.session_store.add_task_template(title, prompt)
+
+    def delete_task_template(self, template_id: int) -> bool:
+        return self.session_store.delete_task_template(template_id)
+
     def knowledge_list(
         self, workspace: Optional[str] = None, limit: int = 100, offset: int = 0
     ) -> dict[str, Any]:

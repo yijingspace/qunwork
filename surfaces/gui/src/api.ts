@@ -763,6 +763,35 @@ export async function searchKnowledge(
   return await res.json();
 }
 
+export interface TaskTemplate {
+  id: number;
+  title: string;
+  prompt: string;
+  created_at?: string;
+}
+
+export async function listTaskTemplates(): Promise<{ templates: TaskTemplate[] }> {
+  const res = await fetch(`${httpBase()}/v1/task-templates`);
+  return await res.json();
+}
+
+export async function addTaskTemplate(
+  title: string,
+  prompt: string,
+): Promise<{ ok: boolean; template?: TaskTemplate; error?: string }> {
+  const res = await fetch(`${httpBase()}/v1/task-templates`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ title, prompt }),
+  });
+  return await res.json();
+}
+
+export async function deleteTaskTemplate(id: number): Promise<{ ok: boolean }> {
+  const res = await fetch(`${httpBase()}/v1/task-templates/${id}`, { method: "DELETE" });
+  return await res.json();
+}
+
 export interface OrchestrationRunSnapshot {
   ok: boolean;
   error?: string;

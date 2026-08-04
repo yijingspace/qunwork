@@ -56,7 +56,7 @@ def title_from(messages: list[dict]) -> str:
             text = content_to_text(m.get("content"), image_placeholder="").strip()
             if text:
                 return text.splitlines()[0][:60]
-    return "New session"
+    return "New task"
 
 
 class ConversationStore:
@@ -81,6 +81,12 @@ class ConversationStore:
             );
             CREATE TABLE IF NOT EXISTS workspaces (
                 path TEXT PRIMARY KEY, last_used TEXT DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE IF NOT EXISTS task_templates (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT NOT NULL,
+                prompt TEXT NOT NULL,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
             );
             """)
         for ddl in (
@@ -164,6 +170,38 @@ class ConversationStore:
             self._conn.commit()
 
     # -- API --------------------------------------------------------------------
+    def list_task_templates(self) -> list[dict[str, Any]]:
+        """User-defined home-task templates: title + the prompt that gets prefilled."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT id, title, prompt, created_at FROM task_templates ORDER BY id"
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def add_task_template(self, title: str, prompt: str) -> dict[str, Any]:
+        title = (title or "").strip()
+        prompt = (prompt or "").strip()
+        if not title or not prompt:
+            raise ValueError("title and prompt are required")
+        with self._lock:
+            cur = self._conn.execute(
+                "INSERT INTO task_templates (title, prompt) VALUES (?, ?)", (title, prompt)
+            )
+            self._conn.commit()
+            row = self._conn.execute(
+                "SELECT id, title, prompt, created_at FROM task_templates WHERE id = ?",
+                (cur.lastrowid,),
+            ).fetchone()
+        return dict(row)
+
+    def delete_task_template(self, template_id: int) -> bool:
+        with self._lock:
+            cur = self._conn.execute(
+                "DELETE FROM task_templates WHERE id = ?", (template_id,)
+            )
+            self._conn.commit()
+            return cur.rowcount > 0
+
     def save(self, record: SessionRecord) -> None:
         sid = record.session_id
         with self._lock:

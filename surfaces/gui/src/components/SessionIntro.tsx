@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { getConnectors, getSessionConnections } from "../api";
+import { getConnectors, getSessionConnections, listTaskTemplates, addTaskTemplate, deleteTaskTemplate, type TaskTemplate } from "../api";
 import type { Attachment } from "../types";
 import { ConnectorIcon } from "../connectors/ConnectorIcon";
 import { indexConnectors, visualFor, type ConnectorMap } from "../connectors/visuals";
@@ -36,6 +36,12 @@ export function SessionIntro({
   const [live, setLive] = useState<Set<string>>(new Set());
   const [byName, setByName] = useState<ConnectorMap>({});
   const [addingFolder, setAddingFolder] = useState(false);
+  const [templates, setTemplates] = useState<TaskTemplate[]>([]);
+  const [addingTemplate, setAddingTemplate] = useState(false);
+  const [tmplTitle, setTmplTitle] = useState("");
+  const [tmplPrompt, setTmplPrompt] = useState("");
+  const [tmplError, setTmplError] = useState<string | null>(null);
+  const [tmplBusy, setTmplBusy] = useState(false);
 
   useEffect(() => {
     // Live = what this session can touch right now (connected AND not muted here) — the same
@@ -45,6 +51,9 @@ export function SessionIntro({
       .catch(() => {});
     getConnectors()
       .then((list) => setByName(indexConnectors(list)))
+      .catch(() => {});
+    listTaskTemplates()
+      .then((r) => setTemplates(r.templates ?? []))
       .catch(() => {});
   }, [sessionId]);
 
@@ -62,6 +71,26 @@ export function SessionIntro({
     // A shared folder already exists → straight to the prompt; otherwise share one first.
     if (shared.length > 0) onPrefill(t(FOLDER_PROMPT));
     else setAddingFolder((v) => !v);
+  };
+
+  const saveTemplate = async () => {
+    setTmplBusy(true);
+    setTmplError(null);
+    const res = await addTaskTemplate(tmplTitle, tmplPrompt);
+    setTmplBusy(false);
+    if (!res.ok) {
+      setTmplError(res.error || t("Failed to save template"));
+      return;
+    }
+    setTemplates((prev) => [...prev, res.template!]);
+    setAddingTemplate(false);
+    setTmplTitle("");
+    setTmplPrompt("");
+  };
+
+  const removeTemplate = async (id: number) => {
+    const ok = await deleteTaskTemplate(id);
+    if (ok.ok) setTemplates((prev) => prev.filter((x) => x.id !== id));
   };
 
   return (
@@ -127,6 +156,67 @@ export function SessionIntro({
           </span>
           <span className="task-card-act">{ghSlackReady ? t("Start →") : t("Configure ›")}</span>
         </button>
+
+        {templates.map((tmpl) => (
+          <button
+            key={tmpl.id}
+            className="task-card"
+            data-testid={`intro-task-custom-${tmpl.id}`}
+            onClick={() => onPrefill(tmpl.prompt)}
+          >
+            <span className="task-card-body">
+              <span className="task-card-title">{tmpl.title}</span>
+              <span className="task-card-sub">{tmpl.prompt}</span>
+            </span>
+            <span className="task-card-act">{t("Start →")}</span>
+            <span
+              className="task-card-del"
+              role="button"
+              aria-label={t("Delete template")}
+              title={t("Delete template")}
+              onClick={(e) => {
+                e.stopPropagation();
+                void removeTemplate(tmpl.id);
+              }}
+            >
+              ×
+            </span>
+          </button>
+        ))}
+
+        <button className="task-card task-card-add" data-testid="intro-task-add" onClick={() => setAddingTemplate((v) => !v)}>
+          <span className="task-card-body">
+            <span className="task-card-title">{addingTemplate ? t("Cancel") : "＋ " + t("Custom template")}</span>
+            <span className="task-card-sub">{t("Save a task you run often — click to fill the composer")}</span>
+          </span>
+        </button>
+        {addingTemplate && (
+          <div className="intro-addfolder intro-template-form">
+            <input
+              className="intro-tmpl-input"
+              placeholder={t("Template title")}
+              value={tmplTitle}
+              onChange={(e) => setTmplTitle(e.target.value)}
+              autoFocus
+            />
+            <textarea
+              className="intro-tmpl-input intro-tmpl-prompt"
+              placeholder={t("The task prompt")}
+              value={tmplPrompt}
+              onChange={(e) => setTmplPrompt(e.target.value)}
+              rows={3}
+            />
+            {tmplError && <div className="roots-err">{tmplError}</div>}
+            <div className="flex gap-2">
+              <button className="btn" disabled={tmplBusy || !tmplTitle.trim() || !tmplPrompt.trim()} onClick={() => void saveTemplate()}>
+                {tmplBusy ? t("Saving…") : t("Save template")}
+              </button>
+              <button className="btn quiet" onClick={() => setAddingTemplate(false)}>
+                {t("Cancel")}
+              </button>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

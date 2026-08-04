@@ -762,6 +762,25 @@ def create_app(manager: SessionManager) -> FastAPI:
         results = manager.knowledge_search(query, k=5)
         return {"ok": True, "query": query, "results": results}
 
+    # -- user task templates (home quick-start cards) -------------------------
+    @app.get("/v1/task-templates")
+    def task_templates_list() -> dict[str, Any]:
+        return {"templates": manager.list_task_templates()}
+
+    @app.post("/v1/task-templates")
+    def task_templates_add(body: dict) -> dict[str, Any]:
+        try:
+            template = manager.add_task_template(
+                str(body.get("title") or ""), str(body.get("prompt") or "")
+            )
+        except ValueError as exc:
+            return {"ok": False, "error": str(exc)}
+        return {"ok": True, "template": template}
+
+    @app.delete("/v1/task-templates/{template_id}")
+    def task_templates_delete(template_id: int) -> dict[str, Any]:
+        return {"ok": manager.delete_task_template(template_id), "id": template_id}
+
     @app.get("/v1/workspaces/recent")
     def recent_workspaces() -> dict[str, Any]:
         return {"workspaces": manager.recent_workspaces()}
