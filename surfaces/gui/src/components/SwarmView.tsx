@@ -1,11 +1,15 @@
 import { useEffect, useRef, useState } from "react";
 import {
+  addSwarmTemplate,
+  deleteSwarmTemplate,
   getHealth,
   getOrchestrateHistory,
   getOrchestrateRun,
+  listSwarmTemplates,
   orchestrate,
   type OrchestrationHistoryItem,
   type OrchestrationRunSnapshot,
+  type SwarmTemplate,
 } from "../api";
 import { useT } from "../i18n";
 
@@ -121,6 +125,11 @@ export function SwarmView({ onBack, workspace }: { onBack: () => void; workspace
   const [stale, setStale] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [history, setHistory] = useState<OrchestrationHistoryItem[]>([]);
+  const [templates, setTemplates] = useState<SwarmTemplate[]>([]);
+  const [savingTpl, setSavingTpl] = useState(false);
+  const [tplTitle, setTplTitle] = useState("");
+  const [tplError, setTplError] = useState<string | null>(null);
+  const [showTemplateForm, setShowTemplateForm] = useState(false);
   const mounted = useRef(true);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -132,6 +141,12 @@ export function SwarmView({ onBack, workspace }: { onBack: () => void; workspace
       if (pollRef.current) clearInterval(pollRef.current);
       if (timerRef.current) clearInterval(timerRef.current);
     };
+  }, []);
+
+  useEffect(() => {
+    listSwarmTemplates()
+      .then((r) => mounted.current && setTemplates(r.templates ?? []))
+      .catch(() => {});
   }, []);
 
   const loadHistory = async () => {
@@ -147,9 +162,35 @@ export function SwarmView({ onBack, workspace }: { onBack: () => void; workspace
     loadHistory();
   }, []);
 
+  const saveTemplate = async () => {
+    setSavingTpl(true);
+    setTplError(null);
+    const res = await addSwarmTemplate(
+      tplTitle.trim() || intent.trim().slice(0, 30) || "Swarm run",
+      intent,
+      tasks.map((t) => ({ id: t.id, description: t.description, deps: t.deps })),
+    );
+    setSavingTpl(false);
+    if (!res.ok) {
+      setTplError(res.error || "Failed to save template");
+      return;
+    }
+    if (res.template) setTemplates((prev) => [res.template!, ...prev]);
+    setTplTitle("");
+    setShowTemplateForm(false);
+  };
+
+  const removeTemplate = async (id: number) => {
+    const ok = await deleteSwarmTemplate(id);
+    if (ok.ok) setTemplates((prev) => prev.filter((x) => x.id !== id));
+  };
+
+  const applyTemplate = (tmpl: SwarmTemplate) => {
+    setIntent(tmpl.intent);
+  };
+
   const applySnapshot = (snap: OrchestrationRunSnapshot) => {
-    setStatus(snap.status);
-    if (snap.final) setFinalReport(snap.final);    const tasks: TaskView[] = [];
+    setStatus(snap.status);    if (snap.final) setFinalReport(snap.final);    const tasks: TaskView[] = [];
     const thoughts: Thought[] = [];
     const gov: string[] = [];
     for (const ev of snap.events) {
@@ -264,8 +305,7 @@ export function SwarmView({ onBack, workspace }: { onBack: () => void; workspace
     setStale(false);
     setRunId(rid);
     setStatus("running");
-    setStartedAt(Date.now());
-    // jump the content view back to the top so the loaded run is immediately visible
+    setStartedAt(Date.now());    // jump the content view back to the top so the loaded run is immediately visible
     requestAnimationFrame(() => {
       document.querySelector(".swarm-scroll")?.scrollTo({ top: 0 });
     });
@@ -384,6 +424,40 @@ export function SwarmView({ onBack, workspace }: { onBack: () => void; workspace
               {elapsed > 0 && <span className="text-faint"> · {fmtDuration(elapsed, t)}</span>}
             </span>
           )}
+          {status === "completed" && runId && !showTemplateForm && (
+            <button
+              className="ml-auto shrink-0 rounded-lg border border-line px-2.5 py-1 text-[12.5px] text-muted hover:text-ink hover:border-lineStrong"
+              onClick={() => setShowTemplateForm(true)}
+              data-testid="swarm-save-template"
+            >
+              💾 {t("Save as template")}
+            </button>
+          )}
+          {showTemplateForm && (
+            <span className="ml-auto shrink-0 flex items-center gap-2">
+              <input
+                className="w-44 rounded border border-line bg-paper px-2 py-1 text-[12px] outline-none focus:border-lineStrong"
+                placeholder={t("Template title")}
+                value={tplTitle}
+                onChange={(e) => setTplTitle(e.target.value)}
+                autoFocus
+              />
+              <button
+                className="rounded-lg bg-accent px-2.5 py-1 text-[12.5px] text-white disabled:opacity-50"
+                disabled={savingTpl}
+                onClick={() => void saveTemplate()}
+              >
+                {savingTpl ? t("Saving…") : t("Save")}
+              </button>
+              <button
+                className="rounded-lg border border-line px-2.5 py-1 text-[12.5px] text-muted hover:text-ink"
+                onClick={() => setShowTemplateForm(false)}
+              >
+                {t("Cancel")}
+              </button>
+            </span>
+          )}
+          {tplError && <div className="text-[12px] text-danger mt-2">{tplError}</div>}
         </div>
         {error && <div className="text-[12px] text-danger mt-2">{error}</div>}
       </div>
@@ -519,6 +593,33 @@ export function SwarmView({ onBack, workspace }: { onBack: () => void; workspace
             </div>
             {governance.map((g, i) => (
               <div key={i} className="text-[11px] text-faint font-mono mb-0.5">{g}</div>
+            ))}
+          </div>
+        )}
+
+        {templates.length > 0 && (
+          <div className="mb-3">
+            <div className="text-[11px] uppercase tracking-[0.07em] text-faint font-semibold mb-1.5">
+              {t("Templates")}
+            </div>
+            {templates.map((tmpl) => (
+              <div
+                key={tmpl.id}
+                className="w-full text-left rounded-lg border border-line bg-panel px-3 py-2 mb-1.5 hover:border-lineStrong flex items-center gap-2"
+              >
+                <button className="flex-1 min-w-0" onClick={() => applyTemplate(tmpl)} data-testid={`swarm-template-${tmpl.id}`}>
+                  <span className="block text-[12.5px] font-medium truncate">{tmpl.title}</span>
+                  <span className="block text-[11.5px] text-faint truncate">{tmpl.intent}</span>
+                </button>
+                <button
+                  className="shrink-0 text-[11px] text-muted hover:text-danger px-1.5 py-0.5 rounded"
+                  title={t("Delete template")}
+                  aria-label={t("Delete template")}
+                  onClick={() => void removeTemplate(tmpl.id)}
+                >
+                  ✕
+                </button>
+              </div>
             ))}
           </div>
         )}

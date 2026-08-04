@@ -88,6 +88,13 @@ class ConversationStore:
                 prompt TEXT NOT NULL,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP
             );
+            CREATE TABLE IF NOT EXISTS swarm_templates (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT NOT NULL,
+                intent TEXT NOT NULL,
+                plan TEXT NOT NULL DEFAULT '[]',
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            );
             """)
         for ddl in (
             "ALTER TABLE sessions ADD COLUMN title TEXT",
@@ -170,6 +177,53 @@ class ConversationStore:
             self._conn.commit()
 
     # -- API --------------------------------------------------------------------
+    def list_swarm_templates(self) -> list[dict[str, Any]]:
+        """Saved swarm runs (title + goal intent + task plan JSON) for one-click reuse."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT id, title, intent, plan, created_at FROM swarm_templates ORDER BY id DESC"
+            ).fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            try:
+                d["plan"] = json.loads(d.get("plan") or "[]")
+            except (json.JSONDecodeError, TypeError):
+                d["plan"] = []
+            out.append(d)
+        return out
+
+    def add_swarm_template(self, title: str, intent: str, plan: list | str | None) -> dict[str, Any]:
+        title = (title or "").strip()
+        intent = (intent or "").strip()
+        if not title or not intent:
+            raise ValueError("title and intent are required")
+        plan_json = json.dumps(plan or [], ensure_ascii=False)
+        with self._lock:
+            cur = self._conn.execute(
+                "INSERT INTO swarm_templates (title, intent, plan) VALUES (?, ?, ?)",
+                (title, intent, plan_json),
+            )
+            self._conn.commit()
+            row = self._conn.execute(
+                "SELECT id, title, intent, plan, created_at FROM swarm_templates WHERE id = ?",
+                (cur.lastrowid,),
+            ).fetchone()
+        d = dict(row)
+        try:
+            d["plan"] = json.loads(d.get("plan") or "[]")
+        except (json.JSONDecodeError, TypeError):
+            d["plan"] = []
+        return d
+
+    def delete_swarm_template(self, template_id: int) -> bool:
+        with self._lock:
+            cur = self._conn.execute(
+                "DELETE FROM swarm_templates WHERE id = ?", (template_id,)
+            )
+            self._conn.commit()
+            return cur.rowcount > 0
+
     def list_task_templates(self) -> list[dict[str, Any]]:
         """User-defined home-task templates: title + the prompt that gets prefilled."""
         with self._lock:

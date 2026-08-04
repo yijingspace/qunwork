@@ -593,4 +593,6 @@ export const zh: Messages = {
   "The task prompt": "任务提示词",
   "Save template": "保存模板",
   "QunWork — collaboration, naturally.": "群沃客——让协作自然发生",
+  "Save as template": "存为模板",
+  "Templates": "模板",
 };

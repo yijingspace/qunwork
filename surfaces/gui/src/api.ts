@@ -792,6 +792,37 @@ export async function deleteTaskTemplate(id: number): Promise<{ ok: boolean }> {
   return await res.json();
 }
 
+export interface SwarmTemplate {
+  id: number;
+  title: string;
+  intent: string;
+  plan?: Array<{ id: string; description: string; deps?: string[] }>;
+  created_at?: string;
+}
+
+export async function listSwarmTemplates(): Promise<{ templates: SwarmTemplate[] }> {
+  const res = await fetch(`${httpBase()}/v1/swarm-templates`);
+  return await res.json();
+}
+
+export async function addSwarmTemplate(
+  title: string,
+  intent: string,
+  plan?: unknown,
+): Promise<{ ok: boolean; template?: SwarmTemplate; error?: string }> {
+  const res = await fetch(`${httpBase()}/v1/swarm-templates`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ title, intent, plan }),
+  });
+  return await res.json();
+}
+
+export async function deleteSwarmTemplate(id: number): Promise<{ ok: boolean }> {
+  const res = await fetch(`${httpBase()}/v1/swarm-templates/${id}`, { method: "DELETE" });
+  return await res.json();
+}
+
 export interface OrchestrationRunSnapshot {
   ok: boolean;
   error?: string;

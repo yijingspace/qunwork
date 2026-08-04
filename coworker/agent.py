@@ -270,15 +270,12 @@ def build_engine(
     if wake_store is not None and session_id and agent.family == "knowledge":
         registry.register_all(selfwake_tools(wake_store, session_id))
 
-    # Multi-agent orchestration: knowledge surfaces with a workspace can delegate a whole
-    # goal to a worker swarm (planner -> executors -> reviewer, governed).
-    # NOTE: we deliberately do NOT pass this session's interactive approver into the
-    # swarm. The Orchestrator's default (auto-approver) is what the panel path uses —
-    # passing the session Inbox approver made worker file-writes hang waiting for a
-    # click and stall the whole run (measured: a consolidate task burned 3×150s retries
-    # until timeout, vs 12-21s per task when writes auto-approve). Calling orchestrate
-    # IS the authorization; workers keep the session's permission allowlist.
-    if ws is not None and agent.family == "knowledge":
+    # G1 (dev-plan 2026-08-05): the swarm is a first-class capability for cowork too
+    # (cowork/knowledge/chat all share the knowledge family in agents.py, but the
+    # product never *told* cowork sessions they can delegate to a swarm — that's the
+    # "easter egg" gap the plan calls out). Scheduling / self-wake stay knowledge-only.
+    swarm_enabled = ws is not None and agent.family in ("knowledge", "cowork")
+    if swarm_enabled:
         registry.register_all(
             orchestration_tools(
                 workspace=ws,
@@ -290,6 +287,12 @@ def build_engine(
         # UTF-8-safe Chinese text stats — replaces workers' fragile PowerShell
         # inline-script attempts (ANSI mojibake burned whole task budgets).
         registry.register(text_stats_tool())
+        # Periodic closed-loop toolkit (dev-plan T1): exact Pisano/Fibonacci-mods
+        # lookups + FPA recurrence verification, so workers/reviewers can catch
+        # arithmetic & recurrence hallucinations with math instead of guessing.
+        from .periodic import periodic_tools
+
+        registry.register_all(periodic_tools())
         # Knowledge file library: agent can search the workspace's indexed docs
         # and manual knowledge entries via knowledge_search.
         from .knowledge import knowledge_tools, resolve_knowledge_db_path
@@ -308,6 +311,16 @@ def build_engine(
         conventions = load_agents_md(ws)
         if conventions:
             instructions = f"{instructions}\n\n{conventions}"
+    if swarm_enabled and agent.name == "cowork":
+        instructions = (
+            f"{instructions}\n\n"
+            "SWARM: you can delegate a whole goal to a worker swarm. When a task has "
+            "several independent work streams (research + write + verify, or multiple "
+            "documents to produce), call the `orchestrate` tool instead of doing it all "
+            "inline — the swarm plans, splits, executes in parallel, and converges the "
+            "deliverable, with progress reported as it runs. You stay the single point "
+            "of contact for the user."
+        )
 
     if memory_store is not None:
         registry.register_all(

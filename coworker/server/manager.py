@@ -3615,6 +3615,15 @@ class SessionManager:
                     pass
 
     # -- knowledge file library --------------------------------------------
+    def list_swarm_templates(self) -> list[dict[str, Any]]:
+        return self.session_store.list_swarm_templates()
+
+    def add_swarm_template(self, title: str, intent: str, plan: list | str | None) -> dict[str, Any]:
+        return self.session_store.add_swarm_template(title, intent, plan)
+
+    def delete_swarm_template(self, template_id: int) -> bool:
+        return self.session_store.delete_swarm_template(template_id)
+
     def list_task_templates(self) -> list[dict[str, Any]]:
         return self.session_store.list_task_templates()
 
