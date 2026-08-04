@@ -501,6 +501,6 @@ export const zh: Messages = {
   "tools": "工具",
   "remove": "移除",
   "Invalid JSON: {msg}": "无效的 JSON:{msg}",
-  "Paste a `{ \"<name>\": { … } }` object (or a full mcpServers block).": "请粘贴一个 `{ "<name>": { … } }` 对象(或完整的 mcpServers 块)。",
+  "Paste a `{ \"<name>\": { … } }` object (or a full mcpServers block).": "请粘贴一个 `{ \"<name>\": { … } }` 对象(或完整的 mcpServers 块)。",
   "Paste server JSON (name → config):": "粘贴服务器 JSON(名称 → 配置):",
 };
