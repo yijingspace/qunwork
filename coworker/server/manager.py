@@ -1204,7 +1204,15 @@ class SessionManager:
         workspace = record.workspace if record else self.default_workspace
         roots: list[Path] = []
         if workspace:
-            roots.append(Path(workspace).expanduser().resolve())
+            ws_root = Path(workspace).expanduser().resolve()
+            roots.append(ws_root)
+            # The user's primary workspace is usually the session workspace's PARENT
+            # (e.g. session E:\QunWork\QunWork lives under the main E:\QunWork) — merge
+            # it so deliverables written to the parent (reports, research folders)
+            # show up in the Artifacts panel too. Never scan a filesystem root.
+            parent = ws_root.parent
+            if parent != ws_root and parent != Path(parent.anchor):
+                roots.append(parent)
         # Merge the primary workspace too — deliverables may land there (orchestration
         # writes to either); read_artifact already resolves across both.
         dw = getattr(self, "default_workspace", None)
@@ -1325,7 +1333,13 @@ class SessionManager:
             if p.is_absolute():
                 candidates.append(p.resolve())
             elif workspace:
-                candidates.append((Path(workspace).expanduser().resolve() / path).resolve())
+                ws_root = Path(workspace).expanduser().resolve()
+                candidates.append((ws_root / path).resolve())
+                # The session workspace's parent is merged into the artifacts list
+                # too — resolve its relative paths the same way.
+                parent = ws_root.parent
+                if parent != ws_root and parent != Path(parent.anchor):
+                    candidates.append((parent / path).resolve())
                 # A deliverable may live under the primary/global workspace instead of the
                 # session workspace (orchestration can write to either).
                 dw = getattr(self, "default_workspace", None)

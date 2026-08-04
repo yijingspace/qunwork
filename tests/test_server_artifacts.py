@@ -75,6 +75,45 @@ def test_list_artifacts_skips_deps_and_merges_primary(tmp_path, monkeypatch):
     arts = mgr.list_artifacts("sid")
     paths = [a["path"] for a in arts]
     assert "report.md" in paths                     # session deliverable listed
-    assert "primary-report.md" in paths             # primary workspace merged
+    assert any("primary-report.md" in p for p in paths)  # primary merged (rel differs by root order)
     assert not any("node_modules" in p for p in paths)
     assert not any("_internal" in p for p in paths)
+
+
+def test_list_artifacts_includes_session_parent(tmp_path):
+    """The session workspace's parent directory is merged too — that's where the
+    user's primary workspace (reports, research folders) usually lives."""
+    from coworker.server.manager import SessionManager
+
+    ws = tmp_path / "proj" / "session"  # session workspace nested under tmp_path/proj
+    ws.mkdir(parents=True)
+    (ws / "note.md").write_text("n", encoding="utf-8")
+    (tmp_path / "proj" / "parent-report.md").write_text("from parent", encoding="utf-8")
+
+    mgr = SessionManager.__new__(SessionManager)
+    mgr.default_workspace = None
+    mgr.session_store = type("S", (), {"load": staticmethod(lambda sid: type("R", (), {"workspace": str(ws)})())})()
+
+    arts = mgr.list_artifacts("sid")
+    paths = [a["path"] for a in arts]
+    assert "note.md" in paths
+    assert "parent-report.md" in paths  # sibling of the session workspace = its parent
+
+
+def test_read_artifact_resolves_parent_workspace_path(tmp_path):
+    """Relative paths that came from the merged parent-workspace scan must open too."""
+    from coworker.server.manager import SessionManager
+
+    ws = tmp_path / "proj" / "session"
+    ws.mkdir(parents=True)
+    parent_file = tmp_path / "proj" / "离散周期神经网络DPNN" / "OIR 框架.md"
+    parent_file.parent.mkdir()
+    parent_file.write_text("研究文档", encoding="utf-8")
+
+    mgr = SessionManager.__new__(SessionManager)
+    mgr.default_workspace = None
+    mgr.session_store = type("S", (), {"load": staticmethod(lambda sid: type("R", (), {"workspace": str(ws)})())})()
+
+    t, err = mgr._artifact_target("sid", "离散周期神经网络DPNN/OIR 框架.md")
+    assert err is None and t == parent_file.resolve()
+    assert t.read_text(encoding="utf-8") == "研究文档"
