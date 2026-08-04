@@ -52,3 +52,29 @@ def test_artifact_target_resolution(tmp_path, monkeypatch):
     # 5) missing file → not found
     t, err = mgr._artifact_target("sid", "nope.md")
     assert t is None and err == "not found"
+
+
+def test_list_artifacts_skips_deps_and_merges_primary(tmp_path, monkeypatch):
+    from coworker.server.manager import SessionManager
+
+    session_ws = tmp_path / "session"
+    primary_ws = tmp_path / "primary"
+    session_ws.mkdir()
+    primary_ws.mkdir()
+    (session_ws / "report.md").write_text("deliverable", encoding="utf-8")
+    (session_ws / "node_modules" / "x" / "noise.js").parent.mkdir(parents=True)
+    (session_ws / "node_modules" / "x" / "noise.js").write_text("noise", encoding="utf-8")
+    (session_ws / "_internal" / "y.py").parent.mkdir(parents=True)
+    (session_ws / "_internal" / "y.py").write_text("noise", encoding="utf-8")
+    (primary_ws / "primary-report.md").write_text("from primary", encoding="utf-8")
+
+    mgr = SessionManager.__new__(SessionManager)
+    mgr.default_workspace = str(primary_ws)
+    mgr.session_store = type("S", (), {"load": staticmethod(lambda sid: type("R", (), {"workspace": str(session_ws)})())})()
+
+    arts = mgr.list_artifacts("sid")
+    paths = [a["path"] for a in arts]
+    assert "report.md" in paths                     # session deliverable listed
+    assert "primary-report.md" in paths             # primary workspace merged
+    assert not any("node_modules" in p for p in paths)
+    assert not any("_internal" in p for p in paths)

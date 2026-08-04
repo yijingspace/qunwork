@@ -1202,12 +1202,34 @@ class SessionManager:
     def list_artifacts(self, session_id: str) -> list[dict[str, Any]]:
         record = self.session_store.load(session_id)
         workspace = record.workspace if record else self.default_workspace
-        if not workspace:
-            return []
-        root = Path(workspace).expanduser().resolve()
-        if not root.is_dir():
-            return []
-        out: list[dict[str, Any]] = []
+        roots: list[Path] = []
+        if workspace:
+            roots.append(Path(workspace).expanduser().resolve())
+        # Merge the primary workspace too — deliverables may land there (orchestration
+        # writes to either); read_artifact already resolves across both.
+        dw = getattr(self, "default_workspace", None)
+        if dw and dw != workspace:
+            roots.append(Path(dw).expanduser().resolve())
+
+        # Directories never worth listing: dependency/vendor/build trees (the packaged
+        # sidecar alone is hundreds of .py files that would crowd out real deliverables).
+        _SKIP = {
+            "node_modules",
+            "target",
+            "dist",
+            "__pycache__",
+            "venv",
+            ".venv",
+            "src-tauri",
+            "binaries",
+            "sidecar",
+            "packaging",
+            ".git",
+            ".coworker",
+            ".reasonix",
+            ".idea",
+            ".vscode",
+        }
         suffixes = {
             ".md",
             ".markdown",
@@ -1237,18 +1259,32 @@ class SessionManager:
             ".doc",
             ".docm",
         }
-        for path in root.rglob("*"):
-            try:
-                rel = path.relative_to(root)
-                if any(
-                    part.startswith(".")
-                    or part in {"node_modules", "target", "dist", "__pycache__"}
-                    for part in rel.parts
-                ):
+        out: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for root in roots:
+            if not root.is_dir():
+                continue
+            for path in root.rglob("*"):
+                try:
+                    rel = path.relative_to(root)
+                except (ValueError, OSError):
                     continue
-                if not path.is_file() or path.suffix.lower() not in suffixes:
+                try:
+                    if any(
+                        part.startswith((".", "_"))
+                        or part in _SKIP
+                        for part in rel.parts
+                    ):
+                        continue
+                    if not path.is_file() or path.suffix.lower() not in suffixes:
+                        continue
+                    st = path.stat()
+                except OSError:
                     continue
-                st = path.stat()
+                key = str(path.resolve())
+                if key in seen:
+                    continue
+                seen.add(key)
                 out.append(
                     {
                         "path": str(rel),
@@ -1261,10 +1297,8 @@ class SessionManager:
                         "modified_at": st.st_mtime,
                     }
                 )
-            except OSError:
-                continue
         out.sort(key=lambda a: a["modified_at"], reverse=True)
-        return out[:80]
+        return out[:120]
 
     MAX_BINARY_PREVIEW = 25 * 1024 * 1024  # base64-over-JSON gets heavy past this
 
