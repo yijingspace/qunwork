@@ -783,7 +783,8 @@ def create_app(manager: SessionManager) -> FastAPI:
     def swarm_templates_delete(template_id: int) -> dict[str, Any]:
         return {"ok": manager.delete_swarm_template(template_id), "id": template_id}
 
-    @app.get("/v1/task-templates")    def task_templates_list() -> dict[str, Any]:
+    @app.get("/v1/task-templates")
+    def task_templates_list() -> dict[str, Any]:
         return {"templates": manager.list_task_templates()}
 
     @app.post("/v1/task-templates")
