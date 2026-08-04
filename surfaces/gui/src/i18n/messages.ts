@@ -592,5 +592,5 @@ export const zh: Messages = {
   "Template title": "模板标题",
   "The task prompt": "任务提示词",
   "Save template": "保存模板",
-  "Together, we craft the future": "群策群力,沃客未来",
+  "QunWork — collaboration, naturally.": "群沃客——让协作自然发生",
 };

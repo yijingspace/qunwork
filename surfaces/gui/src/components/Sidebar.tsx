@@ -1013,7 +1013,7 @@ export function Sidebar(props: Props) {
           </button>
         )}
         <div className="brand-wordmark text-[15px]">QunWork<span className="beta-tag">BETA</span></div>
-        <div className="brand-slogan">{t("Together, we craft the future")}</div>
+        <div className="brand-slogan">{t("QunWork — collaboration, naturally.")}</div>
       </div>
 
       {/* New session: split button — primary starts the last-used persona; ▾ picks a specific one. */}
