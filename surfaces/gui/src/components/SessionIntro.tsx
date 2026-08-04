@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { getConnectors, getSessionConnections, listTaskTemplates, addTaskTemplate, deleteTaskTemplate, type TaskTemplate } from "../api";
 import type { Attachment } from "../types";
+import brandLogo from "../assets/brand-logo.webp";
 import { ConnectorIcon } from "../connectors/ConnectorIcon";
 import { indexConnectors, visualFor, type ConnectorMap } from "../connectors/visuals";
 import { useRoots } from "../useRoots";
@@ -95,6 +96,10 @@ export function SessionIntro({
 
   return (
     <div className="intro">
+      {/* Complete brand lockup (Q+swarm mark + 群沃客 wordmark), centered above the greeting. */}
+      <div className="intro-brand" data-testid="intro-brand">
+        <img src={brandLogo} alt="群沃客" className="intro-brand-img" />
+      </div>
       <h1 className="greeting">
         <span className="mark">✦</span> {t("What task can I help you solve?")}
       </h1>

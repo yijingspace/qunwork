@@ -725,6 +725,15 @@ button.btn.danger { color: var(--accent); }
 .intro .greeting .mark { color: var(--accent); }
 .intro-lede { color: var(--muted); font-size: 14px; line-height: 1.5; margin: 8px 0 0; }
 
+/* Complete brand lockup (Q+swarm mark + 群沃客 wordmark) centered above the
+   greeting — the full brand image, kept proportional. */
+.intro-brand {
+  display: flex;
+  justify-content: center;
+  margin: 0 0 20px;
+}
+.intro-brand-img { width: 170px; height: auto; object-fit: contain; }
+
 /* Template tasks on the Cowork start screen (§27): flat hairline rows, no icon tiles — the
    title is the row. Connector dots on the sub-line (brand color = live for this session,
    grayscale = not; §23's vocabulary); sub-line copy is the task's OUTCOME, never connection
