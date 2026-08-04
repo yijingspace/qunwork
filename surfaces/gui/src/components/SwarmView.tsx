@@ -7,6 +7,7 @@ import {
   getOrchestrateRun,
   listSwarmTemplates,
   orchestrate,
+  orchestrateControl,
   type OrchestrationHistoryItem,
   type OrchestrationRunSnapshot,
   type SwarmTemplate,
@@ -130,6 +131,13 @@ export function SwarmView({ onBack, workspace }: { onBack: () => void; workspace
   const [tplTitle, setTplTitle] = useState("");
   const [tplError, setTplError] = useState<string | null>(null);
   const [showTemplateForm, setShowTemplateForm] = useState(false);
+  // G2 command deck
+  const [paused, setPaused] = useState(false);
+  const [deckMsg, setDeckMsg] = useState("");
+  const [deckError, setDeckError] = useState<string | null>(null);
+  const [requeues, setRequeues] = useState<
+    Array<{ task_id: string; attempt?: number; reason?: string }>
+  >([]);
   const mounted = useRef(true);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -190,7 +198,9 @@ export function SwarmView({ onBack, workspace }: { onBack: () => void; workspace
   };
 
   const applySnapshot = (snap: OrchestrationRunSnapshot) => {
-    setStatus(snap.status);    if (snap.final) setFinalReport(snap.final);    const tasks: TaskView[] = [];
+    setStatus(snap.status);
+    if (snap.final) setFinalReport(snap.final);
+    const tasks: TaskView[] = [];
     const thoughts: Thought[] = [];
     const gov: string[] = [];
     for (const ev of snap.events) {
@@ -215,11 +225,40 @@ export function SwarmView({ onBack, workspace }: { onBack: () => void; workspace
         thoughts.push({ worker: String(p.worker ?? ""), task_id: String(p.task_id ?? ""), text: String(p.text ?? "") });
       } else if (ev.kind === "governance") {
         gov.push(`[step ${p.step}] ${p.action}: ${p.reason}`);
+      } else if (ev.kind === "task_requeue_waiting") {
+        // G2: reviewer rejected — deck shows an approve/reject card for this task.
+        setRequeues((prev) => {
+          if (prev.some((r) => r.task_id === p.id)) return prev;
+          return [...prev, { task_id: String(p.id), attempt: Number(p.attempt ?? 1), reason: String(p.reason ?? "") }];
+        });
+      } else if (ev.kind === "task_requeue_approved" || ev.kind === "task_requeue_declined") {
+        setRequeues((prev) => prev.filter((r) => r.task_id !== p.id));
       }
     }
     setTasks(tasks);
     setThoughts(thoughts);
     setGovernance(gov);
+  };
+
+  // -- G2 command deck --------------------------------------------------------
+  const togglePause = async () => {
+    if (!runId) return;
+    const res = await orchestrateControl(runId, paused ? "resume" : "pause");
+    if (res.ok) setPaused(!paused);
+    else setDeckError(res.error || "control failed");
+  };
+
+  const sendMessage = async () => {
+    if (!runId || !deckMsg.trim()) return;
+    const res = await orchestrateControl(runId, "message", { text: deckMsg.trim() });
+    setDeckError(res.ok ? null : res.error || "message failed");
+    if (res.ok) setDeckMsg("");
+  };
+
+  const decideRequeue = async (taskId: string, approve: boolean) => {
+    if (!runId) return;
+    await orchestrateControl(runId, approve ? "requeue_approve" : "requeue_reject", { task_id: taskId });
+    setRequeues((prev) => prev.filter((r) => r.task_id !== taskId));
   };
 
   const run = async () => {
@@ -459,6 +498,58 @@ export function SwarmView({ onBack, workspace }: { onBack: () => void; workspace
           )}
           {tplError && <div className="text-[12px] text-danger mt-2">{tplError}</div>}
         </div>
+        {/* G2 command deck: pause/resume + operator message, live while the run is active */}
+        {(status === "running" || status === "pending") && (
+          <div className="flex items-center gap-2 mt-2 flex-wrap" data-testid="swarm-deck">
+            <button
+              className="rounded-lg border border-line px-2.5 py-1 text-[12.5px] text-muted hover:text-ink hover:border-lineStrong"
+              onClick={() => void togglePause()}
+              data-testid="swarm-pause"
+            >
+              {paused ? "▶ " + t("Resume") : "⏸ " + t("Pause")}
+            </button>
+            <input
+              className="flex-1 min-w-40 rounded-lg border border-line bg-paper px-2.5 py-1 text-[12.5px] outline-none focus:border-lineStrong"
+              placeholder={t("Message to the swarm…")}
+              value={deckMsg}
+              onChange={(e) => setDeckMsg(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && void sendMessage()}
+            />
+            <button
+              className="rounded-lg bg-accent px-2.5 py-1 text-[12.5px] text-white disabled:opacity-50"
+              disabled={!deckMsg.trim()}
+              onClick={() => void sendMessage()}
+              data-testid="swarm-send-message"
+            >
+              {t("Send")}
+            </button>
+          </div>
+        )}
+        {requeues.length > 0 && (
+          <div className="mt-2 space-y-1.5">
+            {requeues.map((r) => (
+              <div key={r.task_id} className="rounded-lg border border-warn bg-panel px-3 py-2 flex items-center gap-2" data-testid={`swarm-requeue-${r.task_id}`}>
+                <span className="flex-1 min-w-0 text-[12.5px]">
+                  <span className="font-medium">{r.task_id}</span>
+                  {r.reason ? <span className="text-muted"> — {r.reason}</span> : null}
+                </span>
+                <button
+                  className="rounded-lg bg-ok/90 px-2.5 py-1 text-[12px] text-white"
+                  onClick={() => void decideRequeue(r.task_id, true)}
+                >
+                  {t("Approve rerun")}
+                </button>
+                <button
+                  className="rounded-lg border border-line px-2.5 py-1 text-[12px] text-muted hover:text-ink"
+                  onClick={() => void decideRequeue(r.task_id, false)}
+                >
+                  {t("Skip")}
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+        {deckError && <div className="text-[12px] text-danger mt-2">{deckError}</div>}
         {error && <div className="text-[12px] text-danger mt-2">{error}</div>}
       </div>
 

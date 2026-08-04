@@ -595,4 +595,9 @@ export const zh: Messages = {
   "QunWork — collaboration, naturally.": "群沃客——让协作自然发生",
   "Save as template": "存为模板",
   "Templates": "模板",
+  "Resume": "恢复",
+  "Pause": "暂停",
+  "Message to the swarm…": "给蜂群发指令…",
+  "Approve rerun": "批准重跑",
+  "Skip": "跳过",
 };

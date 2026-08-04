@@ -823,6 +823,41 @@ export async function deleteSwarmTemplate(id: number): Promise<{ ok: boolean }> 
   return await res.json();
 }
 
+// G2 command deck: live control over a running swarm run.
+export type OrchestrateControlAction =
+  | "pause"
+  | "resume"
+  | "message"
+  | "requeue_approve"
+  | "requeue_reject";
+
+export interface OrchestrateControlStatus {
+  ok: boolean;
+  error?: string;
+  paused?: boolean;
+  requeues?: Array<{ task_id: string; attempt?: number; reason?: string }>;
+}
+
+export async function orchestrateControlStatus(
+  runId: string,
+): Promise<OrchestrateControlStatus> {
+  const res = await fetch(`${httpBase()}/v1/orchestrate/${runId}/control`);
+  return await res.json();
+}
+
+export async function orchestrateControl(
+  runId: string,
+  action: OrchestrateControlAction,
+  body: { text?: string; task_id?: string } = {},
+): Promise<{ ok: boolean; error?: string; paused?: boolean }> {
+  const res = await fetch(`${httpBase()}/v1/orchestrate/${runId}/control`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action, ...body }),
+  });
+  return await res.json();
+}
+
 export interface OrchestrationRunSnapshot {
   ok: boolean;
   error?: string;

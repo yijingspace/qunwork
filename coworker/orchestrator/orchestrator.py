@@ -170,6 +170,10 @@ class Orchestrator:
     timeout_seconds: Optional[int] = 600  # whole-run timeout (None = no limit)
     task_timeout_seconds: Optional[int] = 150  # per-task timeout; timeout degrades to a partial result
     event_sink: Optional[Callable[[str, dict], None]] = None  # (kind, payload) progress feed
+    # G2 command deck: external control (pause/resume/operator message/requeue
+    # approval). None = headless run with auto-requeue (legacy behaviour).
+    controller: Optional[Any] = None
+    requeue_approval_timeout: float = 120.0
     _runs: int = field(default=0, init=False)
     _run_seq: int = field(default=0, init=False)
     _last_plan: Optional[Plan] = field(default=None, init=False)
@@ -326,6 +330,8 @@ class Orchestrator:
 
     async def _run(self, intent: str) -> OrchestrationResult:
         self._emit("run_started", {"intent": intent})
+        # G2: operator directives accumulate per scheduling round (see while-loop).
+        directives: list[str] = []
         plan = await self._plan(intent)
         self._last_plan = plan
         self._emit(
@@ -368,6 +374,8 @@ class Orchestrator:
                 if h.meta.get("task_id") != task.id or h.meta.get("run_token") != run_token
             ]
             collected: list[str] = []
+            if directives:
+                hints = hints + [f"[operator] {d}" for d in directives]
 
             async def _run_task() -> str:
                 return await self._execute(
@@ -429,7 +437,36 @@ class Orchestrator:
                 task.result = result
                 task.retries += 1
             else:
-                task.status = "pending"  # requeue for another attempt
+                if self.controller is not None:
+                    # G2: reviewer rejected — hold for the command deck's approval
+                    # before re-running (reject or timeout → escalate to human).
+                    self._emit(
+                        "task_requeue_waiting",
+                        {
+                            "id": task.id,
+                            "attempt": task.retries + 1,
+                            "reason": verdict.reason,
+                        },
+                    )
+                    approved = await self.controller.await_requeue(
+                        task.id,
+                        {"attempt": task.retries + 1, "reason": verdict.reason},
+                        timeout=self.requeue_approval_timeout,
+                    )
+                    if approved:
+                        task.status = "pending"  # re-run next round
+                        self._emit(
+                            "task_requeue_approved",
+                            {"id": task.id, "attempt": task.retries + 1},
+                        )
+                    else:
+                        task.status = "needs_human"
+                        self._emit(
+                            "task_requeue_declined",
+                            {"id": task.id, "reason": verdict.reason},
+                        )
+                else:
+                    task.status = "pending"  # requeue for another attempt
                 task.result = result
                 task.retries += 1
             gov.record_step(task, result, verdict.accepted)
@@ -445,6 +482,14 @@ class Orchestrator:
         # Iterate until convergence: all tasks done, a task escalated to human,
         # the governance loop paused the run, or no progress is possible.
         while not plan.all_done() and not plan.needs_human() and not governance_paused:
+            # G2 command deck: hold while paused, and feed operator directives into
+            # this round's task hints so a stuck worker gets the operator's steer.
+            ctrl = self.controller
+            if ctrl is not None:
+                await ctrl.wait_if_paused()
+                directives = ctrl.drain_messages()
+            else:
+                directives = []
             # Governance inspection BEFORE dispatch (every N steps): red lines must
             # block a task before it runs; drift/viscosity checks the live plan.
             if self._runs % gov.config.check_every == 0:

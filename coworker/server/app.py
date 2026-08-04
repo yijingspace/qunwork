@@ -269,6 +269,12 @@ def create_app(manager: SessionManager) -> FastAPI:
         run_id = store.create_run(intent)
         sync = bool(body.get("sync"))
 
+        # G2 command deck: one live controller per run; removed when the run ends.
+        from ..orchestrator.control import RunController
+
+        controller = RunController()
+        manager.active_orchestration_controls[run_id] = controller
+
         def _build() -> "Orchestrator":
             return Orchestrator(
                 provider=manager.provider,
@@ -284,6 +290,11 @@ def create_app(manager: SessionManager) -> FastAPI:
                 ),
                 memory_scope=body.get("memory_scope") or str(workspace),
                 event_sink=lambda kind, payload: store.append_event(run_id, kind, payload),
+                # G2: command deck wiring (pause/resume/message/requeue approval).
+                controller=controller,
+                requeue_approval_timeout=float(
+                    body.get("requeue_approval_timeout") or 120.0
+                ),
                 # Engineering-style executor (code persona) for programming tasks;
                 # 'cowork' (default) is the generalist. Validated in _build().
                 executor_agent=(
@@ -328,6 +339,8 @@ def create_app(manager: SessionManager) -> FastAPI:
             except Exception as exc:  # surface failures via the run store
                 store.update_status(run_id, "failed", str(exc))
                 return {"ok": False, "run_id": run_id, "error": str(exc)}
+            finally:
+                manager.active_orchestration_controls.pop(run_id, None)
         if sync:
             return await _finalize(_build())
         import asyncio
@@ -345,6 +358,55 @@ def create_app(manager: SessionManager) -> FastAPI:
         if not run:
             return {"ok": False, "error": "run not found"}
         return {"ok": True, **run}
+
+    @app.get("/v1/orchestrate/{run_id}/control")
+    def orchestrate_control_status(run_id: str) -> dict[str, Any]:
+        """G2 command-deck state: paused flag + pending requeue approvals."""
+        ctrl = manager.active_orchestration_controls.get(run_id)
+        if ctrl is None:
+            return {"ok": False, "error": "run not active"}
+        return {
+            "ok": True,
+            "run_id": run_id,
+            "paused": ctrl.paused,
+            "requeues": ctrl.pending_requeues(),
+        }
+
+    @app.post("/v1/orchestrate/{run_id}/control")
+    def orchestrate_control(run_id: str, body: dict) -> dict[str, Any]:
+        """G2 command deck actions: pause | resume | message | requeue_approve |
+        requeue_reject."""
+        action = str(body.get("action") or "")
+        ctrl = manager.active_orchestration_controls.get(run_id)
+        if ctrl is None:
+            return {"ok": False, "error": "run not active or already finished"}
+        store = manager.orchestration_store
+        if action == "pause":
+            ctrl.set_paused(True)
+            store.append_event(run_id, "operator_paused", {})
+            return {"ok": True, "paused": True}
+        if action == "resume":
+            ctrl.set_paused(False)
+            store.append_event(run_id, "operator_resumed", {})
+            return {"ok": True, "paused": False}
+        if action == "message":
+            text = str(body.get("text") or "").strip()
+            if not text:
+                return {"ok": False, "error": "text is required"}
+            ctrl.inject_message(text)
+            store.append_event(run_id, "operator_message", {"text": text})
+            return {"ok": True, "delivered": True}
+        if action == "requeue_approve":
+            task_id = str(body.get("task_id") or "")
+            ok = ctrl.approve_requeue(task_id)
+            store.append_event(run_id, "task_requeue_approved", {"id": task_id})
+            return {"ok": ok, "task_id": task_id}
+        if action == "requeue_reject":
+            task_id = str(body.get("task_id") or "")
+            ok = ctrl.reject_requeue(task_id)
+            store.append_event(run_id, "task_requeue_declined", {"id": task_id})
+            return {"ok": ok, "task_id": task_id}
+        return {"ok": False, "error": f"unknown action: {action}"}
 
     @app.get("/v1/personas")
     def personas() -> dict[str, Any]:

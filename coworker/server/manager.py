@@ -201,6 +201,9 @@ class SessionManager:
         from ..orchestrator.run_store import OrchestrationRunStore
 
         self.orchestration_store = OrchestrationRunStore(base / "orchestration.db")
+        # G2 command deck: run_id → live control channel while a swarm run is active
+        # (paused flag, operator messages, pending requeue approvals).
+        self.active_orchestration_controls: dict[str, Any] = {}
         # Personas: registry + lifecycle state under this manager's data dir. Installed as the
         # process singleton so agents.get_agent resolves persona ids (incl. third-party) here.
         self.personas = PersonaRegistry(state_path=base / "personas.json")
