@@ -188,3 +188,75 @@ def test_shell_env_utf8_injected():
     assert _NONINTERACTIVE_ENV.get("PYTHONUTF8") == "1"
     assert _NONINTERACTIVE_ENV.get("PYTHONIOENCODING") == "utf-8"
     assert LocalExecutor  # importable
+
+
+def test_skip_requeue_accepts_result_and_unblocks_dependents(tmp_path):
+    """Skip/decline on the command deck must accept the current result (degraded)
+    and let dependents run — not deadlock the whole swarm at needs_human."""
+    import asyncio
+    import time
+    from types import SimpleNamespace
+    from coworker.orchestrator.orchestrator import Orchestrator, Plan, Task, ReviewVerdict
+
+    orch = Orchestrator.__new__(Orchestrator)
+    orch.timeout_seconds = 60
+    orch.task_timeout_seconds = 30
+    orch.max_parallel = 2
+    orch.max_retries = 1
+    orch.stall_rounds_threshold = 3
+    orch.workspace = str(tmp_path)
+    orch.requeue_approval_timeout = 120.0
+    orch.embedder = None
+    orch.governance_config = None
+    orch.memory = SimpleNamespace(search=lambda *a, **k: [], add=lambda *a, **k: None)
+    orch._run_seq = 0
+    orch._runs = 0
+    orch._emit = lambda *a, **k: None
+    orch._persist_report = lambda r: None
+    orch._worker_feed = lambda *a, **k: None
+
+    # Reviewer rejects t0 once; the operator SKIPS (reject) instead of approving.
+    class Deck:
+        async def await_requeue(self, task_id, meta, timeout=120.0):
+            return False  # skip
+
+        async def wait_if_paused(self):
+            return
+
+        def set_paused(self, v):
+            pass
+
+        def drain_messages(self):
+            return []
+
+    orch.controller = Deck()
+
+    ran: list[str] = []
+
+    async def fake_plan(intent):
+        return Plan(
+            goal=intent,
+            tasks=[
+                Task(id="t0", description="a", deps=[]),
+                Task(id="t1", description="b", deps=["t0"]),
+            ],
+        )
+
+    async def fake_execute(task, *, deps, hints, on_text):
+        ran.append(task.id)
+        return f"interim note for {task.id}"
+
+    async def fake_review(task, result):
+        return ReviewVerdict(accepted=False, confidence=0.97, reason="interim only", needs_human=False)
+
+    orch._plan = fake_plan
+    orch._execute = fake_execute
+    orch._review = fake_review
+
+    res = asyncio.run(orch._run("goal", deadline=None))
+    # t0 was skipped → done (degraded) → t1 became ready and ran.
+    assert "t0" in ran and "t1" in ran, f"dependents must proceed, ran={ran}"
+    t0 = res.plan.by_id()["t0"]
+    assert t0.status == "done", "skipped task must be accepted as done"
+    assert t0.confidence <= 0.4, "skipped result must be flagged degraded"
+    assert res.status == "completed"

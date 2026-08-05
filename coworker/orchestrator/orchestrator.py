@@ -463,7 +463,12 @@ class Orchestrator:
                             {"id": task.id, "attempt": task.retries + 1},
                         )
                     else:
-                        task.status = "needs_human"
+                        # Skip/decline: accept the current result as-is (degraded,
+                        # low confidence) so dependents can proceed. A skipped task
+                        # must NOT deadlock the swarm — observed: skipping t1 left
+                        # t2..t5 blocked forever, run stuck at 0/6 needs_human.
+                        task.status = "done"
+                        task.confidence = min(float(verdict.confidence or 0), 0.4)
                         self._emit(
                             "task_requeue_declined",
                             {"id": task.id, "reason": verdict.reason},
