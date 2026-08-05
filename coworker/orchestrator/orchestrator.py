@@ -34,6 +34,18 @@ from .workers import (
 _MAX_RETRIES_DEFAULT = 2
 
 
+def task_phase(task: Any, plan: Any) -> int:
+    """T5 periodic memory slot for a task: its ordinal in the plan, mod the
+    Pisano period 60 (π(10)). Tasks at the same phase (e.g. the 5th task of
+    every ~60-task run) share same-phase history in the memory pool — the
+    DPNN closed-loop idea applied to swarm memory reuse."""
+    try:
+        idx = plan.tasks.index(task)
+    except (ValueError, AttributeError):
+        return 0
+    return idx % 60
+
+
 def _extract_json(text: str) -> Any:
     """Best-effort JSON extraction from a model reply (strip fences/prose)."""
     text = text.strip()
@@ -174,6 +186,10 @@ class Orchestrator:
     # approval). None = headless run with auto-requeue (legacy behaviour).
     controller: Optional[Any] = None
     requeue_approval_timeout: float = 120.0
+    # T4 convergence guard (LoopCoop fixed-point): how many consecutive rounds
+    # without real progress (no new done task, no changed result, no accepted
+    # requeue) before the run is declared stalled instead of spinning forever.
+    stall_rounds_threshold: int = 2
     _runs: int = field(default=0, init=False)
     _run_seq: int = field(default=0, init=False)
     _last_plan: Optional[Plan] = field(default=None, init=False)
@@ -332,6 +348,9 @@ class Orchestrator:
         self._emit("run_started", {"intent": intent})
         # G2: operator directives accumulate per scheduling round (see while-loop).
         directives: list[str] = []
+        # T4: consecutive no-progress rounds → stall (fixed point without completion).
+        stall_rounds = 0
+        stalled_reason: Optional[str] = None
         plan = await self._plan(intent)
         self._last_plan = plan
         self._emit(
@@ -370,7 +389,11 @@ class Orchestrator:
             ]
             hints = [
                 f"[{h.meta.get('task_id', '?')}] {h.text[:800]}"
-                for h in mem.search(task.description, k=2)
+                for h in mem.search(
+                    task.description,
+                    k=2,
+                    phase=task_phase(task, plan),
+                )
                 if h.meta.get("task_id") != task.id or h.meta.get("run_token") != run_token
             ]
             collected: list[str] = []
@@ -476,6 +499,7 @@ class Orchestrator:
                     f"{task.description}\n→ {task.result[:500]}",
                     task_id=task.id,
                     run_token=run_token,
+                    phase=task_phase(task, plan),
                 )
             return True
 
@@ -515,13 +539,40 @@ class Orchestrator:
                 blocked = [t.id for t in plan.tasks if t.status == "pending"]
                 break
             batch = ready[: max(1, self.max_parallel)]
+            done_before = {t.id for t in plan.tasks if t.done}
+            results_before = {
+                t.id: (t.result or "")[:200] for t in plan.tasks if t.result
+            }
             results = await asyncio.gather(*(process(t) for t in batch))
+            # T4 convergence guard: a round only "progresses" if something real
+            # changed (a new done task, a changed result, or an accepted requeue
+            # that flips a task back to pending). Repeated no-op rounds mean the
+            # loop has reached a fixed point without completing the plan — that
+            # is *stalled*, and we stop instead of spinning against the timeout.
+            done_after = {t.id for t in plan.tasks if t.done}
+            results_after = {
+                t.id: (t.result or "")[:200] for t in plan.tasks if t.result
+            }
+            progressed = bool(done_after - done_before) or results_after != results_before
+            if progressed:
+                stall_rounds = 0
+            else:
+                stall_rounds += 1
+                if stall_rounds >= self.stall_rounds_threshold:
+                    stalled_reason = (
+                        f"no progress for {self.stall_rounds_threshold} consecutive "
+                        f"rounds (done={len(done_after)}/{len(plan.tasks)})"
+                    )
+                    self._emit("run_stalled", {"reason": stalled_reason})
+                    break
             if not any(results):
                 break
 
         status = (
             "paused"
             if governance_paused
+            else "stalled"
+            if stalled_reason is not None
             else "needs_human"
             if plan.needs_human()
             else "completed"
@@ -531,6 +582,8 @@ class Orchestrator:
         summary = "\n\n".join(
             f"[{t.id}] {t.description}\n{t.result}" for t in plan.tasks if t.result
         )
+        if stalled_reason is not None:
+            gov_log.append(f"[stalled] {stalled_reason}")
         self._emit("run_completed", {"status": status, "runs": self._runs})
         result = OrchestrationResult(
             intent=intent,

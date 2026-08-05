@@ -49,7 +49,14 @@ class PersistentVectorMemory:
         self._db.execute(
             "CREATE INDEX IF NOT EXISTS idx_vm_scope ON vector_memories(scope)"
         )
-        self._db.commit()
+        # T5 phase index: periodic tasks tag memories with a phase slot (e.g. the
+        # Pisano-period slot of the task's ordinal), so re-runs of the same kind of
+        # task reuse same-phase history instead of re-reading everything.
+        try:
+            self._db.execute("ALTER TABLE vector_memories ADD COLUMN phase INTEGER")
+            self._db.commit()
+        except sqlite3.OperationalError:
+            pass  # column already present
         self._load()
 
     # -- persistence --------------------------------------------------------
@@ -67,7 +74,11 @@ class PersistentVectorMemory:
                     item.vector = None
             self._mem.items.append(item)
 
-    def add(self, text: str, **meta: Any) -> None:
+    def add(
+        self, text: str, *, phase: Optional[int] = None, **meta: Any
+    ) -> None:
+        if phase is not None:
+            meta["phase"] = int(phase)
         item = self._mem._new_item(text, meta)
         if item.vector is None and self._mem.embedder is not None:
             try:
@@ -76,19 +87,53 @@ class PersistentVectorMemory:
                 pass
         self._mem.items.append(item)
         self._db.execute(
-            "INSERT INTO vector_memories (scope, text, meta, vector, created_at) VALUES (?,?,?,?,?)",
+            "INSERT INTO vector_memories (scope, text, meta, vector, created_at, phase) VALUES (?,?,?,?,?,?)",
             (
                 self.scope,
                 text,
                 json.dumps(meta, ensure_ascii=False),
                 json.dumps(item.vector) if item.vector is not None else None,
                 time.time(),
+                int(phase) if phase is not None else None,
             ),
         )
         self._db.commit()
 
-    def search(self, query: str, k: int = 3) -> list[MemoryHit]:
-        return self._mem.search(query, k=k)
+    def search(
+        self, query: str, k: int = 3, phase: Optional[int] = None
+    ) -> list[MemoryHit]:
+        """Top-k memory hits. With `phase`, same-phase history is preferred and
+        the rest of k is backfilled from the global store (T5 periodic reuse)."""
+        hits = self._mem.search(query, k=k)
+        if phase is None:
+            return hits
+        rows = self._db.execute(
+            "SELECT text, meta, vector FROM vector_memories WHERE scope = ? AND phase = ?",
+            (self.scope, int(phase)),
+        ).fetchall()
+        if not rows:
+            return hits
+        temp = VectorMemory(embedder=self._mem.embedder)
+        for text, meta, vec in rows:
+            item = temp._new_item(text, json.loads(meta))
+            if vec:
+                try:
+                    item.vector = json.loads(vec)
+                except json.JSONDecodeError:
+                    item.vector = None
+            temp.items.append(item)
+        phase_hits = temp.search(query, k=k)
+        # merge: same-phase hits first (dedup by text), backfill with global hits
+        seen: set[str] = set()
+        merged: list[MemoryHit] = []
+        for h in phase_hits + hits:
+            if h.text in seen:
+                continue
+            seen.add(h.text)
+            merged.append(h)
+            if len(merged) >= k:
+                break
+        return merged
 
     def __len__(self) -> int:
         return len(self._mem)

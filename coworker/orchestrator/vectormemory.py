@@ -59,7 +59,11 @@ class VectorMemory:
     def add(self, text: str, **meta: Any) -> None:
         self.items.append(self._new_item(text, meta))
 
-    def search(self, query: str, k: int = 3) -> list[MemoryHit]:
+    def search(
+        self, query: str, k: int = 3, phase: Optional[int] = None
+    ) -> list[MemoryHit]:
+        # `phase` is a no-op here (T5) — the in-memory store has no phase index;
+        # PersistentVectorMemory implements phase-preferring retrieval.
         if not self.items:
             return []
         scored: list[MemoryHit] = []
