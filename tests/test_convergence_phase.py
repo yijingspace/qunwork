@@ -298,3 +298,39 @@ def test_looks_like_interim_detects_process_notes():
     # A real deliverable (chapter-length, no action lead-in) is NOT interim.
     ok = "本周共完成 63 次提交,覆盖 8 个模块:蜂群指挥台(8bd30e6)、团队记忆面板(b8fa837)…" + "内容" * 80
     assert not _looks_like_interim(ok)
+
+
+def test_worker_tool_heartbeat_events():
+    """Tool rounds must tick the event stream (⚙ name… / ✓ name) so the deck
+    never misjudges a long tool chain as a stale run."""
+    import asyncio
+    from coworker.orchestrator.workers import build_executor_engine, _run_engine_async
+    from coworker.providers import AssistantTurn, ModelCapabilities, ProviderClient, ToolCall
+
+    class ToolingProvider(ProviderClient):
+        def __init__(self):
+            self.turns = 0
+
+        def complete(self, *, model, messages, tools=None, **settings):
+            self.turns += 1
+            if self.turns == 1:
+                return AssistantTurn(
+                    text=None,
+                    tool_calls=[ToolCall(id="c1", name="list_dir", arguments={"path": "."})],
+                    finish_reason="tool_calls",
+                )
+            return AssistantTurn(text="final " + "x" * 150, finish_reason="stop")
+
+        def capabilities(self, model):
+            return ModelCapabilities()
+
+    import tempfile, pathlib
+    engine = build_executor_engine(
+        workspace=str(pathlib.Path(tempfile.mkdtemp())), provider=ToolingProvider(), model="m", agent="cowork"
+    )
+    thoughts: list[str] = []
+    text, status = asyncio.run(
+        _run_engine_async(engine, "task", on_event=lambda kind, payload: thoughts.append(payload.get("text", "")))
+    )
+    assert any("list_dir" in th for th in thoughts), f"tool heartbeat missing: {thoughts}"
+    assert "final" in text

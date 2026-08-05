@@ -328,7 +328,9 @@ export function SwarmView({ onBack, workspace }: { onBack: () => void; workspace
       const rid = res.run_id;
       // Poll until the run leaves "running" (heartbeat-aware: an orphaned run —
       // background task lost on server restart — is detected and reported).
-      const maxPolls = Math.ceil((timeoutSeconds + 90) / 1);
+      // Poll budget must cover the relaxed stale window: consolidation tasks can
+      // run well past the nominal budget (soft-budget deadline + task timeout).
+      const maxPolls = Math.ceil((Math.max(timeoutSeconds * 3, 600) + 90) / 1);
       let polls = 0;
       let lastActivity = Date.now();
       pollRef.current = setInterval(async () => {
@@ -339,7 +341,10 @@ export function SwarmView({ onBack, workspace }: { onBack: () => void; workspace
           applySnapshot(snap);
           const upd = (snap.updated_at ?? 0) * 1000;
           if (upd > lastActivity) lastActivity = upd;
-          const dead = upd > 0 && Date.now() - upd > (timeoutSeconds + 60) * 1000;
+          // Stale detection: long tool chains (consolidation tasks) can legitimately
+          // go quiet for minutes; require max(10min, 3× the run budget) without a
+          // heartbeat before declaring the run orphaned.
+          const dead = upd > 0 && Date.now() - upd > Math.max(600, timeoutSeconds * 3) * 1000;
           if (snap.status !== "running" || polls > maxPolls || dead) {
             if (pollRef.current) clearInterval(pollRef.current);
             if (timerRef.current) clearInterval(timerRef.current);

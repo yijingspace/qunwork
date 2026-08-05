@@ -200,6 +200,19 @@ async def _run_engine_async(
             report = text
             if on_event:
                 on_event("worker_thought", {"text": text})
+        elif event.type in (EventType.TOOL_STARTED, EventType.TOOL_FINISHED):
+            # Tool heartbeat: worker tool rounds emit no assistant text, so the
+            # run's event stream would freeze during long tool chains (e.g. the
+            # consolidation task reading drafts + running verify scripts) — the
+            # deck then misjudges the run as stale. Surface tool progress so the
+            # stream keeps ticking.
+            if on_event:
+                name = event.data.get("name") or "tool"
+                if event.type == EventType.TOOL_STARTED:
+                    on_event("worker_thought", {"text": f"⚙ {name}…"})
+                else:
+                    status = event.data.get("status") or ""
+                    on_event("worker_thought", {"text": f"✓ {name} {status}".strip()})
         elif event.type == EventType.TURN_END:
             status = event.data.get("status", "unknown")
         elif event.type == EventType.ERROR:
