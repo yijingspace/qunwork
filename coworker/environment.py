@@ -16,18 +16,25 @@ from typing import Optional
 
 
 def _git(workspace: Path, *args: str) -> Optional[str]:
+    out = None
     try:
         out = subprocess.run(
             ["git", "-C", str(workspace), *args],
             capture_output=True,
+            # Force UTF-8: `text=True` alone decodes with the ANSI codepage (GBK on
+            # zh-CN), whose reader thread dies on Chinese commit messages — the
+            # output then arrives as None and `.strip()` blows up. Same root cause
+            # as the shell executor fix.
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=5,
         )
     except (OSError, subprocess.SubprocessError):
         return None
-    if out.returncode != 0:
+    if out is None or out.returncode != 0:
         return None
-    return out.stdout.strip()
+    return (out.stdout or "").strip()
 
 
 def _git_snapshot(workspace: Path) -> list[str]:

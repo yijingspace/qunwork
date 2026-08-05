@@ -1,6 +1,7 @@
 """T4 convergence guard + T5 phase memory: stall detection and periodic reuse."""
 
 import asyncio
+import tempfile
 import sys
 from pathlib import Path
 
@@ -260,3 +261,22 @@ def test_skip_requeue_accepts_result_and_unblocks_dependents(tmp_path):
     assert t0.status == "done", "skipped task must be accepted as done"
     assert t0.confidence <= 0.4, "skipped result must be flagged degraded"
     assert res.status == "completed"
+
+
+def test_environment_git_snapshot_survives_chinese_commits():
+    """Executors in a git repo with Chinese commit messages must not crash:
+    _git's reader thread used to die decoding GBK → stdout=None → .strip() blew
+    up, killing every executor engine (0/6 stalled, 'NoneType' has no strip)."""
+    import subprocess
+    from pathlib import Path
+    from coworker.environment import _git
+
+    # This repo has Chinese commit messages; on a zh-CN Windows the old
+    # text=True (GBK) path crashed. Just assert the fixed helper works here.
+    ws = Path(r"E:\QunWork\QunWork")
+    rc = _git(ws, "rev-parse", "--is-inside-work-tree")
+    assert rc == "true"
+    log = _git(ws, "log", "-n5", "--pretty=format:%h %s")
+    assert log is not None and len(log) > 0, "git log must decode, not return None"
+    # A non-git dir degrades gracefully.
+    assert _git(Path(tempfile.mkdtemp()), "rev-parse", "--is-inside-work-tree") is None
