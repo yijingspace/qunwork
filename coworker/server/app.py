@@ -269,6 +269,24 @@ def create_app(manager: SessionManager) -> FastAPI:
         run_id = store.create_run(intent)
         sync = bool(body.get("sync"))
 
+        def _auto_write_coordination_report(rid: str) -> str | None:
+            """Strategy report 5.2.4: every completed swarm run gets its
+            coordination report written automatically, not only on button press."""
+            from ..orchestrator.coordination_report import render_coordination_report
+
+            run = store.get_run(rid)
+            if not run:
+                return None
+            try:
+                md = render_coordination_report(run)
+                base = Path(manager.default_workspace or ".")
+                base.mkdir(parents=True, exist_ok=True)
+                out = base / f"coordination-report-{rid}.md"
+                out.write_text(md, encoding="utf-8")
+                return str(out)
+            except Exception:
+                return None
+
         # G2 command deck: one live controller per run; removed when the run ends.
         from ..orchestrator.control import RunController
 
@@ -316,6 +334,8 @@ def create_app(manager: SessionManager) -> FastAPI:
                     else result.summary
                 )
                 store.update_status(run_id, result.status, final=final_report)
+                if result.status == "completed":
+                    _auto_write_coordination_report(run_id)
                 return {
                     "ok": True,
                     "run_id": run_id,
@@ -874,6 +894,13 @@ def create_app(manager: SessionManager) -> FastAPI:
     @app.delete("/v1/swarm-templates/{template_id}")
     def swarm_templates_delete(template_id: int) -> dict[str, Any]:
         return {"ok": manager.delete_swarm_template(template_id), "id": template_id}
+
+    @app.post("/v1/swarm-templates/{template_id}/record")
+    def swarm_templates_record(template_id: int, body: dict) -> dict[str, Any]:
+        """Tally one reuse of a template (5.2.1 track record: runs + successes)."""
+        success = bool(body.get("success"))
+        ok = manager.record_swarm_template_run(template_id, success)
+        return {"ok": ok, "id": template_id, "success": success}
 
     # -- team workspace (dev-plan P2) ----------------------------------------
     @app.get("/v1/team/export")

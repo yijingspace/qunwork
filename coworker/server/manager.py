@@ -3688,6 +3688,9 @@ class SessionManager:
     def add_swarm_template(self, title: str, intent: str, plan: list | str | None) -> dict[str, Any]:
         return self.session_store.add_swarm_template(title, intent, plan)
 
+    def record_swarm_template_run(self, template_id: int, success: bool) -> bool:
+        return self.session_store.record_swarm_template_run(template_id, success)
+
     def delete_swarm_template(self, template_id: int) -> bool:
         return self.session_store.delete_swarm_template(template_id)
 

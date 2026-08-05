@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   addSwarmTemplate,
   deleteSwarmTemplate,
@@ -9,6 +9,7 @@ import {
   listSwarmTemplates,
   orchestrate,
   orchestrateControl,
+  recordSwarmTemplateRun,
   type CoordinationReport,
   type OrchestrationHistoryItem,
   type OrchestrationRunSnapshot,
@@ -121,6 +122,15 @@ export function SwarmView({ onBack, workspace }: { onBack: () => void; workspace
   const [tasks, setTasks] = useState<TaskView[]>([]);
   const [thoughts, setThoughts] = useState<Thought[]>([]);
   const [governance, setGovernance] = useState<string[]>([]);
+  // 5.2.3 governance dashboard: tally watchdog actions (WARN/PAUSE/REVERT/…) per run.
+  const govStats = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const g of governance) {
+      const hit = /^\[step \d+\] (\w+)/.exec(g);
+      if (hit) m.set(hit[1], (m.get(hit[1]) ?? 0) + 1);
+    }
+    return m;
+  }, [governance]);
   const [finalReport, setFinalReport] = useState<string>("");
   const [reportPath, setReportPath] = useState<string>("");
   const [elapsed, setElapsed] = useState(0);
@@ -156,10 +166,14 @@ export function SwarmView({ onBack, workspace }: { onBack: () => void; workspace
     };
   }, []);
 
-  useEffect(() => {
+  const loadTemplates = () => {
     listSwarmTemplates()
       .then((r) => mounted.current && setTemplates(r.templates ?? []))
       .catch(() => {});
+  };
+
+  useEffect(() => {
+    loadTemplates();
   }, []);
 
   const loadHistory = async () => {
@@ -198,8 +212,10 @@ export function SwarmView({ onBack, workspace }: { onBack: () => void; workspace
     if (ok.ok) setTemplates((prev) => prev.filter((x) => x.id !== id));
   };
 
+  const pendingTmplRef = useRef<number | null>(null);
   const applyTemplate = (tmpl: SwarmTemplate) => {
     setIntent(tmpl.intent);
+    pendingTmplRef.current = tmpl.id; // reuse is tallied when the run finishes (5.2.1 track record)
   };
 
   const applySnapshot = (snap: OrchestrationRunSnapshot) => {
@@ -336,6 +352,12 @@ export function SwarmView({ onBack, workspace }: { onBack: () => void; workspace
             }
             setBusy(false);
             loadHistory();
+            // Tally template reuse now that the run is settled.
+            const tmplId = pendingTmplRef.current;
+            pendingTmplRef.current = null;
+            if (tmplId != null) {
+              void recordSwarmTemplateRun(tmplId, snap.status === "completed").then(() => loadTemplates());
+            }
           }
         } catch {
           if (pollRef.current) clearInterval(pollRef.current);
@@ -719,6 +741,15 @@ export function SwarmView({ onBack, workspace }: { onBack: () => void; workspace
             <div className="text-[11px] uppercase tracking-[0.07em] text-faint font-semibold mb-1.5">
               {t("Governance report")}
             </div>
+            {govStats.size > 0 && (
+              <div className="text-[11.5px] text-muted mb-1.5 flex flex-wrap gap-x-2.5">
+                {[...govStats.entries()].map(([action, n]) => (
+                  <span key={action} className="whitespace-nowrap">
+                    🛡 {action} <span className="text-faint">×{n}</span>
+                  </span>
+                ))}
+              </div>
+            )}
             {governance.map((g, i) => (
               <div key={i} className="text-[11px] text-faint font-mono mb-0.5">{g}</div>
             ))}
@@ -738,6 +769,11 @@ export function SwarmView({ onBack, workspace }: { onBack: () => void; workspace
                 <button className="flex-1 min-w-0" onClick={() => applyTemplate(tmpl)} data-testid={`swarm-template-${tmpl.id}`}>
                   <span className="block text-[12.5px] font-medium truncate">{tmpl.title}</span>
                   <span className="block text-[11.5px] text-faint truncate">{tmpl.intent}</span>
+                  {(tmpl.runs_count ?? 0) > 0 && (
+                    <span className="block text-[11px] text-muted truncate">
+                      {(tmpl.runs_count ?? 0)} {t("runs")} · {(tmpl.success_count ?? 0)} {t("ok")}
+                    </span>
+                  )}
                 </button>
                 <button
                   className="shrink-0 text-[11px] text-muted hover:text-danger px-1.5 py-0.5 rounded"

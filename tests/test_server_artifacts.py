@@ -175,3 +175,16 @@ def test_team_package_export_import_roundtrip(tmp_path, monkeypatch):
     # idempotent: second import adds nothing (dedup by title)
     r3 = importer.import_team_package(str(zpath))
     assert r3["imported"]["swarm_templates"] == 0
+
+
+def test_swarm_template_track_record(tmp_path):
+    """Strategy report 5.2.1: a template accumulates a track record (runs + successes)."""
+    from coworker.conversations import ConversationStore
+
+    store = ConversationStore(tmp_path / "conv.db")
+    tmpl = store.add_swarm_template("周报", "每周市场分析", [{"id": "t0", "description": "收集", "deps": []}])
+    assert tmpl["runs_count"] == 0 and tmpl["success_count"] == 0
+    assert store.record_swarm_template_run(tmpl["id"], True) is True
+    assert store.record_swarm_template_run(tmpl["id"], False) is True
+    rows = store.list_swarm_templates()
+    assert rows[0]["runs_count"] == 2 and rows[0]["success_count"] == 1

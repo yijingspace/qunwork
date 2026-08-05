@@ -93,9 +93,17 @@ class ConversationStore:
                 title TEXT NOT NULL,
                 intent TEXT NOT NULL,
                 plan TEXT NOT NULL DEFAULT '[]',
+                runs_count INTEGER NOT NULL DEFAULT 0,
+                success_count INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP
             );
             """)
+        try:
+            self._conn.execute("ALTER TABLE swarm_templates ADD COLUMN runs_count INTEGER NOT NULL DEFAULT 0")
+            self._conn.execute("ALTER TABLE swarm_templates ADD COLUMN success_count INTEGER NOT NULL DEFAULT 0")
+            self._conn.commit()
+        except sqlite3.OperationalError:
+            pass  # columns already present
         for ddl in (
             "ALTER TABLE sessions ADD COLUMN title TEXT",
             "ALTER TABLE sessions ADD COLUMN n_msgs INTEGER DEFAULT 0",
@@ -181,7 +189,7 @@ class ConversationStore:
         """Saved swarm runs (title + goal intent + task plan JSON) for one-click reuse."""
         with self._lock:
             rows = self._conn.execute(
-                "SELECT id, title, intent, plan, created_at FROM swarm_templates ORDER BY id DESC"
+                "SELECT id, title, intent, plan, runs_count, success_count, created_at FROM swarm_templates ORDER BY id DESC"
             ).fetchall()
         out = []
         for r in rows:
@@ -190,8 +198,23 @@ class ConversationStore:
                 d["plan"] = json.loads(d.get("plan") or "[]")
             except (json.JSONDecodeError, TypeError):
                 d["plan"] = []
+            d["runs_count"] = int(d.get("runs_count") or 0)
+            d["success_count"] = int(d.get("success_count") or 0)
             out.append(d)
         return out
+
+    def record_swarm_template_run(self, template_id: int, success: bool) -> bool:
+        """Tally one reuse of a template: always increments runs_count, and bumps
+        success_count when the run completed (strategy report 5.2.1 — a template
+        carries its track record, not just its plan)."""
+        with self._lock:
+            cur = self._conn.execute(
+                "UPDATE swarm_templates SET runs_count = runs_count + 1, "
+                "success_count = success_count + ? WHERE id = ?",
+                (1 if success else 0, template_id),
+            )
+            self._conn.commit()
+        return cur.rowcount > 0
 
     def add_swarm_template(self, title: str, intent: str, plan: list | str | None) -> dict[str, Any]:
         title = (title or "").strip()
@@ -206,7 +229,7 @@ class ConversationStore:
             )
             self._conn.commit()
             row = self._conn.execute(
-                "SELECT id, title, intent, plan, created_at FROM swarm_templates WHERE id = ?",
+                "SELECT id, title, intent, plan, runs_count, success_count, created_at FROM swarm_templates WHERE id = ?",
                 (cur.lastrowid,),
             ).fetchone()
         d = dict(row)
@@ -214,6 +237,8 @@ class ConversationStore:
             d["plan"] = json.loads(d.get("plan") or "[]")
         except (json.JSONDecodeError, TypeError):
             d["plan"] = []
+        d["runs_count"] = int(d.get("runs_count") or 0)
+        d["success_count"] = int(d.get("success_count") or 0)
         return d
 
     def delete_swarm_template(self, template_id: int) -> bool:

@@ -613,4 +613,6 @@ export const zh: Messages = {
   "tasks": "个任务",
   "knowledge": "条知识",
   "skills": "个技能",
+  "runs": "次",
+  "ok": "次成功",
 };

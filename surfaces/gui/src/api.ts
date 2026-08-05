@@ -798,6 +798,8 @@ export interface SwarmTemplate {
   intent: string;
   plan?: Array<{ id: string; description: string; deps?: string[] }>;
   created_at?: string;
+  runs_count?: number;
+  success_count?: number;
 }
 
 export async function listSwarmTemplates(): Promise<{ templates: SwarmTemplate[] }> {
@@ -820,6 +822,18 @@ export async function addSwarmTemplate(
 
 export async function deleteSwarmTemplate(id: number): Promise<{ ok: boolean }> {
   const res = await fetch(`${httpBase()}/v1/swarm-templates/${id}`, { method: "DELETE" });
+  return await res.json();
+}
+
+export async function recordSwarmTemplateRun(
+  id: number,
+  success: boolean,
+): Promise<{ ok: boolean }> {
+  const res = await fetch(`${httpBase()}/v1/swarm-templates/${id}/record`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ success }),
+  });
   return await res.json();
 }
 
