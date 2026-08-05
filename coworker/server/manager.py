@@ -204,6 +204,10 @@ class SessionManager:
         # G2 command deck: run_id → live control channel while a swarm run is active
         # (paused flag, operator messages, pending requeue approvals).
         self.active_orchestration_controls: dict[str, Any] = {}
+        # Benchmark showcase (dev-plan): seed the three canonical swarm templates so
+        # users can one-click launch a "coordination demo" — market report, code
+        # refactor, weekly automation. Each pairs with /v1/orchestrate/{id}/report.
+        self._seed_benchmark_templates()
         # Personas: registry + lifecycle state under this manager's data dir. Installed as the
         # process singleton so agents.get_agent resolves persona ids (incl. third-party) here.
         self.personas = PersonaRegistry(state_path=base / "personas.json")
@@ -252,6 +256,38 @@ class SessionManager:
         self.unrouted = UnroutedStore(base / "unrouted.json")
 
     # -- workspaces -------------------------------------------------------------
+    def _seed_benchmark_templates(self) -> None:
+        """One-time seed of the three benchmark swarm templates (dev-plan showcase)."""
+        try:
+            existing = self.session_store.list_swarm_templates()
+            if existing:
+                return
+            benchmarks = [
+                (
+                    "市场分析报告 · 协同样板",
+                    "用蜂群生成一份全球 AI 市场分析报告:先调研市场格局与竞争态势,"
+                    "再分析 QunWork 的定位与差异化,最后汇编成一份结构化报告,"
+                    "评审确认后输出。",
+                ),
+                (
+                    "代码库重构 · 协同样板",
+                    "用蜂群分析当前代码库:先识别重复代码与坏味道,再规划重构方案"
+                    "(每个模块一个任务,并行执行),验证改动无回归,输出重构报告。",
+                ),
+                (
+                    "每周自动化周报 · 协同样板",
+                    "用蜂群生成本周工作总结:汇总本周工作事项与成果,评估目标达成度,"
+                    "起草下周计划,输出周报。以后每周运行同相位模板会自动复用上周历史。",
+                ),
+            ]
+            for title, intent in benchmarks:
+                try:
+                    self.session_store.add_swarm_template(title, intent, [])
+                except ValueError:
+                    continue
+        except Exception:
+            pass  # seeding is best-effort
+
     def open_workspace(self, path: str, *, create: bool = False) -> dict[str, Any]:
         resolved = Path(path).expanduser()
         if resolved.exists() and not resolved.is_dir():

@@ -600,4 +600,6 @@ export const zh: Messages = {
   "Message to the swarm…": "给蜂群发指令…",
   "Approve rerun": "批准重跑",
   "Skip": "跳过",
+  "Coordination report": "协同报告",
+  "Generating…": "生成中…",
 };

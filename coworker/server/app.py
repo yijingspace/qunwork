@@ -352,6 +352,36 @@ def create_app(manager: SessionManager) -> FastAPI:
     def orchestrate_history() -> dict[str, Any]:
         return {"runs": manager.orchestration_store.list_runs(limit=50)}
 
+    @app.get("/v1/orchestrate/{run_id}/report")
+    def orchestrate_report(run_id: str) -> dict[str, Any]:
+        """Coordination report (benchmark showcase): render the run's event stream
+        into a 'swarm narrative' Markdown deliverable."""
+        from ..orchestrator.coordination_report import (
+            coordination_report_summary,
+            render_coordination_report,
+        )
+
+        run = manager.orchestration_store.get_run(run_id)
+        if not run:
+            return {"ok": False, "error": "run not found"}
+        md = render_coordination_report(run)
+        # persist alongside the run's own deliverable so it survives restarts and
+        # is openable from the Artifacts panel (session workspace / parent).
+        try:
+            from pathlib import Path
+
+            base = Path(manager.default_workspace or ".")
+            base.mkdir(parents=True, exist_ok=True)
+            out = base / f"coordination-report-{run_id}.md"
+            out.write_text(md, encoding="utf-8")
+            return {
+                **coordination_report_summary(run),
+                "markdown": md,
+                "report_path": str(out),
+            }
+        except OSError as exc:
+            return {**coordination_report_summary(run), "markdown": md, "error": str(exc)}
+
     @app.get("/v1/orchestrate/{run_id}")
     def orchestrate_run(run_id: str) -> dict[str, Any]:
         run = manager.orchestration_store.get_run(run_id)

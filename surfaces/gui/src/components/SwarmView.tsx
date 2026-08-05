@@ -2,12 +2,14 @@ import { useEffect, useRef, useState } from "react";
 import {
   addSwarmTemplate,
   deleteSwarmTemplate,
+  getCoordinationReport,
   getHealth,
   getOrchestrateHistory,
   getOrchestrateRun,
   listSwarmTemplates,
   orchestrate,
   orchestrateControl,
+  type CoordinationReport,
   type OrchestrationHistoryItem,
   type OrchestrationRunSnapshot,
   type SwarmTemplate,
@@ -138,6 +140,9 @@ export function SwarmView({ onBack, workspace }: { onBack: () => void; workspace
   const [requeues, setRequeues] = useState<
     Array<{ task_id: string; attempt?: number; reason?: string }>
   >([]);
+  // Benchmark showcase: coordination report for the current (completed) run
+  const [report, setReport] = useState<CoordinationReport | null>(null);
+  const [reportBusy, setReportBusy] = useState(false);
   const mounted = useRef(true);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -259,6 +264,15 @@ export function SwarmView({ onBack, workspace }: { onBack: () => void; workspace
     if (!runId) return;
     await orchestrateControl(runId, approve ? "requeue_approve" : "requeue_reject", { task_id: taskId });
     setRequeues((prev) => prev.filter((r) => r.task_id !== taskId));
+  };
+
+  const loadReport = async () => {
+    if (!runId) return;
+    setReportBusy(true);
+    const res = await getCoordinationReport(runId);
+    setReportBusy(false);
+    if (res.ok) setReport(res);
+    else setDeckError(res.error || "report failed");
   };
 
   const run = async () => {
@@ -472,6 +486,16 @@ export function SwarmView({ onBack, workspace }: { onBack: () => void; workspace
               💾 {t("Save as template")}
             </button>
           )}
+          {status === "completed" && runId && (
+            <button
+              className="shrink-0 rounded-lg border border-accent/50 px-2.5 py-1 text-[12.5px] text-accent hover:border-accent"
+              onClick={() => void loadReport()}
+              disabled={reportBusy}
+              data-testid="swarm-report"
+            >
+              {reportBusy ? t("Generating…") : "📄 " + t("Coordination report")}
+            </button>
+          )}
           {showTemplateForm && (
             <span className="ml-auto shrink-0 flex items-center gap-2">
               <input
@@ -547,6 +571,19 @@ export function SwarmView({ onBack, workspace }: { onBack: () => void; workspace
                 </button>
               </div>
             ))}
+          </div>
+        )}
+        {report && report.markdown && (
+          <div className="mt-3 rounded-lg border border-line bg-panel p-3" data-testid="swarm-report-body">
+            <div className="text-[12px] font-semibold mb-1.5">{t("Coordination report")}</div>
+            <pre className="text-[11.5px] leading-relaxed whitespace-pre-wrap text-muted max-h-64 overflow-y-auto">
+              {report.markdown.slice(0, 4000)}
+            </pre>
+            {report.report_path && (
+              <div className="text-[11.5px] text-faint mt-1.5 truncate">
+                {report.report_path}
+              </div>
+            )}
           </div>
         )}
         {deckError && <div className="text-[12px] text-danger mt-2">{deckError}</div>}

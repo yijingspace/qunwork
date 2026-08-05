@@ -858,6 +858,23 @@ export async function orchestrateControl(
   return await res.json();
 }
 
+// Benchmark showcase: render a finished run into a "coordination report" (Markdown).
+export interface CoordinationReport {
+  ok: boolean;
+  error?: string;
+  run_id?: string;
+  status?: string;
+  intent?: string;
+  duration_s?: number;
+  markdown?: string;
+  report_path?: string;
+}
+
+export async function getCoordinationReport(runId: string): Promise<CoordinationReport> {
+  const res = await fetch(`${httpBase()}/v1/orchestrate/${runId}/report`);
+  return await res.json();
+}
+
 export interface OrchestrationRunSnapshot {
   ok: boolean;
   error?: string;
