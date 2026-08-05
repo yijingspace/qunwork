@@ -615,4 +615,12 @@ export const zh: Messages = {
   "skills": "个技能",
   "runs": "次",
   "ok": "次成功",
+  "Team memory": "团队记忆",
+  "What the swarm remembers across sessions and workers — search, edit or forget it.": "蜂群跨会话、跨 worker 记住的长期事实——可检索、编辑或清除。",
+  "Search memories…": "搜索记忆…",
+  "Add a durable fact the team should keep…": "添加一条团队应长期记住的事实…",
+  "Global": "全局",
+  "No memories yet.": "还没有记忆。",
+  "Forget this memory?": "清除这条记忆?",
+  "Forget": "清除",
 };

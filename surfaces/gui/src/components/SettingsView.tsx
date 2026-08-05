@@ -1,12 +1,18 @@
 import { useEffect, useState } from "react";
 import {
+  addMemory,
+  deleteMemory,
   getSettings,
   getTrustedWorkspaces,
+  listMemories,
+  searchMemories,
   setOnboarded,
   setPdfSettings,
   setScratchBase,
   setSessionsPeek,
   setWorkspaceTrusted,
+  updateMemory,
+  type MemoryItem,
   type ModelSettings,
   type PdfSettings,
   type WorkspaceCommandTrust,
@@ -448,6 +454,7 @@ function AppearanceSection() {
 
       <TrustedWorkspacesCard />
       <TeamWorkspaceCard />
+      <TeamMemoryCard />
 
       {desktop && (
         <div className={CARD + " p-4"}>
@@ -545,6 +552,160 @@ function TeamWorkspaceCard() {
       </div>
       {importResult && <div className="text-[12px] text-muted mt-2">{importResult}</div>}
       {teamErr && <div className="text-[12px] text-danger mt-2">{teamErr}</div>}
+    </div>
+  );
+}
+
+function TeamMemoryCard() {
+  const t = useT();
+  const [items, setItems] = useState<MemoryItem[] | null>(null);
+  const [query, setQuery] = useState("");
+  const [searching, setSearching] = useState(false);
+  const [memErr, setMemErr] = useState<string | null>(null);
+  const [adding, setAdding] = useState(false);
+  const [newText, setNewText] = useState("");
+  const [newScope, setNewScope] = useState("workspace");
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const [editText, setEditText] = useState("");
+
+  const loadAll = () => {
+    listMemories()
+      .then((r) => setItems(r.memory ?? []))
+      .catch(() => setItems([]));
+  };
+  useEffect(() => {
+    loadAll();
+  }, []);
+
+  const doSearch = async () => {
+    if (!query.trim()) {
+      loadAll();
+      return;
+    }
+    setSearching(true);
+    setMemErr(null);
+    try {
+      const r = await searchMemories(query.trim(), 20);
+      setItems(r.results ?? []);
+    } catch (e) {
+      setMemErr(String(e));
+    } finally {
+      setSearching(false);
+    }
+  };
+
+  const doAdd = async () => {
+    if (!newText.trim()) return;
+    setAdding(true);
+    setMemErr(null);
+    try {
+      await addMemory(newText.trim(), newScope);
+      setNewText("");
+      loadAll();
+    } catch (e) {
+      setMemErr(String(e));
+    } finally {
+      setAdding(false);
+    }
+  };
+
+  const saveEdit = async (id: number) => {
+    if (!editText.trim()) return;
+    const r = await updateMemory(id, editText.trim());
+    if (r.ok) {
+      setEditingId(null);
+      loadAll();
+    } else setMemErr(r.error || "update failed");
+  };
+
+  const clear = async (id: number) => {
+    if (!window.confirm(t("Forget this memory?"))) return;
+    await deleteMemory(id);
+    loadAll();
+  };
+
+  return (
+    <div className={CARD + " p-4 mb-4"} data-testid="team-memory-card">
+      <div className={FIELD_LABEL}>{t("Team memory")}</div>
+      <div className={FIELD_HELP}>
+        {t("What the swarm remembers across sessions and workers — search, edit or forget it.")}
+      </div>
+
+      <div className="flex items-center gap-2 mt-2.5">
+        <input
+          className="flex-1 min-w-0 px-3 py-2 rounded-lg border bg-panel text-[12.5px] outline-none focus:border-accent"
+          placeholder={t("Search memories…")}
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && void doSearch()}
+        />
+        <button className={BTN_BORDERED} disabled={searching} onClick={() => void doSearch()}>
+          {searching ? "…" : t("Search")}
+        </button>
+      </div>
+
+      <div className="flex items-center gap-2 mt-2">
+        <input
+          className="flex-1 min-w-0 px-3 py-2 rounded-lg border bg-panel text-[12.5px] outline-none focus:border-accent"
+          placeholder={t("Add a durable fact the team should keep…")}
+          value={newText}
+          onChange={(e) => setNewText(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && void doAdd()}
+        />
+        <select
+          className="px-2 py-2 rounded-lg border bg-panel text-[12.5px] outline-none"
+          value={newScope}
+          onChange={(e) => setNewScope(e.target.value)}
+        >
+          <option value="workspace">{t("Workspace")}</option>
+          <option value="global">{t("Global")}</option>
+        </select>
+        <button className={BTN_BORDERED} disabled={adding || !newText.trim()} onClick={() => void doAdd()}>
+          {adding ? "…" : t("Add")}
+        </button>
+      </div>
+
+      {memErr && <div className="text-[12px] text-danger mt-2">{memErr}</div>}
+      {items === null ? null : items.length === 0 ? (
+        <div className="text-[12px] text-faint mt-2.5">{t("No memories yet.")}</div>
+      ) : (
+        <div className="mt-2.5 space-y-1.5 max-h-72 overflow-y-auto pr-1">
+          {items.map((m) => (
+            <div key={m.id} className="rounded-lg border border-line bg-panel px-3 py-2">
+              {editingId === m.id ? (
+                <div className="flex items-start gap-2">
+                  <textarea
+                    className="flex-1 min-w-0 px-2 py-1.5 rounded border bg-panel text-[12.5px] outline-none focus:border-accent resize-none"
+                    rows={2}
+                    value={editText}
+                    onChange={(e) => setEditText(e.target.value)}
+                  />
+                  <button className={BTN_BORDERED} onClick={() => void saveEdit(m.id)}>{t("Save")}</button>
+                  <button className="text-[12px] text-faint" onClick={() => setEditingId(null)}>{t("Cancel")}</button>
+                </div>
+              ) : (
+                <div>
+                  <div className="text-[12.5px] text-ink break-words leading-relaxed">{m.content}</div>
+                  <div className="flex items-center gap-2 mt-1">
+                    <span className="text-[10.5px] uppercase tracking-wide text-faint border border-line rounded px-1 py-px">
+                      {m.scope}
+                    </span>
+                    {m.key && <span className="text-[10.5px] text-faint font-mono">#{m.key}</span>}
+                    {m.created_at && <span className="text-[10.5px] text-faint">{m.created_at}</span>}
+                    <span className="flex-1" />
+                    <button className="text-[11px] text-muted hover:text-ink" onClick={() => { setEditingId(m.id); setEditText(m.content); }}>
+                      {t("Edit")}
+                    </button>
+                    <button className="text-[11px] text-muted hover:text-danger" onClick={() => void clear(m.id)}>
+                      {t("Forget")}
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

@@ -188,3 +188,33 @@ def test_swarm_template_track_record(tmp_path):
     assert store.record_swarm_template_run(tmpl["id"], False) is True
     rows = store.list_swarm_templates()
     assert rows[0]["runs_count"] == 2 and rows[0]["success_count"] == 1
+
+
+def test_team_memory_panel_crud(tmp_path):
+    """5.2.2 team memory panel: list fields, search relevance, edit, delete."""
+    from coworker.conversations import ConversationStore
+    from coworker.server.manager import SessionManager
+
+    store = ConversationStore(tmp_path / "conv.db")
+    mgr = SessionManager.__new__(SessionManager)
+    mgr.session_store = store
+    from coworker.memory import Scope, SQLiteMemoryStore
+
+    mgr.memory_store = SQLiteMemoryStore(tmp_path / "mem.db")
+    a = mgr.add_memory("项目代号凤凰,Q3 上线", scope="workspace", workspace=str(tmp_path))
+    b = mgr.add_memory("每周五下午开例会", scope="workspace", workspace=str(tmp_path))
+    # list fields
+    rows = mgr.list_memory()
+    assert len(rows) == 2 and "workspace" in rows[0] and "created_at" in rows[0]
+    # search relevance
+    hits = mgr.search_memory("凤凰", k=5)
+    assert hits and hits[0]["id"] == a["id"]
+    assert all("content" in h for h in hits)
+    # edit
+    upd = mgr.update_memory(a["id"], "项目代号凤凰,Q3 上线,负责人小李")
+    assert upd and upd["content"].endswith("负责人小李")
+    assert mgr.update_memory(9999, "x") is None  # missing id
+    # clear
+    assert mgr.delete_memory(b["id"]) is True
+    assert mgr.delete_memory(9999) is False
+    assert len(mgr.list_memory()) == 1

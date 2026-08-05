@@ -1019,6 +1019,24 @@ def create_app(manager: SessionManager) -> FastAPI:
             body.get("content", ""), body.get("scope", "workspace")
         )
 
+    @app.post("/v1/memory/search")
+    def search_memory(body: dict) -> dict[str, Any]:
+        """Team memory search (5.2.2): keyword relevance over the durable pool."""
+        query = str(body.get("query") or "")
+        k = max(1, min(int(body.get("k") or 10), 100))
+        return {"query": query, "results": manager.search_memory(query, k)}
+
+    @app.put("/v1/memory/{memory_id}")
+    def update_memory(memory_id: int, body: dict) -> dict[str, Any]:
+        item = manager.update_memory(memory_id, str(body.get("content") or ""))
+        if item is None:
+            return {"ok": False, "error": "memory not found or empty content"}
+        return {"ok": True, "item": item}
+
+    @app.delete("/v1/memory/{memory_id}")
+    def delete_memory(memory_id: int) -> dict[str, Any]:
+        return {"ok": manager.delete_memory(memory_id), "id": memory_id}
+
     @app.post("/v1/chat/completions")
     def chat_completions(body: dict) -> dict[str, Any]:
         model = body.get("model", manager.model)

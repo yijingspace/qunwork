@@ -2193,3 +2193,59 @@ export class Session {
     this.ws.close();
   }
 }
+
+// -- team memory panel (strategy report 5.2.2) -------------------------------
+export interface MemoryItem {
+  id: number;
+  scope: string;
+  content: string;
+  key?: string | null;
+  workspace?: string | null;
+  created_at?: string | null;
+}
+
+export async function listMemories(): Promise<{ memory: MemoryItem[] }> {
+  const res = await fetch(`${httpBase()}/v1/memory`);
+  return await res.json();
+}
+
+export async function searchMemories(
+  query: string,
+  k = 10,
+): Promise<{ query: string; results: MemoryItem[] }> {
+  const res = await fetch(`${httpBase()}/v1/memory/search`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ query, k }),
+  });
+  return await res.json();
+}
+
+export async function addMemory(
+  content: string,
+  scope = "workspace",
+): Promise<MemoryItem> {
+  const res = await fetch(`${httpBase()}/v1/memory`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ content, scope }),
+  });
+  return await res.json();
+}
+
+export async function updateMemory(
+  id: number,
+  content: string,
+): Promise<{ ok: boolean; item?: MemoryItem; error?: string }> {
+  const res = await fetch(`${httpBase()}/v1/memory/${id}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ content }),
+  });
+  return await res.json();
+}
+
+export async function deleteMemory(id: number): Promise<{ ok: boolean }> {
+  const res = await fetch(`${httpBase()}/v1/memory/${id}`, { method: "DELETE" });
+  return await res.json();
+}

@@ -3884,9 +3884,67 @@ class SessionManager:
 
     def list_memory(self) -> list[dict[str, Any]]:
         return [
-            {"id": m.id, "scope": m.scope.value, "content": m.content}
+            {
+                "id": m.id,
+                "scope": m.scope.value,
+                "content": m.content,
+                "key": m.key,
+                "workspace": m.workspace,
+                "session_id": m.session_id,
+                "created_at": m.created_at,
+            }
             for m in self.memory_store.list()
         ]
+
+    def search_memory(self, query: str, k: int = 10) -> list[dict[str, Any]]:
+        """Team memory search (strategy report 5.2.2): keyword relevance over the
+        durable memory pool. SQL LIKE scoring now; swap in embeddings behind the
+        same endpoint when a vector backend lands."""
+        query = (query or "").strip()
+        if not query:
+            return []
+        tokens = [t for t in query.lower().split() if t]
+        if not tokens:
+            return []
+        scored: list[tuple[int, dict[str, Any]]] = []
+        for m in self.memory_store.list():
+            text = (m.content or "").lower()
+            score = sum(text.count(tok) for tok in tokens)
+            if score:
+                scored.append(
+                    (
+                        score,
+                        {
+                            "id": m.id,
+                            "scope": m.scope.value,
+                            "content": m.content,
+                            "key": m.key,
+                            "workspace": m.workspace,
+                            "created_at": m.created_at,
+                        },
+                    )
+                )
+        scored.sort(key=lambda pair: (-pair[0], pair[1]["id"]))
+        return [d for _, d in scored[:k]]
+
+    def update_memory(self, memory_id: int, content: str) -> Optional[dict[str, Any]]:
+        content = (content or "").strip()
+        if not content:
+            return None
+        item = self.memory_store.update(memory_id, content)
+        if item is None:
+            return None
+        return {
+            "id": item.id,
+            "scope": item.scope.value,
+            "content": item.content,
+            "key": item.key,
+            "workspace": item.workspace,
+            "created_at": item.created_at,
+        }
+
+    def delete_memory(self, memory_id: int) -> bool:
+        return self.memory_store.delete(memory_id)
 
     def add_memory(
         self, content: str, scope: str = "workspace", workspace: Optional[str] = None
