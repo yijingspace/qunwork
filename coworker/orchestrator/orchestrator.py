@@ -47,6 +47,24 @@ def task_phase(task: Any, plan: Any) -> int:
     return idx % 60
 
 
+def _looks_like_interim(text: Optional[str]) -> bool:
+    """Detect an executor reply that is a PROCESS NOTE rather than the deliverable:
+    too short to be a chapter, or an explicit action-phrase lead-in. When true, the
+    orchestrator pushes one more turn demanding the full product (and the reviewer
+    still guards quality afterwards)."""
+    t = (text or "").strip()
+    if not t:
+        return True
+    if len(t) < 120:
+        return True
+    heads = (
+        "i will", "let me", "now i", "i'm going", "i am going",
+        "我将", "让我", "我先", "正在", "接下来", "现在", "运行核验", "查看", "查找", "检查", "收集",
+    )
+    low = t.lower()
+    return any(low.startswith(h) for h in heads)
+
+
 def _extract_json(text: str) -> Any:
     """Best-effort JSON extraction from a model reply (strip fences/prose)."""
     text = text.strip()
@@ -181,7 +199,7 @@ class Orchestrator:
     memory_db: Optional[str] = None  # SQLite path for persistent memory (default workspace/.qunwork/memory.db)
     max_parallel: int = 4  # how many independent tasks run concurrently
     timeout_seconds: Optional[int] = 600  # whole-run timeout (None = no limit)
-    task_timeout_seconds: Optional[int] = 150  # per-task timeout; timeout degrades to a partial result
+    task_timeout_seconds: Optional[int] = 240  # per-task timeout; timeout degrades to a partial result
     event_sink: Optional[Callable[[str, dict], None]] = None  # (kind, payload) progress feed
     # G2 command deck: external control (pause/resume/operator message/requeue
     # approval). None = headless run with auto-requeue (legacy behaviour).
@@ -280,6 +298,22 @@ class Orchestrator:
                 )
 
         text, status = await _run_engine_async(engine, prompt, on_event=feed)
+        if _looks_like_interim(text):
+            # Deliverable push: the model stopped with a process note ("I will
+            # verify…", "Let me check…") instead of the product — observed on
+            # every weekly-report task. The engine keeps its message history, so
+            # one more grounded turn demanding the full deliverable fixes most
+            # cases; the reviewer still guards the rest.
+            text2, status2 = await _run_engine_async(
+                engine,
+                "Your previous reply was only a process note, not the deliverable. "
+                "Output the COMPLETE deliverable now — the full chapter text — as "
+                "your final message. If you already wrote a file, read it back and "
+                "paste its full content. Do NOT describe actions; paste the product.",
+                on_event=feed,
+            )
+            if text2 and not _looks_like_interim(text2):
+                text = text2
         if not text:
             raise RuntimeError(f"executor produced no result for {task.id} (status: {status})")
         return text

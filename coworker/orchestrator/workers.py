@@ -28,7 +28,7 @@ from ..tools.git import git_tools
 from ..tools.search import search_tools
 
 _PLANNER_MAX_ITERATIONS = 8
-_EXECUTOR_MAX_ITERATIONS = 12
+_EXECUTOR_MAX_ITERATIONS = 24
 _REVIEWER_MAX_ITERATIONS = 8
 
 PLANNER_INSTRUCTIONS = """You are the planning agent of a multi-agent swarm. \

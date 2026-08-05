@@ -486,7 +486,12 @@ export function SwarmView({ onBack, workspace }: { onBack: () => void; workspace
             />
           </label>
           <button
-            className="px-4 py-1.5 rounded-full bg-ink text-panel text-[13px] disabled:opacity-40"
+            className={
+              "px-4 py-1.5 rounded-full text-[13px] transition-colors disabled:opacity-40 " +
+              (busy
+                ? "bg-accent text-white swarm-run-btn"
+                : "bg-accent text-white hover:bg-accent/85")
+            }
             disabled={busy || !intent.trim()}
             onClick={run}
           >

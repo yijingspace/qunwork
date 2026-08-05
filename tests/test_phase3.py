@@ -67,9 +67,9 @@ async def test_dependency_results_injected_into_executor(tmp_path):
         [
             AssistantTurn(text='[{"id":"t0","description":"Write intro","deps":[]},'
                                  '{"id":"t1","description":"Write body","deps":["t0"]}]'),
-            AssistantTurn(text="intro: hello world", finish_reason="stop"),
+            AssistantTurn(text="intro: hello world " + "x"*150, finish_reason="stop"),
             AssistantTurn(text='{"accepted":true,"confidence":0.9,"reason":"ok","needs_human":false}'),
-            AssistantTurn(text="body done", finish_reason="stop"),
+            AssistantTurn(text="body done " + "x"*150, finish_reason="stop"),
             AssistantTurn(text='{"accepted":true,"confidence":0.9,"reason":"ok","needs_human":false}'),
         ]
     )
@@ -108,11 +108,11 @@ async def test_parallel_execution_runs_independent_tasks_concurrently(tmp_path):
             if hint == "validate":
                 return AssistantTurn(text='{"accepted":true,"confidence":0.9,"reason":"ok","needs_human":false}')
             if hint == "A":
-                return AssistantTurn(text="A done", finish_reason="stop")
+                return AssistantTurn(text="A done " + "x"*150, finish_reason="stop")
             if hint == "B":
-                return AssistantTurn(text="B done", finish_reason="stop")
+                return AssistantTurn(text="B done " + "x"*150, finish_reason="stop")
             if hint == "C":
-                return AssistantTurn(text="C done", finish_reason="stop")
+                return AssistantTurn(text="C done " + "x"*150, finish_reason="stop")
             return AssistantTurn(text='[{"id":"t0","description":"Task A","deps":[]},'
                                        '{"id":"t1","description":"Task B","deps":[]},'
                                        '{"id":"t2","description":"Task C","deps":["t1"]}]')
@@ -157,7 +157,7 @@ async def test_code_executor_agent_runs_engineering_task(tmp_path):
                 return AssistantTurn(
                     text='[{"id":"t0","description":"Implement the module","deps":[]}]'
                 )
-            return AssistantTurn(text="def util(): return 42", finish_reason="stop")
+            return AssistantTurn(text="def util(): return 42 " + "x"*150, finish_reason="stop")
 
         def capabilities(self, model):
             return ModelCapabilities()

@@ -357,6 +357,13 @@ body {
 }
 @keyframes spin { to { transform: rotate(360deg); } }
 
+/* SwarmView run button: accent-blue with a soft pulse while a run is active. */
+.swarm-run-btn { animation: swarm-pulse 1.3s ease-in-out infinite; }
+@keyframes swarm-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(37, 99, 235, 0.45); }
+  50% { box-shadow: 0 0 0 7px rgba(37, 99, 235, 0); }
+}
+
 .tool {
   border: 1px solid var(--line); border-radius: 9px; background: var(--panel);
   padding: 8px 11px; font-size: 13px; color: var(--muted);

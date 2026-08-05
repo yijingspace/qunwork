@@ -311,7 +311,7 @@ def create_app(manager: SessionManager) -> FastAPI:
                 # G2: command deck wiring (pause/resume/message/requeue approval).
                 controller=controller,
                 requeue_approval_timeout=float(
-                    body.get("requeue_approval_timeout") or 120.0
+                    body.get("requeue_approval_timeout") or 30.0
                 ),
                 # Engineering-style executor (code persona) for programming tasks;
                 # 'cowork' (default) is the generalist. Validated in _build().

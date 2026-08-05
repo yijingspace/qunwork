@@ -56,7 +56,9 @@ def test_orchestrator_stalls_on_no_progress(tmp_path):
             if self.turns == 1:  # planner
                 return AssistantTurn(text='[{"id":"t0","description":"Draft","deps":[]}]')
             if self.turns % 2 == 0:  # executor — always the same output
-                return AssistantTurn(text="same identical draft", finish_reason="stop")
+                return AssistantTurn(
+                    text="deliverable content: " + "x" * 200, finish_reason="stop"
+                )
             # reviewer — always accepts, so t0 finishes; then nothing else is ready
             return AssistantTurn(text='{"accepted":true,"confidence":0.9,"reason":"ok","needs_human":false}')
 
@@ -280,3 +282,19 @@ def test_environment_git_snapshot_survives_chinese_commits():
     assert log is not None and len(log) > 0, "git log must decode, not return None"
     # A non-git dir degrades gracefully.
     assert _git(Path(tempfile.mkdtemp()), "rev-parse", "--is-inside-work-tree") is None
+
+
+def test_looks_like_interim_detects_process_notes():
+    """Executor replies that are process notes (observed on every weekly-report
+    task) must be flagged so the orchestrator pushes a deliverable turn."""
+    from coworker.orchestrator.orchestrator import _looks_like_interim
+
+    # Real observed replies — all process notes.
+    assert _looks_like_interim("运行核验脚本,并用pisano_lookup核验提交中提到的Pisano周期事实(模10周期=60)。")
+    assert _looks_like_interim("The strategy report has the P0/P1/P2 goal roadmap. Let me check the coordination reports and knowledge DB.")
+    assert _looks_like_interim("The previous swarm runs failed with executor errors, so no weekly report exists yet.")
+    assert _looks_like_interim("")
+    assert _looks_like_interim(None)
+    # A real deliverable (chapter-length, no action lead-in) is NOT interim.
+    ok = "本周共完成 63 次提交,覆盖 8 个模块:蜂群指挥台(8bd30e6)、团队记忆面板(b8fa837)…" + "内容" * 80
+    assert not _looks_like_interim(ok)

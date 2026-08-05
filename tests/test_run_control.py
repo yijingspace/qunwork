@@ -93,9 +93,9 @@ def test_orchestrator_requeue_waits_for_deck_approval(tmp_path):
     provider = RecordingProvider(
         [
             AssistantTurn(text='[{"id":"t0","description":"Draft","deps":[]}]'),
-            AssistantTurn(text="first draft", finish_reason="stop"),
+            AssistantTurn(text="first draft " + "x"*150, finish_reason="stop"),
             AssistantTurn(text='{"accepted":false,"confidence":0.3,"reason":"weak","needs_human":false}'),
-            AssistantTurn(text="second draft", finish_reason="stop"),
+            AssistantTurn(text="second draft " + "x"*150, finish_reason="stop"),
             AssistantTurn(text='{"accepted":true,"confidence":0.9,"reason":"ok","needs_human":false}'),
         ]
     )
