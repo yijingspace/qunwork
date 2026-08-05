@@ -20,6 +20,7 @@ from typing import Any, Optional
 
 from ..agent import build_engine
 from ..agents import get_agent
+from ..secrets import state_dir
 from ..connections import (
     PersonaConnectionStore,
     SessionConnectionStore,
@@ -3671,6 +3672,141 @@ class SessionManager:
 
     def delete_task_template(self, template_id: int) -> bool:
         return self.session_store.delete_task_template(template_id)
+
+    # -- team workspace (dev-plan P2): export / import a team package -------------
+    def export_team_package(self) -> dict[str, Any]:
+        """Bundle the team's assets into one zip (primary workspace): swarm
+        templates + task templates + knowledge entries + skills."""
+        import time as _time
+        import zipfile
+
+        base = Path(self.default_workspace or ".")
+        base.mkdir(parents=True, exist_ok=True)
+        out = base / f"qunwork-team-package-{int(_time.time())}.zip"
+        try:
+            with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as zf:
+                zf.writestr(
+                    "swarm-templates.json",
+                    json.dumps(self.session_store.list_swarm_templates(), ensure_ascii=False, indent=1),
+                )
+                zf.writestr(
+                    "task-templates.json",
+                    json.dumps(self.session_store.list_task_templates(), ensure_ascii=False, indent=1),
+                )
+                kb = self.knowledge_list(limit=1000)
+                zf.writestr(
+                    "knowledge.json",
+                    json.dumps(kb.get("items", []), ensure_ascii=False, indent=1),
+                )
+                # skills: each skill's folder (SKILL.md + resources)
+                for sk in self.skill_loader.catalog():
+                    skill = self.skill_loader.get(sk["name"])
+                    if skill is None or skill.path is None:
+                        continue
+                    root = Path(skill.path)
+                    if not root.is_dir():
+                        continue
+                    for f in root.rglob("*"):
+                        if f.is_file():
+                            zf.write(f, f"skills/{sk['name']}/{f.relative_to(root)}")
+            return {"ok": True, "path": str(out), "size": out.stat().st_size}
+        except OSError as exc:
+            return {"ok": False, "error": str(exc)}
+
+    def import_team_package(self, zip_path: str) -> dict[str, Any]:
+        """Import a team package zip: templates (dedup by title), knowledge
+        (dedup by title), skills (copied into the user skill dir)."""
+        import tempfile
+        import zipfile
+
+        src = Path(zip_path).expanduser()
+        if not src.is_file():
+            return {"ok": False, "error": "package file not found"}
+        imported = {"swarm_templates": 0, "task_templates": 0, "knowledge": 0, "skills": 0}
+        try:
+            with zipfile.ZipFile(src) as zf:
+                names = zf.namelist()
+
+                def _read_json(name: str) -> list[dict]:
+                    if name not in names:
+                        return []
+                    try:
+                        data = json.loads(zf.read(name).decode("utf-8"))
+                        return data if isinstance(data, list) else []
+                    except (ValueError, KeyError):
+                        return []
+
+                # templates — dedup by title
+                existing_s = {t["title"] for t in self.session_store.list_swarm_templates()}
+                for t in _read_json("swarm-templates.json"):
+                    if t.get("title") in existing_s:
+                        continue
+                    try:
+                        self.session_store.add_swarm_template(
+                            t["title"], t.get("intent", ""), t.get("plan")
+                        )
+                        existing_s.add(t["title"])
+                        imported["swarm_templates"] += 1
+                    except (ValueError, KeyError):
+                        continue
+                existing_t = {t["title"] for t in self.session_store.list_task_templates()}
+                for t in _read_json("task-templates.json"):
+                    if t.get("title") in existing_t:
+                        continue
+                    try:
+                        self.session_store.add_task_template(
+                            t["title"], t.get("prompt", "")
+                        )
+                        existing_t.add(t["title"])
+                        imported["task_templates"] += 1
+                    except (ValueError, KeyError):
+                        continue
+
+                # knowledge — dedup by title
+                existing_k = {k.get("title") for k in self.knowledge_list(limit=1000).get("items", [])}
+                for it in _read_json("knowledge.json"):
+                    title = it.get("title") or ""
+                    content = it.get("content") or it.get("source_path") or ""
+                    if not title or title in existing_k or not content:
+                        continue
+                    try:
+                        self.knowledge_add(title, content)
+                        existing_k.add(title)
+                        imported["knowledge"] += 1
+                    except Exception:
+                        continue
+
+                # skills — extract into the user skill dir
+                skill_names = {n.split("/", 1)[1].split("/", 1)[0] for n in names if n.startswith("skills/") and "/" in n[7:]}
+                target = state_dir() / "skills"
+                target.mkdir(parents=True, exist_ok=True)
+                for name in sorted(skill_names):
+                    prefix = f"skills/{name}/"
+                    members = [n for n in names if n.startswith(prefix)]
+                    if not members:
+                        continue
+                    dest = target / name
+                    dest.mkdir(parents=True, exist_ok=True)
+                    for m in members:
+                        rel = m[len(prefix):]
+                        if not rel:
+                            continue
+                        out_path = (dest / rel).resolve()
+                        if not out_path.is_relative_to(dest.resolve()):
+                            continue  # zip-slip guard
+                        if m.endswith("/"):
+                            out_path.mkdir(parents=True, exist_ok=True)
+                            continue
+                        out_path.parent.mkdir(parents=True, exist_ok=True)
+                        out_path.write_bytes(zf.read(m))
+                    imported["skills"] += 1
+                try:
+                    self.skill_loader.refresh()
+                except Exception:
+                    pass
+            return {"ok": True, "imported": imported}
+        except (OSError, zipfile.BadZipFile) as exc:
+            return {"ok": False, "error": str(exc)}
 
     def knowledge_list(
         self, workspace: Optional[str] = None, limit: int = 100, offset: int = 0

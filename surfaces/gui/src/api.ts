@@ -875,6 +875,23 @@ export async function getCoordinationReport(runId: string): Promise<Coordination
   return await res.json();
 }
 
+// Team workspace (P2): export/import a team package (templates + knowledge + skills).
+export async function exportTeamPackage(): Promise<{ ok: boolean; path?: string; error?: string }> {
+  const res = await fetch(`${httpBase()}/v1/team/export`);
+  return await res.json();
+}
+
+export async function importTeamPackage(
+  path: string,
+): Promise<{ ok: boolean; imported?: Record<string, number>; error?: string }> {
+  const res = await fetch(`${httpBase()}/v1/team/import`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ path }),
+  });
+  return await res.json();
+}
+
 export interface OrchestrationRunSnapshot {
   ok: boolean;
   error?: string;

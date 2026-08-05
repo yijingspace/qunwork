@@ -40,6 +40,7 @@ import { GalleryModal } from "./GalleryModal";
 import { PersonasTab } from "./PersonasTab";
 import { showPersonas } from "../flags";
 import { useT, useLanguage } from "../i18n";
+import { exportTeamPackage, importTeamPackage } from "../api";
 
 // Settings, restructured (Option 2) into a full-page surface that mirrors IntegrationsView's shell:
 // a left sub-nav (Appearance · Files · Models · Personas) + centered panel, replacing the old
@@ -446,6 +447,7 @@ function AppearanceSection() {
       <FilesCard />
 
       <TrustedWorkspacesCard />
+      <TeamWorkspaceCard />
 
       {desktop && (
         <div className={CARD + " p-4"}>
@@ -484,8 +486,70 @@ function AppearanceSection() {
   );
 }
 
-function TrustedWorkspacesCard() {
+function TeamWorkspaceCard() {
   const t = useT();
+  const [exporting, setExporting] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const [exported, setExported] = useState<string | null>(null);
+  const [importPath, setImportPath] = useState("");
+  const [importResult, setImportResult] = useState<string | null>(null);
+  const [teamErr, setTeamErr] = useState<string | null>(null);
+
+  const doExport = async () => {
+    setExporting(true);
+    setTeamErr(null);
+    const res = await exportTeamPackage();
+    setExporting(false);
+    if (res.ok && res.path) setExported(res.path);
+    else setTeamErr(res.error || "export failed");
+  };
+
+  const doImport = async () => {
+    if (!importPath.trim()) return;
+    setImporting(true);
+    setTeamErr(null);
+    const res = await importTeamPackage(importPath.trim());
+    setImporting(false);
+    if (res.ok) {
+      const counts = res.imported ?? {};
+      setImportResult(
+        `${t("Imported")}: ${counts.swarm_templates ?? 0} ${t("templates")}, ` +
+          `${counts.task_templates ?? 0} ${t("tasks")}, ` +
+          `${counts.knowledge ?? 0} ${t("knowledge")}, ${counts.skills ?? 0} ${t("skills")}`,
+      );
+    } else setTeamErr(res.error || "import failed");
+  };
+
+  return (
+    <div className={CARD + " p-4 mb-4"} data-testid="team-workspace-card">
+      <div className={FIELD_LABEL}>{t("Team workspace")}</div>
+      <div className={FIELD_HELP}>
+        {t("Export your templates, knowledge and skills into a team package — import it on another machine.")}
+      </div>
+      <div className="flex items-center gap-2 mt-2.5">
+        <button className={BTN_BORDERED} disabled={exporting} onClick={() => void doExport()}>
+          {exporting ? t("Exporting…") : t("Export team package")}
+        </button>
+      </div>
+      {exported && <div className="text-[12px] text-muted mt-2 break-all">{exported}</div>}
+      <div className="flex items-center gap-2 mt-2.5">
+        <input
+          className="flex-1 min-w-0 px-3 py-2 rounded-lg border bg-panel text-[12.5px] outline-none focus:border-accent"
+          placeholder={t("Path to a team package .zip")}
+          value={importPath}
+          onChange={(e) => setImportPath(e.target.value)}
+        />
+        <button className={BTN_BORDERED} disabled={importing || !importPath.trim()} onClick={() => void doImport()}>
+          {importing ? t("Importing…") : t("Import")}
+        </button>
+      </div>
+      {importResult && <div className="text-[12px] text-muted mt-2">{importResult}</div>}
+      {teamErr && <div className="text-[12px] text-danger mt-2">{teamErr}</div>}
+    </div>
+  );
+}
+
+function TrustedWorkspacesCard() {  const t = useT();
   const [workspaces, setWorkspaces] = useState<WorkspaceCommandTrust[] | null>(null);
 
   const refresh = () =>
@@ -505,8 +569,7 @@ function TrustedWorkspacesCard() {
 
   return (
     <div className={CARD + " p-4 mb-4"} data-testid="trusted-workspaces-card">
-      <div className={FIELD_LABEL}>{t("Trusted workspaces")}</div>
-      <div className={FIELD_HELP}>
+      <div className={FIELD_LABEL}>{t("Trusted workspaces")}</div>      <div className={FIELD_HELP}>
         {t("Trusted projects may manage their command allowances in .coworker/config.toml.")}
       </div>
       {workspaces === null ? (

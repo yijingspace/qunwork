@@ -69,6 +69,26 @@ def periodic_tools() -> list[Any]:
             out["fib_n_mod_m"] = fib_mod(int(n), m)
         return out
 
+    def forecast_series(values: str, steps: int = 5) -> dict[str, Any]:
+        """Extend a comma-separated numeric time series using the periodic
+        skeleton + residual-branch forecaster (T6): detects the dominant period,
+        builds the per-phase skeleton, and predicts ahead. Use to sanity-check or
+        extend periodic series (schedules, metrics, daily/weekly patterns).
+
+        Args:
+          values: comma-separated numbers, e.g. "10,12,10,13,11,14,12"
+          steps: how many values to predict ahead
+        """
+        from .forecaster import forecast_series as _fs
+
+        try:
+            nums = [float(x.strip()) for x in values.split(",") if x.strip()]
+        except ValueError as exc:
+            return {"ok": False, "error": f"values must be comma-separated numbers: {exc}"}
+        if len(nums) < 4:
+            return {"ok": False, "error": "need at least 4 values"}
+        return _fs(nums, steps=int(steps))
+
     import aisuite as ai
 
     return [
@@ -80,6 +100,12 @@ def periodic_tools() -> list[Any]:
         ),
         ai.tool(
             pisano_lookup,
+            metadata=ai.ToolMetadata(
+                category="periodic", risk_level="low", capabilities=["periodic"]
+            ),
+        ),
+        ai.tool(
+            forecast_series,
             metadata=ai.ToolMetadata(
                 category="periodic", risk_level="low", capabilities=["periodic"]
             ),

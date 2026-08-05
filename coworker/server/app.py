@@ -875,6 +875,15 @@ def create_app(manager: SessionManager) -> FastAPI:
     def swarm_templates_delete(template_id: int) -> dict[str, Any]:
         return {"ok": manager.delete_swarm_template(template_id), "id": template_id}
 
+    # -- team workspace (dev-plan P2) ----------------------------------------
+    @app.get("/v1/team/export")
+    def team_export() -> dict[str, Any]:
+        return manager.export_team_package()
+
+    @app.post("/v1/team/import")
+    def team_import(body: dict) -> dict[str, Any]:
+        return manager.import_team_package(str(body.get("path") or ""))
+
     @app.get("/v1/task-templates")
     def task_templates_list() -> dict[str, Any]:
         return {"templates": manager.list_task_templates()}

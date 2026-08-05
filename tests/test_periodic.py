@@ -96,3 +96,63 @@ def test_periodic_tools_mounted_in_engine():
     assert spec is not None
     res = spec.func("1,1,2,3,5,8,13", 10, 3)
     assert res["ok"] is True and res["pisano_period"] == 60 and res["next"] == [1, 4, 5]
+
+
+def test_forecaster_detects_period_and_predicts_cycle():
+    from coworker.periodic.forecaster import forecast_series
+
+    # clean 5-day cycle with a small upward trend
+    base = [10 + (i % 5) * 2 for i in range(25)]
+    series = [b + i * 0.1 for i, b in enumerate(base)]
+    res = forecast_series(series, steps=5)
+    assert res["ok"] is True
+    assert res["period"] == 5
+    assert len(res["prediction"]) == 5
+    # next phase slot continues the cycle (slot 0 → ~10 + trend)
+    assert abs(res["prediction"][0] - (10 + 25 * 0.1)) < 1.2
+
+
+def test_forecaster_rejects_short_series():
+    from coworker.periodic.forecaster import forecast_series
+
+    assert forecast_series("1,2,3", steps=2)["ok"] is False
+
+
+def test_forecast_tool_mounted():
+    from coworker.agent import build_engine
+    from coworker.agents import get_agent
+    from coworker.providers import AssistantTurn, ModelCapabilities, ProviderClient
+    import tempfile
+    from pathlib import Path
+
+    class P(ProviderClient):
+        def complete(self, *, model, messages, tools=None, **settings):
+            return AssistantTurn(text="ok", finish_reason="stop")
+
+        def capabilities(self, model):
+            return ModelCapabilities()
+
+    e = build_engine(agent=get_agent("cowork"), workspace=str(Path(tempfile.mkdtemp())), provider=P())
+    assert "forecast_series" in e.registry.names()
+    spec = e.registry.get("forecast_series")
+    res = spec.func("10,12,10,13,11,14,12", 3)
+    assert res["ok"] is True and len(res["prediction"]) == 3
+
+
+def test_dpnn_baseline_periodic_prior_wins():
+    """Research baseline (P2): on a clean periodic series the periodic-skeleton
+    prior (independent reproduction) must beat the plain AR baseline."""
+    from coworker.periodic.dpnn_baseline import benchmark
+
+    r = benchmark(period=20, n_train=120, n_test=10)
+    assert r["periodic_prior_wins"] is True, f"periodic prior should beat AR: {r}"
+    assert r["periodic_prior_mae"] < r["ar_mae"]
+    assert r["detected_period"] == 20
+
+
+def test_dpnn_baseline_deterministic():
+    from coworker.periodic.dpnn_baseline import benchmark
+
+    r1 = benchmark(period=12, n_train=80, n_test=8)
+    r2 = benchmark(period=12, n_train=80, n_test=8)
+    assert r1 == r2  # seeded → reproducible
