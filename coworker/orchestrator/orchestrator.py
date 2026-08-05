@@ -13,6 +13,7 @@ task-level `needs_human` status the caller can route to the existing Inbox.
 from __future__ import annotations
 
 import asyncio
+import time
 import json
 import re
 import uuid
@@ -306,45 +307,23 @@ class Orchestrator:
 
     # -- main loop ----------------------------------------------------------
     async def run(self, intent: str) -> OrchestrationResult:
+        # Soft budget: the deadline lives inside the scheduling loop, so a timeout
+        # stops NEW batches instead of truncating tasks that are ready or in
+        # flight (previously a 300s budget could kill the consolidation task t4
+        # right as its dependencies finished).
+        deadline = None
         if self.timeout_seconds:
-            try:
-                return await asyncio.wait_for(self._run(intent), timeout=self.timeout_seconds)
-            except asyncio.TimeoutError:
-                self._emit(
-                    "run_timed_out",
-                    {"seconds": self.timeout_seconds},
-                )
-                # Keep whatever the swarm already produced (degraded tasks with
-                # real drafts) — a timeout must not throw the partial work away.
-                plan = self._last_plan or Plan(goal=intent)
-                summary = "\n\n".join(
-                    f"[{t.id}] {t.description}\n{t.result}" for t in plan.tasks if t.result
-                ) or f"swarm timed out after {self.timeout_seconds}s"
-                result = OrchestrationResult(
-                    intent=intent,
-                    plan=plan,
-                    summary=summary,
-                    status="paused",
-                    runs=self._runs,
-                    governance_report="\n".join(
-                        f"[step {self._runs}] TIMEOUT after {self.timeout_seconds}s"
-                    ),
-                )
-                self._persist_report(result)
-                # timeout with a real deliverable is still a delivery — report it
-                # as completed so callers treat the run as successful. A bare
-                # timeout note is not a deliverable.
-                report = result.final_report()
-                if (
-                    result.report_path
-                    and report.strip()
-                    and not report.startswith("swarm timed out")
-                ):
-                    result.status = "completed"
-                return result
-        return await self._run(intent)
+            deadline = time.monotonic() + self.timeout_seconds
+        result = await self._run(intent, deadline=deadline)
+        # A timed-out run that still assembled a real deliverable counts as
+        # completed — the timeout note alone is not a deliverable.
+        if result.status == "paused" and result.report_path:
+            report = result.final_report()
+            if report.strip() and not report.startswith("swarm timed out"):
+                result.status = "completed"
+        return result
 
-    async def _run(self, intent: str) -> OrchestrationResult:
+    async def _run(self, intent: str, deadline: Optional[float] = None) -> OrchestrationResult:
         self._emit("run_started", {"intent": intent})
         # G2: operator directives accumulate per scheduling round (see while-loop).
         directives: list[str] = []
@@ -376,6 +355,7 @@ class Orchestrator:
             mem = VectorMemory(embedder=self.embedder)
         gov_log: list[str] = []
         governance_paused = False
+        budget_exhausted = False  # set when the soft deadline passes; stops new batches
 
         async def process(task: Task) -> bool:
             """Run one task (execute + validate + update). Returns True if progress."""
@@ -538,6 +518,15 @@ class Orchestrator:
             if not ready:
                 blocked = [t.id for t in plan.tasks if t.status == "pending"]
                 break
+            # Soft-budget deadline: once exhausted we run THIS final batch (tasks
+            # that are ready now — e.g. the consolidation task whose deps just
+            # finished) but schedule no further batches after it.
+            budget_exhausted = deadline is not None and time.monotonic() >= deadline
+            if budget_exhausted:
+                self._emit(
+                    "run_timed_out",
+                    {"seconds": self.timeout_seconds, "final_batch": [t.id for t in ready[: max(1, self.max_parallel)]]},
+                )
             batch = ready[: max(1, self.max_parallel)]
             done_before = {t.id for t in plan.tasks if t.done}
             results_before = {
@@ -567,16 +556,19 @@ class Orchestrator:
                     break
             if not any(results):
                 break
+            # Soft budget exhausted: the final batch ran — stop scheduling new ones.
+            if budget_exhausted:
+                break
 
         status = (
-            "paused"
-            if governance_paused
+            "completed"
+            if plan.all_done()
+            else "paused"
+            if governance_paused or budget_exhausted
             else "stalled"
             if stalled_reason is not None
             else "needs_human"
             if plan.needs_human()
-            else "completed"
-            if plan.all_done()
             else "failed"
         )
         summary = "\n\n".join(
@@ -584,6 +576,11 @@ class Orchestrator:
         )
         if stalled_reason is not None:
             gov_log.append(f"[stalled] {stalled_reason}")
+        if budget_exhausted:
+            gov_log.append(
+                f"[step {self._runs}] TIMEOUT after {self.timeout_seconds}s "
+                f"(done {sum(1 for t in plan.tasks if t.done)}/{len(plan.tasks)})"
+            )
         self._emit("run_completed", {"status": status, "runs": self._runs})
         result = OrchestrationResult(
             intent=intent,

@@ -49,6 +49,11 @@ _NONINTERACTIVE_ENV = {
     "DEBIAN_FRONTEND": "noninteractive",
     "PYTHONUNBUFFERED": "1",
     "PIP_NO_INPUT": "1",
+    # UTF-8 everywhere: Windows shells default to the ANSI codepage (GBK on zh-CN),
+    # which has repeatedly mangled Chinese output and stalled worker script runs
+    # (week_calc.py printed nothing because its stdout was decoded as GBK).
+    "PYTHONUTF8": "1",
+    "PYTHONIOENCODING": "utf-8",
 }
 
 
@@ -195,6 +200,8 @@ class LocalExecutor(Executor):
             stderr=subprocess.STDOUT,
             cwd=self.cwd,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             bufsize=1,
             env=self._env,
             **spawn_kwargs,
@@ -206,6 +213,13 @@ class LocalExecutor(Executor):
         if self._is_windows and self._proc.stdin is not None:
             # Silence the REPL prompt so it never pollutes captured command output.
             self._proc.stdin.write("function prompt { '' }\n")
+            # Force the console + pipeline to UTF-8 so Chinese output survives
+            # (PowerShell 5.1 defaults to the ANSI codepage; mojibake used to
+            # surface as empty/truncated results).
+            self._proc.stdin.write(
+                "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8\n"
+            )
+            self._proc.stdin.write("$OutputEncoding = [System.Text.Encoding]::UTF8\n")
             self._proc.stdin.flush()
 
     def _read_loop(self) -> None:

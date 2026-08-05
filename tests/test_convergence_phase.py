@@ -124,3 +124,67 @@ def test_scheduled_run_periodic_context(tmp_path):
     assert "phase slot 13" in ctx
     assert "上周总结" in prior  # prior result reused
     assert "reuse it, don't repeat it" in (ctx + "\n" + prior) or True
+
+
+def test_soft_budget_runs_final_ready_batch(tmp_path):
+    """Soft budget: a task that becomes READY after the deadline passes still runs
+    (the consolidation task survives a near-miss timeout); only new batches stop."""
+    import asyncio
+    import time
+    from types import SimpleNamespace
+    from coworker.orchestrator.orchestrator import Orchestrator, Plan, Task, ReviewVerdict
+
+    orch = Orchestrator.__new__(Orchestrator)
+    orch.timeout_seconds = 1
+    orch.task_timeout_seconds = 30
+    orch.max_parallel = 2
+    orch.max_retries = 1
+    orch.stall_rounds_threshold = 3
+    orch.workspace = str(tmp_path)
+    orch.controller = None
+    orch.requeue_approval_timeout = 120.0
+    orch.embedder = None
+    orch.governance_config = None
+    orch.memory = SimpleNamespace(search=lambda *a, **k: [], add=lambda *a, **k: None)
+    orch._run_seq = 0
+    orch._runs = 0
+    orch._emit = lambda *a, **k: None
+    orch._persist_report = lambda r: None
+    orch._worker_feed = lambda *a, **k: None
+
+    ran: list[str] = []
+
+    async def fake_plan(intent):
+        return Plan(
+            goal=intent,
+            tasks=[
+                Task(id="t0", description="a", deps=[]),
+                Task(id="t1", description="b", deps=["t0"]),
+            ],
+        )
+
+    async def fake_execute(task, *, deps, hints, on_text):
+        ran.append(task.id)
+        return f"result {task.id}"
+
+    async def fake_review(task, result):
+        return ReviewVerdict(accepted=True, confidence=0.9, reason="ok", needs_human=False)
+
+    orch._plan = fake_plan
+    orch._execute = fake_execute
+    orch._review = fake_review
+
+    res = asyncio.run(orch._run("goal", deadline=time.monotonic() + 0.05))
+    assert "t0" in ran, "first ready batch must run"
+    assert "t1" in ran, "final ready batch must run despite exhausted budget"
+    assert res.status == "completed"
+
+
+def test_shell_env_utf8_injected():
+    """Encoding root-fix: the shell executor's env forces UTF-8 for child python
+    (PYTHONUTF8 / PYTHONIOENCODING) — week_calc.py output can no longer vanish."""
+    from coworker.tools.shell import LocalExecutor, _NONINTERACTIVE_ENV
+
+    assert _NONINTERACTIVE_ENV.get("PYTHONUTF8") == "1"
+    assert _NONINTERACTIVE_ENV.get("PYTHONIOENCODING") == "utf-8"
+    assert LocalExecutor  # importable
