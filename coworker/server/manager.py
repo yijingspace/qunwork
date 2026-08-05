@@ -2967,6 +2967,33 @@ class SessionManager:
             "result. The schedule already exists — do not create or modify any scheduled tasks.\n\n"
             f"{task.instructions}"
         )
+        # T5 periodic slot: tag this execution with its phase (run ordinal mod 60,
+        # the Pisano period) and reuse the most recent prior result — a weekly
+        # report automatically carries last week's context instead of starting
+        # from scratch. Matches the swarm's task_phase memory slots.
+        try:
+            run_no = int(getattr(task, "run_count", 0) or 0) + 1
+        except (TypeError, ValueError):
+            run_no = 1
+        phase_slot = run_no % 60
+        prior = ""
+        try:
+            for r in self.task_store.runs(task.id, limit=4):
+                if (r.result_text or "").strip() and r.status == "ok":
+                    prior = (r.result_text or "").strip()[:800]
+                    break
+        except Exception:
+            prior = ""
+        period_context = (
+            f"\n\n[periodic execution] this is run #{run_no} of this automation "
+            f"(phase slot {phase_slot})."
+        )
+        if prior:
+            period_context += (
+                "\n[prior result to build on — reuse it, don't repeat it]\n"
+                f"{prior}"
+            )
+        opening += period_context
         try:
             async for _event in engine.run(opening):
                 pass
