@@ -30,7 +30,7 @@ export function HubSpotDetail({ c, cloud, slack: _slack, onChanged }: DetailProp
       <div className="flex items-center gap-3.5 mb-5">
         <ConnectorBadge connector={c} size={44} title="HubSpot" />
         <div className="min-w-0 flex-1">
-          <h2 className="text-[20px] font-semibold tracking-tight leading-tight">HubSpot</h2>
+          <h2 className="text-[20px] font-semibold tracking-tight leading-tight">{t("HubSpot")}</h2>
           <div className="text-[12.5px] text-muted flex items-center gap-1.5">
             {c.connected ? (
               <>
@@ -60,7 +60,7 @@ export function HubSpotDetail({ c, cloud, slack: _slack, onChanged }: DetailProp
 
       {portals.length > 0 && (
         <>
-          <div className={GRP_H + " !mt-0"}>Portals</div>
+          <div className={GRP_H + " !mt-0"}>{t("Portals")}</div>
           <div className={GRP} data-testid="hubspot-portals">
             {portals.map((p) => (
               <PortalRow key={p.hub_id} p={p} onChanged={onChanged} />
@@ -91,6 +91,7 @@ export function HubSpotDetail({ c, cloud, slack: _slack, onChanged }: DetailProp
 }
 
 function PortalRow({ p, onChanged }: { p: HubSpotPortal; onChanged: () => void }) {
+  const t = useT();
   const [busy, setBusy] = useState(false);
   return (
     <div className={ROW} data-testid={`hubspot-portal-${p.hub_id}`}>
@@ -98,14 +99,14 @@ function PortalRow({ p, onChanged }: { p: HubSpotPortal; onChanged: () => void }
         <span className="text-[13px] font-medium truncate" title={`hub ${p.hub_id}`}>
           {p.name}
         </span>
-        {p.default && <span className={TAG_ACCENT}>Default</span>}
-        {p.sandbox && <span className={TAG_WARN}>Sandbox</span>}
+        {p.default && <span className={TAG_ACCENT}>{t("Default")}</span>}
+        {p.sandbox && <span className={TAG_WARN}>{t("Sandbox")}</span>}
         {p.access && (
           <span className={TAG_QUIET} data-testid={`hubspot-access-tag-${p.hub_id}`}>
             {p.access === "write" ? "read & write" : "read-only"}
           </span>
         )}
-        {!p.managed && <span className={TAG_QUIET}>private app</span>}
+        {!p.managed && <span className={TAG_QUIET}>{t("private app")}</span>}
       </span>
       {!p.default && (
         <button

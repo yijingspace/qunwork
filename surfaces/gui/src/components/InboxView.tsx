@@ -124,7 +124,7 @@ export function InboxView({
     return (
       <button
         className="inbox-session-chip"
-        title={exists ? `Open “${label}”` : "Session unavailable"}
+        title={exists ? t("Open {label}", { label }) : t("Session unavailable")}
         disabled={!exists}
         onClick={() =>
           exists && onOpenSession(it.session_id, it.session_workspace || "", it.session_agent || "cowork")
@@ -163,7 +163,7 @@ export function InboxView({
                 load();
               }}
             >
-              Pending
+              {t("Pending")}
               {items.length > 0 && (
                 <span className="text-[11px] px-1.5 rounded-full bg-accentSoft text-accent leading-4">
                   {items.length}
@@ -175,7 +175,7 @@ export function InboxView({
               data-testid="inbox-tab-configure"
               onClick={() => setTab("configure")}
             >
-              Configure
+              {t("Configure")}
               {unroutedCount > 0 && (
                 <span className="text-[11px] px-1.5 rounded-full bg-warnSoft text-warnInk leading-4">
                   ⚠ {unroutedCount}
@@ -195,14 +195,13 @@ export function InboxView({
                     <span className="text-muted" title={routing}>
                       {routingLabel}
                     </span>{" "}
-                    — replies there resolve items here.{" "}
+                    — {t("replies there resolve items here.")}{" "}
                   </span>
                 ) : slackConnected ? (
-                  <span>Delivered here only. </span>
+                  <span>{t("Delivered here only.")} </span>
                 ) : (
                   <span>
-                    Delivered here only. Connect Slack (Connectors page) to also get these in a
-                    channel — more platforms later.{" "}
+                    {t("Delivered here only. Connect Slack (Connectors page) to also get these in a channel — more platforms later.")}{" "}
                   </span>
                 )}
                 <button
@@ -210,14 +209,14 @@ export function InboxView({
                   data-testid="inbox-route-configure"
                   onClick={() => setTab("configure")}
                 >
-                  Configure ›
+                  {t("Configure ›")}
                 </button>
               </div>
 
               <div className="flex items-center gap-2 flex-wrap mb-4" data-testid="inbox-filters">
-                {KIND_TABS.map((t) => (
-                  <button key={t.key} className={CHIP(kind === t.key)} onClick={() => setKind(t.key)}>
-                    {t.label}
+                {KIND_TABS.map((tabDef) => (
+                  <button key={tabDef.key} className={CHIP(kind === tabDef.key)} onClick={() => setKind(tabDef.key)}>
+                    {t(tabDef.label)}
                   </button>
                 ))}
                 {personasWithItems.length > 1 && (

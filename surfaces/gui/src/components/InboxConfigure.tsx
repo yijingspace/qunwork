@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useT } from "../i18n";
 import {
   getDmRoute,
   getInboxRouting,
@@ -28,6 +29,7 @@ const SELECT = "px-2.5 py-1.5 rounded-lg border border-line bg-paper text-[13px]
 const BTN_ACCENT_SM = "text-[12px] px-2.5 py-1 rounded-md bg-accent text-white disabled:opacity-50";
 
 export function InboxConfigure() {
+  const t = useT();
   return (
     <div data-testid="inbox-configure">
       <div className="grid grid-cols-2 gap-4 mb-4">
@@ -38,10 +40,9 @@ export function InboxConfigure() {
       {/* Unrouted = delivery FAILURES ("messages that never reached you"), so it lives with
           the Inbox now (§28; previously with routing under Connectors, §26). */}
       <div className="mt-6" data-testid="unrouted-section">
-        <h3 className="text-[14px] font-semibold mb-1">Unrouted</h3>
+        <h3 className="text-[14px] font-semibold mb-1">{t("Unrouted")}</h3>
         <p className="text-[12.5px] text-muted mb-3">
-          Inbound messages and background-turn failures nothing claimed — nothing vanishes
-          silently.
+          {t("Inbound messages and background-turn failures nothing claimed — nothing vanishes silently.")}
         </p>
         <UnroutedTable />
       </div>
@@ -52,6 +53,7 @@ export function InboxConfigure() {
 // Where an Unattended session's approvals/questions get mirrored as interactive buttons. Targets
 // the "default" route (sessions fall back to it); pick a channel separate from any you subscribe to.
 function InboxRoutingCard() {
+  const t = useT();
   const [recent, setRecent] = useState<RecentChannel[]>([]);
   const [target, setTarget] = useState(""); // current default-binding address, e.g. "slack:C0123"
   const [draft, setDraft] = useState("");
@@ -90,11 +92,11 @@ function InboxRoutingCard() {
 
   return (
     <div className={CARD + " p-4"} data-testid="inbox-mirror-card">
-      <div className="font-semibold text-[13.5px] mb-1">Unattended approvals</div>
+      <div className="font-semibold text-[13.5px] mb-1">{t("Unattended approvals")}</div>
       <p className="text-[12px] text-muted mb-3">
-        Channel where an Unattended session posts Approve/Deny buttons. Currently mirroring to{" "}
+        {t("Channel where an Unattended session posts Approve/Deny buttons. Currently mirroring to")}{" "}
         <strong className="text-ink font-medium" title={target || undefined}>
-          {known ? `#${known}` : target || "in-app Inbox only"}
+          {known ? `#${known}` : target || t("in-app Inbox only")}
         </strong>
         .
       </p>
@@ -118,6 +120,7 @@ function InboxRoutingCard() {
 
 // Which session handles incoming DMs to the bot. None → DMs park in the Unrouted section below.
 function DmRouteCard() {
+  const t = useT();
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
   const [dm, setDm] = useState<string>("");
 
@@ -140,9 +143,9 @@ function DmRouteCard() {
 
   return (
     <div className={CARD + " p-4"}>
-      <div className="font-semibold text-[13.5px] mb-1">Direct messages</div>
+      <div className="font-semibold text-[13.5px] mb-1">{t("Direct messages")}</div>
       <p className="text-[12px] text-muted mb-3">
-        Session that handles DMs to the bot. With none, DMs park under Unrouted below.
+        {t("Session that handles DMs to the bot. With none, DMs park under Unrouted below.")}
       </p>
       <div className="flex items-center gap-2">
         <span className="text-muted shrink-0">
@@ -164,6 +167,7 @@ function DmRouteCard() {
 // Which sessions listen to which channels (inbound), and where each routes its Inbox (outbound).
 // Subscriptions can be created by the agent (it asks you via ask_user) or added here directly.
 function SubscriptionsCard() {
+  const t = useT();
   const [subs, setSubs] = useState<Subscription[] | null>(null);
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
   const [recent, setRecent] = useState<RecentChannel[]>([]);
@@ -199,17 +203,17 @@ function SubscriptionsCard() {
         <span className="text-muted shrink-0">
           <Icon name="plug" size={15} />
         </span>
-        <span className="font-semibold text-[13.5px]">Channel subscriptions</span>
-        <span className="text-[12px] text-muted">— sessions that listen to a channel (inbound)</span>
+        <span className="font-semibold text-[13.5px]">{t("Channel subscriptions")}</span>
+        <span className="text-[12px] text-muted">— {t("sessions that listen to a channel (inbound)")}</span>
       </div>
 
       {subs && subs.length > 0 ? (
         <table className="w-full text-[13px]">
           <thead className="text-[11px] uppercase tracking-[0.04em] text-faint">
             <tr className="text-left">
-              <th className="font-medium px-4 py-2">Session</th>
-              <th className="font-medium px-4 py-2">Listens to</th>
-              <th className="font-medium px-4 py-2">Inbox routes to</th>
+              <th className="font-medium px-4 py-2">{t("Session")}</th>
+              <th className="font-medium px-4 py-2">{t("Listens to")}</th>
+              <th className="font-medium px-4 py-2">{t("Inbox routes to")}</th>
               <th className="px-4 py-2" />
             </tr>
           </thead>
@@ -242,7 +246,7 @@ function SubscriptionsCard() {
                 <td className="px-4 py-2.5 text-right">
                   <button
                     className="text-faint hover:text-danger"
-                    title="Unsubscribe"
+                    title={t("Unsubscribe")}
                     onClick={() => remove(s.session_id, s.channel)}
                   >
                     ×
@@ -283,6 +287,7 @@ function SubscriptionsCard() {
 // Dead-letter view: inbound messages that had no destination (e.g. a DM with no session designated)
 // and background turns that failed (e.g. a dead model). Read-only — for visibility/debugging.
 function UnroutedTable() {
+  const t = useT();
   const [items, setItems] = useState<UnroutedItem[] | null>(null);
 
   useEffect(() => {
@@ -304,10 +309,10 @@ function UnroutedTable() {
       <table className="w-full text-[13px]">
         <thead className="text-[11px] uppercase tracking-[0.04em] text-faint">
           <tr className="text-left">
-            <th className="font-medium px-4 py-2">When</th>
-            <th className="font-medium px-4 py-2">Source</th>
-            <th className="font-medium px-4 py-2">Reason</th>
-            <th className="font-medium px-4 py-2">Message</th>
+            <th className="font-medium px-4 py-2">{t("When")}</th>
+            <th className="font-medium px-4 py-2">{t("Source")}</th>
+            <th className="font-medium px-4 py-2">{t("Reason")}</th>
+            <th className="font-medium px-4 py-2">{t("Message")}</th>
           </tr>
         </thead>
         <tbody>

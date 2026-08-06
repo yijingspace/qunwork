@@ -236,13 +236,14 @@ function OwWin({ children }: { children: React.ReactNode }) {
 }
 
 function OwRail({ hot, hotSub, glow }: { hot?: string; hotSub?: string; glow?: boolean }) {
+  const t = useT();
   return (
     <div className="hiw-owrail">
       <div className="hiw-brand">QunWork</div>
       <div className="hiw-newbtn">＋ New task</div>
       <div className="hiw-ownav">⌕ Search</div>
       <div className="hiw-ownav">◷ Automations</div>
-      <div className="hiw-sect">RECENT</div>
+      <div className="hiw-sect">{t("RECENT")}</div>
       {hot && (
         <div
           className={"hiw-sess hot" + (glow ? " hiw-glow hiw-k" : " hiw-stay")}

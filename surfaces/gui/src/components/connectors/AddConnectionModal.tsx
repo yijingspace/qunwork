@@ -166,7 +166,7 @@ function McpOneClick({ c, onConnected }: { c: Connector; onConnected: () => void
       </button>
       {error && <div className="text-[12.5px] text-danger">{error}</div>}
       <p className="text-[12px] text-faint text-center flex items-center justify-center gap-1.5">
-        <span className={TAG_ACCENT}>Recommended</span> agents get a curated set of{" "}
+        <span className={TAG_ACCENT}>{t("Recommended")}</span> agents get a curated set of{" "}
         {c.title} tools · tokens stay on this computer
       </p>
     </div>

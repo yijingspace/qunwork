@@ -66,7 +66,7 @@ export function GithubDetail({ c, cloud, onChanged }: DetailProps) {
       <div className="flex items-center gap-3.5 mb-5">
         <ConnectorBadge connector={c} size={44} title="GitHub" />
         <div className="min-w-0 flex-1">
-          <h2 className="text-[20px] font-semibold tracking-tight leading-tight">GitHub</h2>
+          <h2 className="text-[20px] font-semibold tracking-tight leading-tight">{t("GitHub")}</h2>
           <div className="text-[12.5px] text-muted flex items-center gap-1.5">
             {c.connected ? (
               <>
@@ -129,7 +129,7 @@ export function GithubDetail({ c, cloud, onChanged }: DetailProps) {
 
       {relay && listening.length > 0 && (
         <>
-          <div className={GRP_H}>Listening</div>
+          <div className={GRP_H}>{t("Listening")}</div>
           <div className={GRP}>
             <ListeningRows subs={listening} onChanged={changed} />
           </div>
@@ -248,9 +248,10 @@ function PeopleRow({
   installationId: string;
   onChanged: () => void;
 }) {
+  const t = useT();
   return (
     <div className={ROW}>
-      <span className={LABEL}>People</span>
+      <span className={LABEL}>{t("People")}</span>
       <span className="min-w-0 flex-1 flex flex-wrap items-center gap-1.5">
         {allowed.length === 0 && (
           <span className="text-[12px] text-faint">nobody yet — approve a waiting sender below</span>
@@ -284,7 +285,7 @@ function WaitingRow({ m, onChanged }: { m: ParkedMessage; onChanged: () => void 
   };
   return (
     <div className={ROW + " bg-warnSoft/25"} data-testid={`waiting-${m.id}`}>
-      <span className={LABEL}>Waiting</span>
+      <span className={LABEL}>{t("Waiting")}</span>
       <span className="min-w-0 flex-1">
         <span className="font-medium text-[13px]">@{m.user_name || m.user_id}</span>{" "}
         <span className="text-[12.5px] text-muted">in {m.chat_name || m.chat_id}</span>
