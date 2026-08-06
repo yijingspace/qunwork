@@ -3000,6 +3000,20 @@ class SessionManager:
             run.result_text = _last_assistant_text(engine.messages)
             run.artifacts = _recent_files(task.workspace, since=run.started_at)
             run.status = "ok"
+            # Asset loop (Phase 1): a completed automation sinks its result into
+            # the unified knowledge library (kind=automation) so the next run —
+            # swarm or scheduled — can retrieve it like any other knowledge.
+            try:
+                body = (run.result_text or "").strip()
+                if body and len(body) > 40:
+                    self.knowledge.add_text(
+                        title=f"{task.title} · run #{getattr(task, 'run_count', 0) or 0}",
+                        content=body[:4000],
+                        kind="automation",
+                        workspace=task.workspace,
+                    )
+            except Exception:
+                pass  # ingestion must never fail the automation
             if task.notify_on_completion:
                 await self._notify_task_done(task, run)
         except Exception as exc:

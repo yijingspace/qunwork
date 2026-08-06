@@ -9,7 +9,6 @@ import {
   listSwarmTemplates,
   orchestrate,
   orchestrateControl,
-  recordSwarmTemplateRun,
   type CoordinationReport,
   type OrchestrationHistoryItem,
   type OrchestrationRunSnapshot,
@@ -315,6 +314,7 @@ export function SwarmView({ onBack, workspace }: { onBack: () => void; workspace
         maxParallel,
         timeoutSeconds,
         executorAgent,
+        templateId: pendingTmplRef.current ?? undefined,
       });
       if (!mounted.current) return;
       if (!res.ok || !res.run_id) {
@@ -357,12 +357,10 @@ export function SwarmView({ onBack, workspace }: { onBack: () => void; workspace
             }
             setBusy(false);
             loadHistory();
-            // Tally template reuse now that the run is settled.
-            const tmplId = pendingTmplRef.current;
+            // Template track record is now tallied server-side on completion
+            // (asset loop) — here we only refresh the cards.
             pendingTmplRef.current = null;
-            if (tmplId != null) {
-              void recordSwarmTemplateRun(tmplId, snap.status === "completed").then(() => loadTemplates());
-            }
+            loadTemplates();
           }
         } catch {
           if (pollRef.current) clearInterval(pollRef.current);

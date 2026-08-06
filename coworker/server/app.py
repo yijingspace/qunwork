@@ -287,7 +287,29 @@ def create_app(manager: SessionManager) -> FastAPI:
             except Exception:
                 return None
 
-        # G2 command deck: one live controller per run; removed when the run ends.
+        def _ingest_swarm_assets(rid: str, final_report: str, ws: str) -> None:
+            """Asset loop (Phase 1): a completed swarm run sinks its deliverable
+            into the unified knowledge library (kind=swarm_report) and tallies
+            the originating template's track record automatically."""
+            try:
+                report = (final_report or "").strip()
+                if report and len(report) > 40:
+                    manager.knowledge.add_text(
+                        title=f"蜂群报告 {rid[:8]}",
+                        content=report[:4000],
+                        kind="swarm_report",
+                        workspace=ws,
+                    )
+            except Exception:
+                pass  # ingestion must never fail the run
+            try:
+                template_id = body.get("template_id")
+                if template_id:
+                    manager.record_swarm_template_run(
+                        int(template_id), result.status == "completed"
+                    )
+            except (TypeError, ValueError):
+                pass
         from ..orchestrator.control import RunController
 
         controller = RunController()
@@ -307,6 +329,14 @@ def create_app(manager: SessionManager) -> FastAPI:
                     else 300
                 ),
                 memory_scope=body.get("memory_scope") or str(workspace),
+                # Interconnect: thread the team memory store + unified knowledge
+                # DB into every worker engine (asset loop — Phase 1).
+                memory_store=manager.memory_store,
+                knowledge_db_path=(
+                    str(manager._data_base / "knowledge.db")
+                    if manager._data_base is not None
+                    else None
+                ),
                 event_sink=lambda kind, payload: store.append_event(run_id, kind, payload),
                 # G2: command deck wiring (pause/resume/message/requeue approval).
                 controller=controller,
@@ -336,6 +366,7 @@ def create_app(manager: SessionManager) -> FastAPI:
                 store.update_status(run_id, result.status, final=final_report)
                 if result.status == "completed":
                     _auto_write_coordination_report(run_id)
+                    _ingest_swarm_assets(run_id, final_report, workspace)
                 return {
                     "ok": True,
                     "run_id": run_id,

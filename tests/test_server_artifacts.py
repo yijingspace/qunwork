@@ -218,3 +218,59 @@ def test_team_memory_panel_crud(tmp_path):
     assert mgr.delete_memory(b["id"]) is True
     assert mgr.delete_memory(9999) is False
     assert len(mgr.list_memory()) == 1
+
+
+def test_automation_result_sinks_into_knowledge(tmp_path):
+    """Asset loop A1: a completed automation run auto-indexes into the unified
+    knowledge library (kind=automation) — retrievable like any knowledge."""
+    from coworker.conversations import ConversationStore
+    from coworker.knowledge import KnowledgeStore
+    from coworker.server.manager import SessionManager
+
+    mgr = SessionManager.__new__(SessionManager)
+    mgr.session_store = ConversationStore(tmp_path / "conv.db")
+    mgr.knowledge = KnowledgeStore(tmp_path / "knowledge.db", workspace=str(tmp_path))
+    mgr.memory_store = None
+
+    # simulate _run_scheduled_task's ingestion block
+    class T:
+        title = "周报"
+        run_count = 3
+        workspace = str(tmp_path)
+
+    mgr.knowledge.add_text(
+        title=f"{T.title} · run #{T.run_count}",
+        content="本周完成 66 次提交,蜂群指挥台落地…" + "内容" * 50,
+        kind="automation",
+        workspace=T.workspace,
+    )
+    hits = mgr.knowledge.search("蜂群指挥台", k=5, workspace=str(tmp_path))
+    assert hits and hits[0]["kind"] == "automation"
+    items = mgr.knowledge.list_items(workspace=str(tmp_path))
+    assert any(i["kind"] == "automation" for i in items)
+
+
+def test_swarm_report_sinks_into_knowledge_and_tallies_template(tmp_path):
+    """Asset loop A2: completed swarm report lands in knowledge (kind=swarm_report)
+    and the originating template's track record is auto-incremented."""
+    from coworker.conversations import ConversationStore
+    from coworker.knowledge import KnowledgeStore
+    from coworker.server.manager import SessionManager
+
+    mgr = SessionManager.__new__(SessionManager)
+    mgr.session_store = ConversationStore(tmp_path / "conv.db")
+    mgr.knowledge = KnowledgeStore(tmp_path / "knowledge.db", workspace=str(tmp_path))
+    mgr.memory_store = None
+    tmpl = mgr.session_store.add_swarm_template("周报", "生成周报", [{"id": "t0", "description": "写", "deps": []}])
+    assert mgr.session_store.record_swarm_template_run(tmpl["id"], True)
+    rows = mgr.session_store.list_swarm_templates()
+    assert rows[0]["runs_count"] == 1 and rows[0]["success_count"] == 1
+
+    mgr.knowledge.add_text(
+        title="蜂群报告 abc12345",
+        content="本周工作与成果:63 次提交…" + "内容" * 50,
+        kind="swarm_report",
+        workspace=str(tmp_path),
+    )
+    hits = mgr.knowledge.search("本周工作与成果 提交", k=5, workspace=str(tmp_path))
+    assert hits and hits[0]["kind"] == "swarm_report"

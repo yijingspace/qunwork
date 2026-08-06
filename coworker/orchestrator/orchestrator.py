@@ -197,6 +197,12 @@ class Orchestrator:
     memory: Optional[VectorMemory] = None  # shared blackboard across worker steps
     memory_scope: Optional[str] = None  # persistent-memory scope (e.g. workspace path)
     memory_db: Optional[str] = None  # SQLite path for persistent memory (default workspace/.qunwork/memory.db)
+    # Interconnect (asset loop): the TEAM memory store and the unified knowledge
+    # DB are threaded into every worker engine — executors get remember/update/
+    # forget against the team memory panel, and knowledge_search hits the same
+    # library the /v1/knowledge API writes (no path split).
+    memory_store: Optional[Any] = None
+    knowledge_db_path: Optional[str] = None
     max_parallel: int = 4  # how many independent tasks run concurrently
     timeout_seconds: Optional[int] = 600  # whole-run timeout (None = no limit)
     task_timeout_seconds: Optional[int] = 240  # per-task timeout; timeout degrades to a partial result
@@ -279,6 +285,9 @@ class Orchestrator:
             approver=self.approver if self.approver is not None else auto_approver(),
             agent=self.executor_agent,
             model_settings=self.model_settings,
+            # Interconnect: team memory tools + unified knowledge DB in every worker.
+            memory_store=self.memory_store,
+            knowledge_db_path=self.knowledge_db_path,
         )
         parts = [f"Task [{task.id}]: {task.description}\nExecute it now and report the result."]
         if deps:

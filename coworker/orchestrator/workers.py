@@ -164,6 +164,8 @@ def build_executor_engine(
     approver: Optional[Any] = None,
     agent: str = "cowork",
     model_settings: Optional[dict[str, Any]] = None,
+    memory_store: Optional[Any] = None,
+    knowledge_db_path: Optional[str] = None,
 ) -> TurnEngine:
     """Executor with the full toolset + the caller's approval gate."""
     from ..agent import build_engine  # lazy: avoids circular import (agent ↔ orchestrator)
@@ -179,6 +181,9 @@ def build_executor_engine(
         provider=provider,
         max_iterations=_EXECUTOR_MAX_ITERATIONS,
         model_settings=model_settings,
+        # Interconnect: team memory + unified knowledge DB.
+        memory_store=memory_store,
+        knowledge_db_path=knowledge_db_path,
     )
     # Reinforce the single-task execution contract on top of the persona prompt.
     engine.messages.insert(0, {"role": "system", "content": EXECUTOR_INSTRUCTIONS})
