@@ -258,36 +258,49 @@ class SessionManager:
 
     # -- workspaces -------------------------------------------------------------
     def _seed_benchmark_templates(self) -> None:
-        """One-time seed of the three benchmark swarm templates (dev-plan showcase)."""
+        """Idempotent seed of the benchmark swarm templates (dev-plan showcase):
+        each titled template is added only if it does not already exist, so users
+        who already have templates still get new ones."""
+        benchmarks = [
+            (
+                "市场分析报告 · 协同样板",
+                "用蜂群生成一份全球 AI 市场分析报告:先调研市场格局与竞争态势,"
+                "再分析 QunWork 的定位与差异化,最后汇编成一份结构化报告,"
+                "评审确认后输出。",
+            ),
+            (
+                "代码库重构 · 协同样板",
+                "用蜂群分析当前代码库:先识别重复代码与坏味道,再规划重构方案"
+                "(每个模块一个任务,并行执行),验证改动无回归,输出重构报告。",
+            ),
+            (
+                "每周自动化周报 · 协同样板",
+                "用蜂群生成本周工作总结:汇总本周工作事项与成果,评估目标达成度,"
+                "起草下周计划,输出周报。以后每周运行同相位模板会自动复用上周历史。",
+            ),
+            (
+                "组织资产健康体检 · 协同样板",
+                "用蜂群对 QunWork 做一次组织资产健康体检:先统计最近 7 天的 git "
+                "提交与蜂群/自动化运行记录,再检索组织资产(最近沉淀的自动化结果与"
+                "蜂群报告是否入知识库、资产使用次数),用周期工具核验模 10 周期=60 "
+                "并读取组织节奏,最后汇编一份《组织资产健康报告》并给出治理观察与"
+                "下一步建议。",
+            ),
+        ]
         try:
-            existing = self.session_store.list_swarm_templates()
-            if existing:
-                return
-            benchmarks = [
-                (
-                    "市场分析报告 · 协同样板",
-                    "用蜂群生成一份全球 AI 市场分析报告:先调研市场格局与竞争态势,"
-                    "再分析 QunWork 的定位与差异化,最后汇编成一份结构化报告,"
-                    "评审确认后输出。",
-                ),
-                (
-                    "代码库重构 · 协同样板",
-                    "用蜂群分析当前代码库:先识别重复代码与坏味道,再规划重构方案"
-                    "(每个模块一个任务,并行执行),验证改动无回归,输出重构报告。",
-                ),
-                (
-                    "每周自动化周报 · 协同样板",
-                    "用蜂群生成本周工作总结:汇总本周工作事项与成果,评估目标达成度,"
-                    "起草下周计划,输出周报。以后每周运行同相位模板会自动复用上周历史。",
-                ),
-            ]
-            for title, intent in benchmarks:
-                try:
-                    self.session_store.add_swarm_template(title, intent, [])
-                except ValueError:
-                    continue
+            existing_titles = {
+                t.get("title") for t in self.session_store.list_swarm_templates()
+            }
         except Exception:
-            pass  # seeding is best-effort
+            existing_titles = set()
+        for title, intent in benchmarks:
+            if title in existing_titles:
+                continue
+            try:
+                self.session_store.add_swarm_template(title, intent, [])
+                existing_titles.add(title)
+            except ValueError:
+                continue
 
     def open_workspace(self, path: str, *, create: bool = False) -> dict[str, Any]:
         resolved = Path(path).expanduser()

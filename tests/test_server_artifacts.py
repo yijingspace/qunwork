@@ -358,3 +358,21 @@ def test_calendar_phase_clusters_by_rhythm():
     assert _calendar_phase(daily, fallback=5) == now.timetuple().tm_yday % 60
     # non-cron falls back to run ordinal
     assert _calendar_phase(ScheduledTask(id="x", title="x", instructions="", schedule=Schedule(kind="once", fire_at="2026-08-06T10:00"), workspace="."), fallback=7) == 7
+
+
+def test_benchmark_templates_idempotent_seed(tmp_path):
+    """Health-check template seeds even when other templates already exist."""
+    from coworker.conversations import ConversationStore
+    from coworker.server.manager import SessionManager
+
+    mgr = SessionManager.__new__(SessionManager)
+    mgr.session_store = ConversationStore(tmp_path / "conv.db")
+    mgr.session_store.add_swarm_template("已有模板", "旧意图", [])
+    mgr._seed_benchmark_templates()
+    titles = [t["title"] for t in mgr.session_store.list_swarm_templates()]
+    assert "组织资产健康体检 · 协同样板" in titles
+    assert "每周自动化周报 · 协同样板" in titles
+    # idempotent: running again adds nothing
+    n = len(mgr.session_store.list_swarm_templates())
+    mgr._seed_benchmark_templates()
+    assert len(mgr.session_store.list_swarm_templates()) == n
