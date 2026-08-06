@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import os
 import queue
+import shutil
 import signal
 import subprocess
 import sys
@@ -164,7 +165,13 @@ class LocalExecutor(Executor):
         # PowerShell in `-Command -` mode, which is a true stdin REPL (executes
         # incrementally, and cwd/env persist across commands).
         if shell_path is None:
-            shell_path = "powershell.exe" if self._is_windows else "/bin/bash"
+            if self._is_windows:
+                # Prefer PowerShell 7 (pwsh, native UTF-8 stdin/out) when present;
+                # fall back to Windows PowerShell 5.1 (needs explicit UTF-8
+                # input/output encoding — see _spawn preamble).
+                shell_path = shutil.which("pwsh") or "powershell.exe"
+            else:
+                shell_path = "/bin/bash"
         self._shell_path = shell_path
         self._env = {**os.environ, **_NONINTERACTIVE_ENV, **(env or {})}
         self._spawn()
@@ -213,14 +220,40 @@ class LocalExecutor(Executor):
         if self._is_windows and self._proc.stdin is not None:
             # Silence the REPL prompt so it never pollutes captured command output.
             self._proc.stdin.write("function prompt { '' }\n")
+            # `-Command -` reads stdin with the console code page (ANSI/GBK on
+            # zh-CN) — Chinese commands arrive UTF-8 and become mojibake. Switch
+            # the code page to UTF-8 first; [Console]::InputEncoding alone does
+            # NOT govern stdin script parsing. (PowerShell 7.6.4, verified.)
+            self._proc.stdin.write("chcp 65001 > $null\n")
             # Force the console + pipeline to UTF-8 so Chinese output survives
             # (PowerShell 5.1 defaults to the ANSI codepage; mojibake used to
             # surface as empty/truncated results).
             self._proc.stdin.write(
                 "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8\n"
             )
+            # Input too: worker commands carrying Chinese paths/args (e.g.
+            # `Get-Item '周报.md'`) arrive over stdin as UTF-8; PowerShell 5.1
+            # otherwise decodes them as ANSI/GBK and the path becomes mojibake.
+            self._proc.stdin.write(
+                "[Console]::InputEncoding = [System.Text.Encoding]::UTF8\n"
+            )
             self._proc.stdin.write("$OutputEncoding = [System.Text.Encoding]::UTF8\n")
             self._proc.stdin.flush()
+            # Synchronize: `chcp 65001` takes effect asynchronously — the FIRST
+            # command sent right after spawn can race it and get decoded as
+            # ANSI/GBK (observed intermittently on cold start, PowerShell 7.6.4).
+            # Emit a ready marker and drain the queue until it arrives, so run()
+            # always starts from a fully-initialized, UTF-8 shell.
+            self._proc.stdin.write("echo __COWORKER_READY__\n")
+            self._proc.stdin.flush()
+            sync_deadline = time.monotonic() + 5.0
+            while time.monotonic() < sync_deadline:
+                try:
+                    item = self._queue.get(timeout=0.2)
+                except queue.Empty:
+                    continue
+                if "__COWORKER_READY__" in item:
+                    break
 
     def _read_loop(self) -> None:
         try:
@@ -242,6 +275,13 @@ class LocalExecutor(Executor):
 
         timeout = timeout or self.default_timeout
         self._abort.clear()
+        # Non-ASCII commands on Windows go through a UTF-8-BOM .ps1 file: piping
+        # Chinese text over stdin races the console code page (ANSI/GBK even
+        # after chcp 65001 — observed intermittently on PowerShell 7.6.4 cold
+        # start), corrupting the command. A BOM'd file decodes as UTF-8
+        # deterministically; stdin only ever carries the ASCII `& 'path'`.
+        if self._is_windows and any(ord(ch) > 127 for ch in command):
+            command = self._as_script(command)
         # Run the command, then emit a marker line with exit code + cwd.
         self._proc.stdin.write(command + "\n")
         self._proc.stdin.write(self._trailer())
@@ -364,6 +404,18 @@ class LocalExecutor(Executor):
             "status": "running" if task.proc.poll() is None else "killed",
             "exit_code": task.proc.poll(),
         }
+
+    def _as_script(self, command: str) -> str:
+        """Wrap a non-ASCII command in a UTF-8-BOM .ps1 file and return the
+        `& 'path'` invocation. BOM forces UTF-8 decoding regardless of the
+        console code page race; the temp file is left for the OS to reap."""
+        import tempfile as _tempfile
+
+        script = (
+            Path(_tempfile.gettempdir()) / f"qw_script_{uuid.uuid4().hex}.ps1"
+        )
+        script.write_bytes(b"\xef\xbb\xbf" + command.encode("utf-8"))
+        return f"& '{script}'"
 
     def _trailer(self) -> str:
         """Command appended after each user command. Emits one line `<marker> <exit> <cwd>`

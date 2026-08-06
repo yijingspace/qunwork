@@ -334,3 +334,31 @@ def test_worker_tool_heartbeat_events():
     )
     assert any("list_dir" in th for th in thoughts), f"tool heartbeat missing: {thoughts}"
     assert "final" in text
+
+
+def test_shell_chinese_commands_survive_cold_start(tmp_path):
+    """GBK-family regression: Chinese args/paths in worker shell commands must
+    work on the FIRST command after spawn (console-code-page race), on both
+    PowerShell 7 (pwsh) and 5.1."""
+    import shutil
+    from coworker.tools.shell import LocalExecutor
+
+    ws = tmp_path / "中文目录"
+    ws.mkdir()
+    (ws / "测试文件_周报.md").write_text("hello", encoding="utf-8")
+
+    shells = ["powershell.exe"]
+    if shutil.which("pwsh"):
+        shells.insert(0, "pwsh")
+    checked = 0
+    for shell in shells:
+        ex = LocalExecutor(cwd=str(ws), shell_path=shell)
+        try:
+            r = ex.run("$a = '测试'; Write-Output ('arg=' + $a)")
+            assert "arg=测试" in r["output"], f"{shell}: chinese arg corrupted: {r['output']!r}"
+            r2 = ex.run("Get-Item '测试文件_周报.md' | Select-Object -ExpandProperty Name")
+            assert "测试文件_周报.md" in r2["output"], f"{shell}: chinese path failed: {r2['output']!r}"
+            checked += 1
+        finally:
+            ex.close()
+    assert checked >= 1
