@@ -3011,6 +3011,7 @@ class SessionManager:
                         content=body[:4000],
                         kind="automation",
                         workspace=task.workspace,
+                        source_run_id=f"auto:{getattr(run, 'id', '')}",
                     )
             except Exception:
                 pass  # ingestion must never fail the automation
@@ -3959,6 +3960,80 @@ class SessionManager:
 
     def delete_memory(self, memory_id: int) -> bool:
         return self.memory_store.delete(memory_id)
+
+    # -- unified asset search (asset loop Phase 2) --------------------------
+    def search_assets(self, query: str, k: int = 5) -> dict[str, Any]:
+        """One search box across the whole organizational asset network:
+        knowledge / skills / templates / memories / swarm runs. Skills match by
+        name+description+body keywords; the rest by the same relevance rules."""
+        q = (query or "").strip()
+        out: dict[str, Any] = {
+            "knowledge": [],
+            "skills": [],
+            "templates": [],
+            "memories": [],
+            "runs": [],
+        }
+        if q:
+            for hit in self.knowledge.search(
+                q, k=k, workspace=self.default_workspace
+            ):
+                out["knowledge"].append(
+                    {
+                        "id": hit.get("item_id"),
+                        "kind": hit.get("kind"),
+                        "title": hit.get("title"),
+                        "score": hit.get("score"),
+                        "source_run_id": hit.get("source_run_id"),
+                    }
+                )
+            low = q.lower()
+            tokens = [t for t in low.split() if t]
+            for sk in self.list_skills():
+                hay = " ".join(
+                    str(sk.get(f) or "")
+                    for f in ("name", "description", "body", "instructions")
+                ).lower()
+                if any(tok in hay for tok in tokens):
+                    out["skills"].append(
+                        {"name": sk.get("name"), "description": sk.get("description")}
+                    )
+                    if len(out["skills"]) >= k:
+                        break
+            for tmpl in self.list_swarm_templates():
+                hay = (
+                    f"{tmpl.get('title')} {tmpl.get('intent')}".lower()
+                )
+                if any(tok in hay for tok in tokens):
+                    out["templates"].append(
+                        {
+                            "id": tmpl.get("id"),
+                            "title": tmpl.get("title"),
+                            "runs_count": tmpl.get("runs_count", 0),
+                            "success_count": tmpl.get("success_count", 0),
+                        }
+                    )
+                    if len(out["templates"]) >= k:
+                        break
+            for m in self.memory_store.list():
+                if any(tok in (m.content or "").lower() for tok in tokens):
+                    out["memories"].append(
+                        {"id": m.id, "scope": m.scope.value, "content": m.content[:200]}
+                    )
+                    if len(out["memories"]) >= k:
+                        break
+            for r in self.orchestration_store.list_runs(limit=50):
+                if any(tok in (r.get("intent") or "").lower() for tok in tokens):
+                    out["runs"].append(
+                        {
+                            "run_id": r.get("run_id"),
+                            "status": r.get("status"),
+                            "intent": (r.get("intent") or "")[:160],
+                        }
+                    )
+                    if len(out["runs"]) >= k:
+                        break
+        return out
 
     def add_memory(
         self, content: str, scope: str = "workspace", workspace: Optional[str] = None

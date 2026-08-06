@@ -623,4 +623,10 @@ export const zh: Messages = {
   "No memories yet.": "还没有记忆。",
   "Forget this memory?": "清除这条记忆?",
   "Forget": "清除",
+  "Organizational assets": "组织资产",
+  "One search across knowledge, skills, templates, team memory and swarm runs — the asset loop.": "一个搜索框搜遍知识、技能、模板、团队记忆与蜂群运行记录——资产环路。",
+  "Search all organizational assets…": "搜索全部组织资产…",
+  "Knowledge": "知识",
+  "Swarm runs": "蜂群运行",
+  "No assets matched.": "没有匹配的资产。",
 };

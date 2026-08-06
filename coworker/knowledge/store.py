@@ -120,8 +120,9 @@ class KnowledgeStore:
             """CREATE TABLE IF NOT EXISTS knowledge_items (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 workspace TEXT NOT NULL,
-                kind TEXT NOT NULL DEFAULT 'manual',   -- manual | file
+                kind TEXT NOT NULL DEFAULT 'manual',   -- manual | file | automation | swarm_report
                 source_path TEXT,
+                source_run_id TEXT,                    -- asset cross-index: which run sunk this entry
                 title TEXT,
                 fingerprint TEXT,                       -- mtime+size for file items
                 created_at REAL,
@@ -129,6 +130,11 @@ class KnowledgeStore:
                 UNIQUE (workspace, source_path)
             )"""
         )
+        try:
+            self._con.execute("ALTER TABLE knowledge_items ADD COLUMN source_run_id TEXT")
+            self._con.commit()
+        except sqlite3.OperationalError:
+            pass  # column already present
         self._con.execute(
             """CREATE TABLE IF NOT EXISTS knowledge_chunks (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -151,15 +157,23 @@ class KnowledgeStore:
         return _ngram_vector(text)
 
     # -- indexing --------------------------------------------------------------
-    def add_text(self, title: str, content: str, *, kind: str = "manual", workspace: Optional[str] = None) -> int:
+    def add_text(
+        self,
+        title: str,
+        content: str,
+        *,
+        kind: str = "manual",
+        workspace: Optional[str] = None,
+        source_run_id: Optional[str] = None,
+    ) -> int:
         """Index a free-text entry (manual knowledge). Returns the item id."""
         if not title or not content:
             raise ValueError("title and content are required")
         ws = str(workspace) if workspace else (self._default_workspace or "")
         with self._lock:
             cur = self._con.execute(
-                "INSERT INTO knowledge_items (workspace, kind, title, created_at, updated_at) VALUES (?,?,?,?,?)",
-                (ws, kind, title, time.time(), time.time()),
+                "INSERT INTO knowledge_items (workspace, kind, source_run_id, title, created_at, updated_at) VALUES (?,?,?,?,?,?)",
+                (ws, kind, source_run_id, title, time.time(), time.time()),
             )
             item_id = cur.lastrowid
             self._index_chunks(item_id, title, content)
@@ -348,13 +362,13 @@ class KnowledgeStore:
         with self._lock:
             if ws:
                 rows = self._con.execute(
-                    "SELECT id, kind, source_path, title, created_at, updated_at FROM knowledge_items "
+                    "SELECT id, kind, source_path, source_run_id, title, created_at, updated_at FROM knowledge_items "
                     "WHERE workspace=? ORDER BY updated_at DESC LIMIT ? OFFSET ?",
                     (ws, limit, offset),
                 ).fetchall()
             else:
                 rows = self._con.execute(
-                    "SELECT id, kind, source_path, title, created_at, updated_at FROM knowledge_items "
+                    "SELECT id, kind, source_path, source_run_id, title, created_at, updated_at FROM knowledge_items "
                     "ORDER BY updated_at DESC LIMIT ? OFFSET ?",
                     (limit, offset),
                 ).fetchall()
@@ -363,9 +377,10 @@ class KnowledgeStore:
                 "id": r[0],
                 "kind": r[1],
                 "source_path": r[2],
-                "title": r[3],
-                "created_at": r[4],
-                "updated_at": r[5],
+                "source_run_id": r[3],
+                "title": r[4],
+                "created_at": r[5],
+                "updated_at": r[6],
             }
             for r in rows
         ]
@@ -388,19 +403,19 @@ class KnowledgeStore:
         with self._lock:
             if ws:
                 rows = self._con.execute(
-                    """SELECT c.item_id, c.chunk_index, c.content, c.vector, i.kind, i.title, i.source_path
+                    """SELECT c.item_id, c.chunk_index, c.content, c.vector, i.kind, i.title, i.source_path, i.source_run_id
                        FROM knowledge_chunks c JOIN knowledge_items i ON i.id = c.item_id
                        WHERE i.workspace=? ORDER BY c.id""",
                     (ws,),
                 ).fetchall()
             else:
                 rows = self._con.execute(
-                    """SELECT c.item_id, c.chunk_index, c.content, c.vector, i.kind, i.title, i.source_path
+                    """SELECT c.item_id, c.chunk_index, c.content, c.vector, i.kind, i.title, i.source_path, i.source_run_id
                        FROM knowledge_chunks c JOIN knowledge_items i ON i.id = c.item_id
                        ORDER BY c.id"""
                 ).fetchall()
         scored: list[tuple[float, dict]] = []
-        for item_id, ci, content, vec_json, kind, title, src in rows:
+        for item_id, ci, content, vec_json, kind, title, src, src_run in rows:
             try:
                 vec = json.loads(vec_json)
             except Exception:
@@ -418,6 +433,7 @@ class KnowledgeStore:
                             "kind": kind,
                             "title": title,
                             "source_path": src,
+                            "source_run_id": src_run,
                         },
                     )
                 )

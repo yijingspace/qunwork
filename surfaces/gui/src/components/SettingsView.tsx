@@ -5,6 +5,7 @@ import {
   getSettings,
   getTrustedWorkspaces,
   listMemories,
+  searchAssets,
   searchMemories,
   setOnboarded,
   setPdfSettings,
@@ -12,6 +13,7 @@ import {
   setSessionsPeek,
   setWorkspaceTrusted,
   updateMemory,
+  type AssetResults,
   type MemoryItem,
   type ModelSettings,
   type PdfSettings,
@@ -455,6 +457,7 @@ function AppearanceSection() {
       <TrustedWorkspacesCard />
       <TeamWorkspaceCard />
       <TeamMemoryCard />
+      <OrgAssetsCard />
 
       {desktop && (
         <div className={CARD + " p-4"}>
@@ -704,6 +707,95 @@ function TeamMemoryCard() {
               )}
             </div>
           ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function OrgAssetsCard() {
+  const t = useT();
+  const [query, setQuery] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [results, setResults] = useState<AssetResults | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+
+  const doSearch = async () => {
+    if (!query.trim()) {
+      setResults(null);
+      return;
+    }
+    setBusy(true);
+    setErr(null);
+    try {
+      setResults(await searchAssets(query.trim(), 8));
+    } catch (e) {
+      setErr(String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const count = (a: unknown[] | undefined) => a?.length ?? 0;
+
+  return (
+    <div className={CARD + " p-4 mb-4"} data-testid="org-assets-card">
+      <div className={FIELD_LABEL}>{t("Organizational assets")}</div>
+      <div className={FIELD_HELP}>
+        {t("One search across knowledge, skills, templates, team memory and swarm runs — the asset loop.")}
+      </div>
+
+      <div className="flex items-center gap-2 mt-2.5">
+        <input
+          className="flex-1 min-w-0 px-3 py-2 rounded-lg border bg-panel text-[12.5px] outline-none focus:border-accent"
+          placeholder={t("Search all organizational assets…")}
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && void doSearch()}
+        />
+        <button className={BTN_BORDERED} disabled={busy} onClick={() => void doSearch()}>
+          {busy ? "…" : t("Search")}
+        </button>
+      </div>
+
+      {err && <div className="text-[12px] text-danger mt-2">{err}</div>}
+
+      {results && (
+        <div className="mt-2.5 space-y-2">
+          {[
+            { key: "knowledge" as const, label: t("Knowledge"), rows: results.knowledge.map((k) => ({
+                id: String(k.id), title: k.title ?? "", sub: `${k.kind ?? ""}${k.source_run_id ? " · " + k.source_run_id : ""}`,
+              })) },
+            { key: "skills" as const, label: t("Skills"), rows: results.skills.map((s) => ({
+                id: s.name ?? "", title: s.name ?? "", sub: s.description ?? "",
+              })) },
+            { key: "templates" as const, label: t("Templates"), rows: results.templates.map((m) => ({
+                id: String(m.id), title: m.title ?? "", sub: `${m.runs_count ?? 0} ${t("runs")} · ${m.success_count ?? 0} ${t("ok")}`,
+              })) },
+            { key: "memories" as const, label: t("Team memory"), rows: results.memories.map((m) => ({
+                id: String(m.id), title: m.content ?? "", sub: m.scope ?? "",
+              })) },
+            { key: "runs" as const, label: t("Swarm runs"), rows: results.runs.map((r) => ({
+                id: r.run_id ?? "", title: r.intent ?? "", sub: r.status ?? "",
+              })) },
+          ].map((group) =>
+            group.rows.length > 0 ? (
+              <div key={group.key}>
+                <div className="text-[10.5px] uppercase tracking-[0.07em] text-faint font-semibold mb-1">
+                  {group.label} · {group.rows.length}
+                </div>
+                {group.rows.slice(0, 4).map((row) => (
+                  <div key={group.key + row.id} className="text-[12px] text-ink truncate leading-relaxed">
+                    {row.title}
+                    {row.sub ? <span className="text-faint"> — {row.sub}</span> : null}
+                  </div>
+                ))}
+              </div>
+            ) : null,
+          )}
+          {count(results.knowledge) + count(results.skills) + count(results.templates) + count(results.memories) + count(results.runs) === 0 && (
+            <div className="text-[12px] text-faint">{t("No assets matched.")}</div>
+          )}
         </div>
       )}
     </div>

@@ -299,6 +299,7 @@ def create_app(manager: SessionManager) -> FastAPI:
                         content=report[:4000],
                         kind="swarm_report",
                         workspace=ws,
+                        source_run_id=rid,
                     )
             except Exception:
                 pass  # ingestion must never fail the run
@@ -1067,6 +1068,14 @@ def create_app(manager: SessionManager) -> FastAPI:
     @app.delete("/v1/memory/{memory_id}")
     def delete_memory(memory_id: int) -> dict[str, Any]:
         return {"ok": manager.delete_memory(memory_id), "id": memory_id}
+
+    @app.post("/v1/assets/search")
+    def assets_search(body: dict) -> dict[str, Any]:
+        """Unified organizational asset search (asset loop Phase 2): one query
+        across knowledge / skills / templates / memories / swarm runs."""
+        query = str(body.get("query") or "")
+        k = max(1, min(int(body.get("k") or 5), 20))
+        return {"query": query, **manager.search_assets(query, k)}
 
     @app.post("/v1/chat/completions")
     def chat_completions(body: dict) -> dict[str, Any]:

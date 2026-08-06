@@ -274,3 +274,50 @@ def test_swarm_report_sinks_into_knowledge_and_tallies_template(tmp_path):
     )
     hits = mgr.knowledge.search("本周工作与成果 提交", k=5, workspace=str(tmp_path))
     assert hits and hits[0]["kind"] == "swarm_report"
+
+
+def test_unified_asset_search(tmp_path):
+    """Asset loop Phase 2: one query hits knowledge / skills / templates /
+    memories / swarm runs together."""
+    from coworker.conversations import ConversationStore
+    from coworker.knowledge import KnowledgeStore
+    from coworker.memory import SQLiteMemoryStore
+    from coworker.orchestrator.run_store import OrchestrationRunStore
+    from coworker.server.manager import SessionManager
+
+    mgr = SessionManager.__new__(SessionManager)
+    mgr.session_store = ConversationStore(tmp_path / "conv.db")
+    mgr.knowledge = KnowledgeStore(tmp_path / "knowledge.db", workspace=str(tmp_path))
+    mgr.memory_store = SQLiteMemoryStore(tmp_path / "mem.db")
+    mgr.orchestration_store = OrchestrationRunStore(tmp_path / "orch.db")
+    mgr.default_workspace = str(tmp_path)
+    mgr.skill_market = None
+
+    class FakeSkills:
+        def catalog(self):
+            return [
+                {"name": "周报生成", "description": "用蜂群自动生成周报", "body": "步骤…"},
+                {"name": "code-review", "description": "审查代码", "body": "…"},
+            ]
+
+    mgr.skill_loader = FakeSkills()
+    mgr.skill_market = type("M", (), {"all_stats": lambda self: {}})()
+    mgr.list_skills = lambda: [
+        {**r, "install_count": 0, "rating": None, "rating_count": 0}
+        for r in mgr.skill_loader.catalog()
+    ]
+
+    # seed one of each asset
+    mgr.knowledge.add_text("周报知识", "本周工作与成果 提交", kind="swarm_report", source_run_id="orch_abc")
+    mgr.session_store.add_swarm_template("周报模板", "生成周报", [{"id": "t0", "description": "写", "deps": []}])
+    mgr.memory_store.add("周报上周总结", scope="workspace")
+    mgr.orchestration_store.create_run("用蜂群生成本周总结并输出周报")
+    hits = mgr.search_assets("本周工作与成果 提交 周报", k=5)
+    assert hits["knowledge"] and hits["knowledge"][0]["source_run_id"] == "orch_abc"
+    assert hits["skills"], "skill must be searchable by name/description"
+    assert hits["templates"] and hits["templates"][0]["title"] == "周报模板"
+    assert hits["memories"]
+    assert hits["runs"]
+    # source_run_id surfaced through list_items too
+    items = mgr.knowledge.list_items(workspace=str(tmp_path))
+    assert any(i.get("source_run_id") == "orch_abc" for i in items)

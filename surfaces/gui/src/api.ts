@@ -2251,3 +2251,21 @@ export async function deleteMemory(id: number): Promise<{ ok: boolean }> {
   const res = await fetch(`${httpBase()}/v1/memory/${id}`, { method: "DELETE" });
   return await res.json();
 }
+
+// -- unified organizational asset search (asset loop Phase 2) ----------------
+export interface AssetResults {
+  knowledge: Array<{ id?: number; kind?: string; title?: string; score?: number; source_run_id?: string }>;
+  skills: Array<{ name?: string; description?: string }>;
+  templates: Array<{ id?: number; title?: string; runs_count?: number; success_count?: number }>;
+  memories: Array<{ id?: number; scope?: string; content?: string }>;
+  runs: Array<{ run_id?: string; status?: string; intent?: string }>;
+}
+
+export async function searchAssets(query: string, k = 8): Promise<{ query: string } & AssetResults> {
+  const res = await fetch(`${httpBase()}/v1/assets/search`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ query, k }),
+  });
+  return await res.json();
+}
