@@ -2967,15 +2967,17 @@ class SessionManager:
             "result. The schedule already exists — do not create or modify any scheduled tasks.\n\n"
             f"{task.instructions}"
         )
-        # T5 periodic slot: tag this execution with its phase (run ordinal mod 60,
-        # the Pisano period) and reuse the most recent prior result — a weekly
-        # report automatically carries last week's context instead of starting
-        # from scratch. Matches the swarm's task_phase memory slots.
+        # T5 periodic slot: tag this execution with its phase and reuse the most
+        # recent prior result — a weekly report automatically carries last week's
+        # context instead of starting from scratch. Phase is now CALENDAR-based
+        # (Phase 3): a weekly task lands in the same phase every week (ISO week
+        # mod 60), a daily task every day (year-day mod 60) — so the phase pool
+        # clusters by the organization's real rhythm, not just run ordinal.
         try:
             run_no = int(getattr(task, "run_count", 0) or 0) + 1
         except (TypeError, ValueError):
             run_no = 1
-        phase_slot = run_no % 60
+        phase_slot = _calendar_phase(task, fallback=run_no)
         prior = ""
         try:
             for r in self.task_store.runs(task.id, limit=4):
@@ -3815,7 +3817,15 @@ class SessionManager:
                     if not title or title in existing_k or not content:
                         continue
                     try:
-                        self.knowledge_add(title, content)
+                        # Preserve the asset's provenance + lifecycle kind across
+                        # the organization boundary (Phase 3 cross-org).
+                        self.knowledge.add_text(
+                            title,
+                            content,
+                            kind=it.get("kind") or "manual",
+                            workspace=self.default_workspace,
+                            source_run_id=it.get("source_run_id"),
+                        )
                         existing_k.add(title)
                         imported["knowledge"] += 1
                     except Exception:
@@ -3874,6 +3884,56 @@ class SessionManager:
 
     def knowledge_delete(self, item_id: int) -> bool:
         return self.knowledge.delete(item_id)
+
+    def knowledge_set_retired(self, item_id: int, retired: bool) -> bool:
+        """Asset lifecycle (Phase 3): retire/restore a knowledge entry."""
+        return self.knowledge.set_retired(item_id, retired)
+
+    def rhythm_forecast(self) -> dict[str, Any]:
+        """Phase 3 organizational rhythm (T6 on the org level): detect the
+        dominant cadence from run history (periodic forecaster over daily run
+        counts) and list what's due in the next 7 days — 'next week should run
+        this' without anyone having to remember it."""
+        from datetime import date, timedelta
+
+        from coworker.periodic.forecaster import PeriodicForecaster
+
+        counts: dict[str, int] = {}
+        for t in self.task_store.list():
+            for r in self.task_store.runs(t.id, limit=200):
+                d = date.fromtimestamp(r.started_at).isoformat()
+                counts[d] = counts.get(d, 0) + 1
+        today = date.today()
+        series = [
+            counts.get((today - timedelta(days=i)).isoformat(), 0)
+            for i in range(89, -1, -1)
+        ]
+        fc = PeriodicForecaster().fit(series)
+        period = fc.period if fc.fitted else 0
+        rhythm = {7: "weekly", 1: "daily", 30: "monthly"}.get(
+            period, f"{period}d" if period else "irregular"
+        )
+        import time as _time
+
+        soon = _time.time() + 7 * 86400
+        upcoming = []
+        for t in self.task_store.list():
+            if t.enabled and t.next_run and t.next_run <= soon:
+                upcoming.append(
+                    {
+                        "id": t.id,
+                        "title": t.title,
+                        "next_run": t.next_run,
+                        "cron": (getattr(t.schedule, "cron", None) if t.schedule else None),
+                    }
+                )
+        upcoming.sort(key=lambda u: u["next_run"])
+        return {
+            "period_days": period,
+            "rhythm": rhythm,
+            "upcoming": upcoming[:20],
+            "generated_at": _time.time(),
+        }
 
     def knowledge_scan(self, workspace: Optional[str] = None) -> dict[str, Any]:
         ws = self.resolve_workspace(workspace) or self.default_workspace
@@ -4081,6 +4141,32 @@ def _last_assistant_text(messages: list[dict[str, Any]]) -> Optional[str]:
         if msg.get("role") == "assistant" and msg.get("content"):
             return msg["content"]
     return None
+
+
+def _calendar_phase(task: Any, fallback: int) -> int:
+    """Phase 3 calendar phase slot: cluster memory by the organization's real
+    rhythm instead of run ordinal. Weekly cron → ISO week number; daily → year-day;
+    monthly → year*12+month; anything else falls back to the run ordinal. All
+    mod the Pisano period 60 so same-rhythm runs share the same slot."""
+    from datetime import date as _date
+
+    try:
+        cron = str(getattr(getattr(task, "schedule", None), "cron", None) or "")
+    except Exception:
+        cron = ""
+    parts = cron.split()
+    if len(parts) == 5:
+        _min, _hour, dom, _month, dow = parts
+        today = _date.today()
+        if dow != "*":
+            return today.isocalendar()[1] % 60
+        if dom != "*":
+            return (today.year * 12 + today.month) % 60
+        return today.timetuple().tm_yday % 60
+    try:
+        return int(fallback) % 60
+    except (TypeError, ValueError):
+        return 0
 
 
 def _recent_files(workspace: str, *, since: float, limit: int = 20) -> list[str]:

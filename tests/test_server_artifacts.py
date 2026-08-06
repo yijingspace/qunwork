@@ -321,3 +321,40 @@ def test_unified_asset_search(tmp_path):
     # source_run_id surfaced through list_items too
     items = mgr.knowledge.list_items(workspace=str(tmp_path))
     assert any(i.get("source_run_id") == "orch_abc" for i in items)
+
+
+def test_asset_lifecycle_retire_and_use_count(tmp_path):
+    """Phase 3: retired entries vanish from search but stay for audit; every
+    retrieval ticks use_count."""
+    from coworker.knowledge import KnowledgeStore
+
+    ks = KnowledgeStore(tmp_path / "knowledge.db", workspace=str(tmp_path))
+    item = ks.add_text("过时报告", "旧版本内容" + "内容" * 30, kind="automation")
+    hits = ks.search("旧版本内容", k=5, workspace=str(tmp_path))
+    assert hits and hits[0]["item_id"] == item
+    # retrieval ticked the counter
+    listed = ks.list_items(workspace=str(tmp_path))
+    assert listed[0]["use_count"] >= 1
+    # retire → hidden from search/list
+    assert ks.set_retired(item, True)
+    assert ks.search("旧版本内容", k=5, workspace=str(tmp_path)) == []
+    assert ks.list_items(workspace=str(tmp_path)) == []
+    # restore
+    assert ks.set_retired(item, False)
+    assert ks.search("旧版本内容", k=5, workspace=str(tmp_path))
+
+
+def test_calendar_phase_clusters_by_rhythm():
+    """Phase 3: a weekly task lands in the same phase every week (ISO week),
+    a daily task in the same day-phase — not run-ordinal."""
+    import datetime
+    from coworker.automation.models import Schedule, ScheduledTask
+    from coworker.server.manager import _calendar_phase
+
+    weekly = ScheduledTask(id="w", title="周报", instructions="", schedule=Schedule(kind="cron", cron="0 9 * * 1"), workspace=".")
+    daily = ScheduledTask(id="d", title="日志", instructions="", schedule=Schedule(kind="cron", cron="0 9 * * *"), workspace=".")
+    now = datetime.date.today()
+    assert _calendar_phase(weekly, fallback=5) == now.isocalendar()[1] % 60
+    assert _calendar_phase(daily, fallback=5) == now.timetuple().tm_yday % 60
+    # non-cron falls back to run ordinal
+    assert _calendar_phase(ScheduledTask(id="x", title="x", instructions="", schedule=Schedule(kind="once", fire_at="2026-08-06T10:00"), workspace="."), fallback=7) == 7

@@ -135,6 +135,18 @@ class KnowledgeStore:
             self._con.commit()
         except sqlite3.OperationalError:
             pass  # column already present
+        # Asset lifecycle (Phase 3): usage counter feeds governance feedback;
+        # retired entries are hidden from search/list but kept for audit.
+        try:
+            self._con.execute("ALTER TABLE knowledge_items ADD COLUMN use_count INTEGER NOT NULL DEFAULT 0")
+            self._con.commit()
+        except sqlite3.OperationalError:
+            pass
+        try:
+            self._con.execute("ALTER TABLE knowledge_items ADD COLUMN retired INTEGER NOT NULL DEFAULT 0")
+            self._con.commit()
+        except sqlite3.OperationalError:
+            pass
         self._con.execute(
             """CREATE TABLE IF NOT EXISTS knowledge_chunks (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -340,6 +352,17 @@ class KnowledgeStore:
             self._con.commit()
         return cur.rowcount > 0
 
+    def set_retired(self, item_id: int, retired: bool) -> bool:
+        """Asset lifecycle (Phase 3): mark an entry retired (hidden from search)
+        or restore it. Audit trail is preserved — retirement is not deletion."""
+        with self._lock:
+            cur = self._con.execute(
+                "UPDATE knowledge_items SET retired = ? WHERE id = ?",
+                (1 if retired else 0, item_id),
+            )
+            self._con.commit()
+        return cur.rowcount > 0
+
     def count_items(self, workspace: Optional[str] = None) -> int:
         """Total number of knowledge items for the workspace (or all workspaces)."""
         ws = str(workspace) if workspace else self._default_workspace
@@ -362,14 +385,14 @@ class KnowledgeStore:
         with self._lock:
             if ws:
                 rows = self._con.execute(
-                    "SELECT id, kind, source_path, source_run_id, title, created_at, updated_at FROM knowledge_items "
-                    "WHERE workspace=? ORDER BY updated_at DESC LIMIT ? OFFSET ?",
+                    "SELECT id, kind, source_path, source_run_id, title, created_at, updated_at, use_count, retired FROM knowledge_items "
+                    "WHERE workspace=? AND retired=0 ORDER BY updated_at DESC LIMIT ? OFFSET ?",
                     (ws, limit, offset),
                 ).fetchall()
             else:
                 rows = self._con.execute(
-                    "SELECT id, kind, source_path, source_run_id, title, created_at, updated_at FROM knowledge_items "
-                    "ORDER BY updated_at DESC LIMIT ? OFFSET ?",
+                    "SELECT id, kind, source_path, source_run_id, title, created_at, updated_at, use_count, retired FROM knowledge_items "
+                    "WHERE retired=0 ORDER BY updated_at DESC LIMIT ? OFFSET ?",
                     (limit, offset),
                 ).fetchall()
         return [
@@ -381,6 +404,8 @@ class KnowledgeStore:
                 "title": r[4],
                 "created_at": r[5],
                 "updated_at": r[6],
+                "use_count": r[7],
+                "retired": r[8],
             }
             for r in rows
         ]
@@ -403,19 +428,19 @@ class KnowledgeStore:
         with self._lock:
             if ws:
                 rows = self._con.execute(
-                    """SELECT c.item_id, c.chunk_index, c.content, c.vector, i.kind, i.title, i.source_path, i.source_run_id
+                    """SELECT c.item_id, c.chunk_index, c.content, c.vector, i.kind, i.title, i.source_path, i.source_run_id, i.use_count
                        FROM knowledge_chunks c JOIN knowledge_items i ON i.id = c.item_id
-                       WHERE i.workspace=? ORDER BY c.id""",
+                       WHERE i.workspace=? AND i.retired=0 ORDER BY c.id""",
                     (ws,),
                 ).fetchall()
             else:
                 rows = self._con.execute(
-                    """SELECT c.item_id, c.chunk_index, c.content, c.vector, i.kind, i.title, i.source_path, i.source_run_id
+                    """SELECT c.item_id, c.chunk_index, c.content, c.vector, i.kind, i.title, i.source_path, i.source_run_id, i.use_count
                        FROM knowledge_chunks c JOIN knowledge_items i ON i.id = c.item_id
-                       ORDER BY c.id"""
+                       WHERE i.retired=0 ORDER BY c.id"""
                 ).fetchall()
         scored: list[tuple[float, dict]] = []
-        for item_id, ci, content, vec_json, kind, title, src, src_run in rows:
+        for item_id, ci, content, vec_json, kind, title, src, src_run, use_count in rows:
             try:
                 vec = json.loads(vec_json)
             except Exception:
@@ -434,6 +459,7 @@ class KnowledgeStore:
                             "title": title,
                             "source_path": src,
                             "source_run_id": src_run,
+                            "use_count": use_count,
                         },
                     )
                 )
@@ -449,6 +475,15 @@ class KnowledgeStore:
             results.append(hit)
             if len(results) >= k:
                 break
+        # Asset lifecycle (Phase 3): a retrieval ticks the usage counter — the
+        # governance feedback signal for the asset loop (used assets rank better).
+        if results:
+            with self._lock:
+                self._con.executemany(
+                    "UPDATE knowledge_items SET use_count = use_count + 1 WHERE id = ?",
+                    [(r["item_id"],) for r in results],
+                )
+                self._con.commit()
         return results
 
     # -- internals -------------------------------------------------------------

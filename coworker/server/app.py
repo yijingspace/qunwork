@@ -316,6 +316,32 @@ def create_app(manager: SessionManager) -> FastAPI:
         controller = RunController()
         manager.active_orchestration_controls[run_id] = controller
 
+        # Phase 3 governance feedback: reusing a template with a poor track
+        # record warns before the run starts (the asset's own history pre-judges
+        # its risk), visible in the deck's governance report.
+        try:
+            template_id = body.get("template_id")
+            if template_id:
+                for t in manager.list_swarm_templates():
+                    if t.get("id") == int(template_id) and (t.get("runs_count") or 0) >= 2:
+                        rate = (t.get("success_count") or 0) / t.get("runs_count")
+                        if rate < 0.5:
+                            store.append_event(
+                                run_id,
+                                "governance",
+                                {
+                                    "step": 0,
+                                    "action": "WARN",
+                                    "reason": (
+                                        f"template '{t.get('title')}' track record is weak "
+                                        f"({t.get('success_count')}/{t.get('runs_count')} ok) — expect rework"
+                                    ),
+                                },
+                            )
+                        break
+        except (TypeError, ValueError):
+            pass
+
         def _build() -> "Orchestrator":
             return Orchestrator(
                 provider=manager.provider,
@@ -897,6 +923,17 @@ def create_app(manager: SessionManager) -> FastAPI:
     @app.delete("/v1/knowledge/{item_id}")
     def knowledge_delete(item_id: int) -> dict[str, Any]:
         return {"ok": manager.knowledge_delete(item_id), "id": item_id}
+
+    @app.post("/v1/knowledge/{item_id}/retire")
+    def knowledge_retire(item_id: int, body: dict) -> dict[str, Any]:
+        """Asset lifecycle (Phase 3): retire (hide from search) or restore."""
+        retired = bool(body.get("retired", True))
+        return {"ok": manager.knowledge_set_retired(item_id, retired), "id": item_id, "retired": retired}
+
+    @app.get("/v1/rhythm/forecast")
+    def rhythm_forecast() -> dict[str, Any]:
+        """Phase 3 organizational rhythm: dominant cadence + what's due next week."""
+        return manager.rhythm_forecast()
 
     @app.get("/v1/knowledge/search")
     def knowledge_search(request: Request) -> dict[str, Any]:
