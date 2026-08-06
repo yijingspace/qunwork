@@ -5,8 +5,10 @@ import {
   getSettings,
   getTrustedWorkspaces,
   listMemories,
+  rhythmForecast,
   searchAssets,
   searchMemories,
+  setKnowledgeRetired,
   setOnboarded,
   setPdfSettings,
   setScratchBase,
@@ -17,6 +19,7 @@ import {
   type MemoryItem,
   type ModelSettings,
   type PdfSettings,
+  type RhythmForecast,
   type WorkspaceCommandTrust,
 } from "../api";
 import {
@@ -458,6 +461,7 @@ function AppearanceSection() {
       <TeamWorkspaceCard />
       <TeamMemoryCard />
       <OrgAssetsCard />
+      <RhythmCard />
 
       {desktop && (
         <div className={CARD + " p-4"}>
@@ -719,6 +723,7 @@ function OrgAssetsCard() {
   const [busy, setBusy] = useState(false);
   const [results, setResults] = useState<AssetResults | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const [expanded, setExpanded] = useState<number | null>(null);
 
   const doSearch = async () => {
     if (!query.trim()) {
@@ -734,6 +739,12 @@ function OrgAssetsCard() {
     } finally {
       setBusy(false);
     }
+  };
+
+  const retire = async (id: number) => {
+    if (!window.confirm(t("Retire this knowledge entry?"))) return;
+    await setKnowledgeRetired(id, true);
+    doSearch();
   };
 
   const count = (a: unknown[] | undefined) => a?.length ?? 0;
@@ -765,6 +776,9 @@ function OrgAssetsCard() {
           {[
             { key: "knowledge" as const, label: t("Knowledge"), rows: results.knowledge.map((k) => ({
                 id: String(k.id), title: k.title ?? "", sub: `${k.kind ?? ""}${k.source_run_id ? " · " + k.source_run_id : ""}`,
+                meta: k, expanded: expanded === k.id, useCount: k.use_count ?? 0,
+                onToggle: () => setExpanded(expanded === k.id ? null : (k.id ?? null)),
+                onRetire: () => (k.id != null ? void retire(k.id) : undefined),
               })) },
             { key: "skills" as const, label: t("Skills"), rows: results.skills.map((s) => ({
                 id: s.name ?? "", title: s.name ?? "", sub: s.description ?? "",
@@ -785,9 +799,30 @@ function OrgAssetsCard() {
                   {group.label} · {group.rows.length}
                 </div>
                 {group.rows.slice(0, 4).map((row) => (
-                  <div key={group.key + row.id} className="text-[12px] text-ink truncate leading-relaxed">
-                    {row.title}
-                    {row.sub ? <span className="text-faint"> — {row.sub}</span> : null}
+                  <div key={group.key + row.id} className="text-[12px] leading-relaxed">
+                    <button
+                      className="w-full text-left text-ink truncate hover:text-accent"
+                      onClick={(row as { onToggle?: () => void }).onToggle}
+                    >
+                      {row.title}
+                      {(row as { useCount?: number }).useCount != null && (
+                        <span className="text-faint ml-1.5">↻ {(row as { useCount?: number }).useCount}</span>
+                      )}
+                      {row.sub ? <span className="text-faint"> — {row.sub}</span> : null}
+                    </button>
+                    {(row as { expanded?: boolean }).expanded && (
+                      <div className="text-[11.5px] text-muted bg-paper rounded px-2 py-1.5 mt-1 whitespace-pre-wrap break-words max-h-28 overflow-y-auto">
+                        {((row as { meta?: { content?: string } }).meta?.content) || ""}
+                      </div>
+                    )}
+                    {group.key === "knowledge" && (row as { onRetire?: () => void }).onRetire && (
+                      <button
+                        className="text-[10.5px] text-muted hover:text-danger ml-1"
+                        onClick={(row as { onRetire?: () => void }).onRetire}
+                      >
+                        {t("Retire")}
+                      </button>
+                    )}
                   </div>
                 ))}
               </div>
@@ -795,6 +830,63 @@ function OrgAssetsCard() {
           )}
           {count(results.knowledge) + count(results.skills) + count(results.templates) + count(results.memories) + count(results.runs) === 0 && (
             <div className="text-[12px] text-faint">{t("No assets matched.")}</div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function RhythmCard() {
+  const t = useT();
+  const [data, setData] = useState<RhythmForecast | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    rhythmForecast()
+      .then(setData)
+      .catch((e) => setErr(String(e)));
+  }, []);
+
+  const rhythmLabel = (r: string) =>
+    r === "weekly" ? t("Weekly rhythm") : r === "daily" ? t("Daily rhythm") : r === "monthly" ? t("Monthly rhythm") : r === "irregular" ? t("Irregular — no dominant cadence yet") : t("Rhythm: {p}", { p: r });
+
+  const fmt = (ts?: number) =>
+    ts ? new Date(ts * 1000).toLocaleDateString() : "";
+
+  return (
+    <div className={CARD + " p-4 mb-4"} data-testid="rhythm-card">
+      <div className={FIELD_LABEL}>{t("Organizational rhythm")}</div>
+      <div className={FIELD_HELP}>
+        {t("The org's dominant cadence, detected from run history — and what's due next week.")}
+      </div>
+
+      {err && <div className="text-[12px] text-danger mt-2">{err}</div>}
+      {data && (
+        <div className="mt-2.5">
+          <div className="flex items-center gap-2">
+            <span className="text-[12.5px] text-ink font-medium">
+              {data.period_days > 0 ? t("Period detected: {n} days", { n: data.period_days }) : t("No period detected yet")}
+            </span>
+            <span className="text-[11px] text-faint border border-line rounded px-1.5 py-0.5">
+              {rhythmLabel(data.rhythm)}
+            </span>
+          </div>
+          <div className="text-[10.5px] uppercase tracking-[0.07em] text-faint font-semibold mt-3 mb-1">
+            {t("Due in the next 7 days")}
+          </div>
+          {data.upcoming.length === 0 ? (
+            <div className="text-[12px] text-faint">{t("Nothing scheduled.")}</div>
+          ) : (
+            <div className="space-y-1">
+              {data.upcoming.map((u) => (
+                <div key={u.id} className="flex items-center gap-2 text-[12px]">
+                  <span className="text-faint font-mono w-20 shrink-0">{fmt(u.next_run)}</span>
+                  <span className="text-ink truncate">{u.title}</span>
+                  {u.cron ? <span className="text-faint font-mono text-[10.5px]">{u.cron}</span> : null}
+                </div>
+              ))}
+            </div>
           )}
         </div>
       )}

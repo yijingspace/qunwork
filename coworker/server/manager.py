@@ -4045,6 +4045,8 @@ class SessionManager:
                         "title": hit.get("title"),
                         "score": hit.get("score"),
                         "source_run_id": hit.get("source_run_id"),
+                        "use_count": hit.get("use_count", 0),
+                        "content": (hit.get("content") or "")[:160],
                     }
                 )
             low = q.lower()

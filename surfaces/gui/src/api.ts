@@ -2254,7 +2254,7 @@ export async function deleteMemory(id: number): Promise<{ ok: boolean }> {
 
 // -- unified organizational asset search (asset loop Phase 2) ----------------
 export interface AssetResults {
-  knowledge: Array<{ id?: number; kind?: string; title?: string; score?: number; source_run_id?: string }>;
+  knowledge: Array<{ id?: number; kind?: string; title?: string; score?: number; source_run_id?: string; use_count?: number; content?: string }>;
   skills: Array<{ name?: string; description?: string }>;
   templates: Array<{ id?: number; title?: string; runs_count?: number; success_count?: number }>;
   memories: Array<{ id?: number; scope?: string; content?: string }>;
@@ -2266,6 +2266,31 @@ export async function searchAssets(query: string, k = 8): Promise<{ query: strin
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ query, k }),
+  });
+  return await res.json();
+}
+
+// -- organizational rhythm (asset loop Phase 3) ------------------------------
+export interface RhythmForecast {
+  period_days: number;
+  rhythm: string;
+  upcoming: Array<{ id: string; title: string; next_run: number; cron?: string | null }>;
+  generated_at: number;
+}
+
+export async function rhythmForecast(): Promise<RhythmForecast> {
+  const res = await fetch(`${httpBase()}/v1/rhythm/forecast`);
+  return await res.json();
+}
+
+export async function setKnowledgeRetired(
+  id: number,
+  retired: boolean,
+): Promise<{ ok: boolean; id?: number; retired?: boolean }> {
+  const res = await fetch(`${httpBase()}/v1/knowledge/${id}/retire`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ retired }),
   });
   return await res.json();
 }
