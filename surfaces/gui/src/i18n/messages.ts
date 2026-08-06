@@ -684,4 +684,7 @@ export const zh: Messages = {
   "Slack": "Slack",
   "no matches": "无匹配",
   "RECENT": "最近",
+  "Organization": "组织",
+  "Your organizational asset network — knowledge, skills, templates, team memory and swarm runs. Everything your swarm has learned lives here and gets reused automatically.": "你的组织资产网络——知识、技能、模板、团队记忆与蜂群运行。蜂群学到的一切都沉淀在这里,并被自动复用。",
+  "Recent swarm runs": "最近蜂群运行",
 };

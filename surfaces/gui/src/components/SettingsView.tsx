@@ -500,7 +500,7 @@ function AppearanceSection() {
   );
 }
 
-function TeamWorkspaceCard() {
+export function TeamWorkspaceCard() {
   const t = useT();
   const [exporting, setExporting] = useState(false);
   const [importing, setImporting] = useState(false);
@@ -563,7 +563,7 @@ function TeamWorkspaceCard() {
   );
 }
 
-function TeamMemoryCard() {
+export function TeamMemoryCard() {
   const t = useT();
   const [items, setItems] = useState<MemoryItem[] | null>(null);
   const [query, setQuery] = useState("");
@@ -717,7 +717,7 @@ function TeamMemoryCard() {
   );
 }
 
-function OrgAssetsCard() {
+export function OrgAssetsCard() {
   const t = useT();
   const [query, setQuery] = useState("");
   const [busy, setBusy] = useState(false);
@@ -837,7 +837,7 @@ function OrgAssetsCard() {
   );
 }
 
-function RhythmCard() {
+export function RhythmCard() {
   const t = useT();
   const [data, setData] = useState<RhythmForecast | null>(null);
   const [err, setErr] = useState<string | null>(null);

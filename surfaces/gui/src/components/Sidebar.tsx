@@ -147,10 +147,12 @@ interface Props {
   onOpenIntegrations: () => void;
   onOpenAudit: () => void;
   onOpenInbox: () => void;
+  onOpenOrganization: () => void;
   scheduledActive: boolean;
   integrationsActive: boolean;
   auditActive: boolean;
   inboxActive: boolean;
+  organizationActive: boolean;
   // Collapse controls (⌘B / hover-peek). `onCollapse` docks/undocks; `onPeekLeave` hides the
   // floating peek when the pointer leaves the panel.
   collapsed?: boolean;
@@ -1229,6 +1231,7 @@ export function Sidebar(props: Props) {
                   <AttnBadge n={totalAttention} />,
                 )}
                 {appMenuItem("plug", t("Connectors"), props.onOpenIntegrations, props.integrationsActive)}
+                {appMenuItem("diamond", t("Organization"), props.onOpenOrganization, props.organizationActive)}
                 <div className="h-px bg-line my-1 mx-2" />
                 {appMenuItem(
                   "gear",

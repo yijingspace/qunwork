@@ -69,6 +69,8 @@ const baseProps = {
   integrationsActive: false,
   auditActive: false,
   inboxActive: false,
+        onOpenOrganization: vi.fn(),
+        organizationActive: false,
 };
 
 afterEach(() => {

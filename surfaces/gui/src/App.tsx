@@ -57,6 +57,7 @@ import { PersonaView } from "./components/PersonaView";
 import { AuditView } from "./components/AuditView";
 import { useT } from "./i18n";
 import { InboxView } from "./components/InboxView";
+import { OrganizationView } from "./components/OrganizationView";
 import { ApprovalCard } from "./components/ApprovalCard";
 import { DirectoryRequestCard } from "./components/DirectoryRequestCard";
 import { PlanCard } from "./components/PlanCard";
@@ -216,6 +217,7 @@ export function App() {
     | "audit"
     | "inbox"
     | "persona"
+    | "organization"
     | "settings"
   >("session");
   // A remembered Scheduled-detail target must not outlive the surface (see the
@@ -1303,6 +1305,8 @@ export function App() {
         integrationsActive={surface === "integrations"}
         auditActive={surface === "audit"}
         inboxActive={surface === "inbox"}
+        organizationActive={surface === "organization"}
+        onOpenOrganization={() => setSurface("organization")}
         collapsed={navCollapsed}
         onCollapse={toggleNav}
         onPeekLeave={() => setNavPeek(false)}
@@ -1331,6 +1335,8 @@ export function App() {
         <AuditView />
       ) : surface === "inbox" ? (
         <InboxView onOpenSession={openSessionFromInbox} />
+      ) : surface === "organization" ? (
+        <OrganizationView />
       ) : surface === "persona" ? (
         <PersonaView
           personaId={personaViewId || agent}
