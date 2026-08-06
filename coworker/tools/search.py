@@ -105,7 +105,7 @@ def search_tools(workspace: str) -> list:
                 cmd += ["--glob", f"!**/{ignored}/**"]
             cmd.append(str(base))
             try:
-                out = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+                out = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30)
             except Exception as exc:
                 return {"error": f"grep failed: {exc}"}
             if out.returncode not in (0, 1):  # 1 = no matches

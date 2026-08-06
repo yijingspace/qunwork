@@ -415,7 +415,17 @@ def create_app(manager: SessionManager) -> FastAPI:
                     "session_id": session_id,
                 }
             except Exception as exc:  # surface failures via the run store
-                store.update_status(run_id, "failed", str(exc))
+                # Do NOT clobber a genuinely completed run: ingestion/return
+                # errors after success must not flip it to failed (observed:
+                # report written + sunk, but status flipped to failed).
+                try:
+                    cur = store.get_run(run_id)
+                    already = (cur or {}).get("status")
+                except Exception:
+                    already = None
+                if already != "completed":
+                    store.update_status(run_id, "failed", str(exc))
+                store.append_event(run_id, "orchestration_error", {"error": str(exc)})
                 return {"ok": False, "run_id": run_id, "error": str(exc)}
             finally:
                 manager.active_orchestration_controls.pop(run_id, None)

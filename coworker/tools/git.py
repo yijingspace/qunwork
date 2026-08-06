@@ -58,7 +58,7 @@ def git_tools(workspace: str) -> list:
         if path:
             cmd += ["--", path]
         try:
-            out = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+            out = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15)
         except Exception as exc:
             return {"error": f"git log failed: {exc}"}
         if out.returncode != 0:
