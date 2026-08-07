@@ -22,7 +22,7 @@ export type EventType =
 
 // Re-exported for transcript items below. Lives in api.ts (the REST/WS contract source of truth);
 // type-only import, so there's no runtime cycle with api.ts's `import type { ... } from "./types"`.
-import type { MessageSource } from "./api";
+import type { MessageSource, WorkspaceCommandTrust } from "./api";
 
 /**
  * WsEvent — discriminated union by `type`. Owner-audit 2026-08-07: previously
@@ -31,7 +31,7 @@ import type { MessageSource } from "./api";
  * use `Record<string, unknown>` so callers can still opt into narrowing.
  */
 export type WsEvent =
-  | { type: "ready"; data: { model?: string; mode?: string; workspace?: string; agent?: string; command_trust?: { required?: unknown; [k: string]: unknown } } }
+  | { type: "ready"; data: { model?: string; mode?: string; workspace?: string; agent?: string; command_trust?: WorkspaceCommandTrust } }
   | { type: "turn_start"; data: { source?: MessageSource; input?: string } }
   | { type: "assistant_delta"; data: { text?: string } }
   | { type: "reasoning_delta"; data: { text?: string } }

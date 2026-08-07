@@ -227,7 +227,7 @@ export function SwarmView({ onBack, workspace }: { onBack: () => void; workspace
       const p = ev.payload as Record<string, unknown>;
       if (ev.kind === "plan_ready") {
         for (const raw of (p.tasks as Record<string, unknown>[]) ?? []) {
-          tasks.push({ id: String(raw.id), description: String(raw.description ?? ""), deps: raw.deps as string[] | undefined, status: "pending", confidence: 0, result: "" });
+          tasks.push({ id: String(raw.id), description: String(raw.description ?? ""), deps: (raw.deps as string[]) ?? [], status: "pending", confidence: 0, result: "" });
         }
       } else if (ev.kind === "task_started") {
         const td = tasks.find((x) => x.id === p.id);
@@ -238,7 +238,7 @@ export function SwarmView({ onBack, workspace }: { onBack: () => void; workspace
       } else if (ev.kind === "task_done") {
         const td = tasks.find((x) => x.id === p.id);
         if (td) {
-          td.status = p.status;
+          td.status = String(p.status ?? "");
           td.confidence = Number(p.confidence ?? 0);
         }
       } else if (ev.kind === "worker_thought") {

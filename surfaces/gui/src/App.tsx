@@ -581,7 +581,7 @@ export function App() {
           if (d.mode) setMode(d.mode);
           if (d.command_trust?.required) setWorkspaceTrustRequest(d.command_trust);
           // Cowork: adopt the server-provisioned scratch dir (only when we don't already have one).
-          if (d.workspace) setWorkspace((cur) => cur || d.workspace);
+          if (d.workspace) setWorkspace((cur) => cur || d.workspace || null);
           break;
         }
         case "turn_start": {
@@ -702,16 +702,16 @@ export function App() {
           setItems((p) =>
             updateLastTool(
               p,
-              d.name,
-              d.status,
+              d.name ?? "",
+              d.status ?? "",
               d.result_preview || d.reason,
-              d.display?.hidden_by_filters,
+              d.display?.hidden_by_filters as number | undefined,
               d.standing_rule,
             ),
           );
           // Refresh the right rail when something it shows may have changed: browser state, or a
           // file write that should appear under Artifacts immediately (not only after the turn).
-          if (String(d.name || "").startsWith("browser_") || FILE_WRITE_TOOLS.has(d.name)) {
+          if (String(d.name || "").startsWith("browser_") || FILE_WRITE_TOOLS.has(d.name ?? "")) {
             setBrowserRefreshKey((k) => k + 1);
           }
           break;
