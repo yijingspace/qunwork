@@ -17,12 +17,16 @@ export default function SkillsView() {
   const [importing, setImporting] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
 
+  const [skillsError, setSkillsError] = useState(false);
+
   const refresh = useCallback(async () => {
     try {
       const data = await listSkills();
       setSkills(data.skills ?? []);
+      setSkillsError(false);
     } catch {
       setSkills([]);
+      setSkillsError(true);
     } finally {
       setLoading(false);
     }
@@ -127,6 +131,20 @@ export default function SkillsView() {
 
       {loading ? (
         <div className="text-[13px] text-muted">{t("Loading…")}</div>
+      ) : skillsError ? (
+        <div
+          className="rounded-lg border border-warnInk/30 bg-warnSoft/60 px-3 py-2 text-[12.5px] text-warnInk flex items-center gap-2"
+          role="alert"
+          data-testid="skills-load-error"
+        >
+          <span>⚠</span>
+          <span className="flex-1">
+            {t("Couldn't reach the local engine — this may be connection trouble, not missing skills.")}
+          </span>
+          <button className="btn-secondary text-[11.5px]" onClick={() => refresh()}>
+            {t("Retry")}
+          </button>
+        </div>
       ) : skills.length === 0 ? (
         <div className="flex-1 flex flex-col items-center justify-center text-muted">
           <div className="text-[13px]">{t("No skills yet")}</div>

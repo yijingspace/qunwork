@@ -163,6 +163,9 @@ export function App() {
   const [surfaces, setSurfaces] = useState<SurfaceVisibility>({ cowork: true, chat: false, code: false });
   const [mode, setMode] = useState("interactive");
   const [connected, setConnected] = useState(false);
+  // Connection banner: once we've EVER connected, a later drop reads as
+  // "reconnecting" instead of the boot-time "connecting" copy.
+  const hadConnRef = useRef(false);
   const [running, setRunning] = useState(false);
   const [items, setItems] = useState<Item[]>([]);
   const [streaming, setStreamingState] = useState("");
@@ -577,6 +580,7 @@ export function App() {
         case "ready": {
           const d = ev.data;
           setConnected(true);
+          hadConnRef.current = true;
           if (d.model) setModel(d.model);
           if (d.mode) setMode(d.mode);
           if (d.command_trust?.required) setWorkspaceTrustRequest(d.command_trust);
@@ -773,6 +777,7 @@ export function App() {
       onEvent: handleEvent,
       onOpen: () => {
         setConnected(true);
+        hadConnRef.current = true;
         // Auto-send the task prompt once a "Run now" session connects.
         const p = pendingPromptRef.current;
         if (p) {
@@ -1209,6 +1214,21 @@ export function App() {
       {simOverlay && (
         <div className="sim-traffic-lights" aria-hidden="true">
           <span /><span /><span />
+        </div>
+      )}
+      {/* Connection status: when the sidecar isn't reachable, say so plainly —
+          a blank/empty surface then reads as "connecting", not "data wiped"
+          (a user reported exactly that confusion after an upgrade). */}
+      {!connected && uiReady && !booting && (
+        <div
+          className="fixed top-0 inset-x-0 z-[44] bg-warnSoft/90 text-warnInk text-[11.5px] text-center py-1 px-4"
+          role="status"
+          aria-live="polite"
+          data-testid="conn-banner"
+        >
+          {hadConnRef.current
+            ? t("Local engine disconnected — reconnecting…")
+            : t("Connecting to the local engine…")}
         </div>
       )}
       {/* Desktop-only auto-update prompt (15s after boot, then every 30 min; inert in browser). */}

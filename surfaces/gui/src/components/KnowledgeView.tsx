@@ -31,14 +31,18 @@ export default function KnowledgeView() {
     window.setTimeout(() => setNotice(""), 4000);
   };
 
+  const [loadError, setLoadError] = useState(false);
+
   const refresh = useCallback(async () => {
     try {
       const data = await listKnowledge();
       setItems(data.items ?? []);
       setTotal(data.total ?? 0);
+      setLoadError(false);
     } catch {
       setItems([]);
       setTotal(0);
+      setLoadError(true);
     }
   }, []);
 
@@ -218,7 +222,21 @@ export default function KnowledgeView() {
           {t("Load more")} ({total - items.length})
         </button>
       )}
-      {items.length === 0 ? (
+      {loadError ? (
+        <div
+          className="rounded-lg border border-warnInk/30 bg-warnSoft/60 px-3 py-2 text-[12.5px] text-warnInk flex items-center gap-2"
+          role="alert"
+          data-testid="knowledge-load-error"
+        >
+          <span>⚠</span>
+          <span className="flex-1">
+            {t("Couldn't reach the local engine — this may be connection trouble, not missing data.")}
+          </span>
+          <button className="btn-secondary text-[11.5px]" onClick={() => refresh()}>
+            {t("Retry")}
+          </button>
+        </div>
+      ) : items.length === 0 ? (
         <div className="text-[12.5px] text-muted">{t("No entries yet — scan the workspace above, or add manually.")}</div>
       ) : (
         <div className="flex flex-col gap-1.5">

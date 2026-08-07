@@ -687,4 +687,10 @@ export const zh: Messages = {
   "Organization": "组织",
   "Your organizational asset network — knowledge, skills, templates, team memory and swarm runs. Everything your swarm has learned lives here and gets reused automatically.": "你的组织资产网络——知识、技能、模板、团队记忆与蜂群运行。蜂群学到的一切都沉淀在这里,并被自动复用。",
   "Recent swarm runs": "最近蜂群运行",
+  "Connecting to the local engine…": "正在连接本地引擎…",
+  "Local engine disconnected — reconnecting…": "本地引擎连接已断开,正在重连…",
+  "Couldn't reach the local engine — this may be connection trouble, not missing data.": "无法连接本地引擎——这可能是连接问题,不是数据丢失。",
+  "Couldn't reach the local engine — this may be connection trouble, not missing history.": "无法连接本地引擎——这可能是连接问题,不是历史记录丢失。",
+  "Couldn't reach the local engine — this may be connection trouble, not missing skills.": "无法连接本地引擎——这可能是连接问题,不是技能丢失。",
+  "Retry": "重试",
 };
