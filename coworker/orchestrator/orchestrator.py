@@ -13,6 +13,7 @@ task-level `needs_human` status the caller can route to the existing Inbox.
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 import json
 import re
@@ -31,6 +32,8 @@ from .workers import (
     build_planner_engine,
     build_reviewer_engine,
 )
+
+logger = logging.getLogger(__name__)
 
 _MAX_RETRIES_DEFAULT = 2
 
@@ -160,7 +163,7 @@ def clean_thought(text: str, worker: str = "") -> str:
             tail = f": {reason}" if reason else ""
             return f"{mark}（置信度 {conf}）{tail}"[:300]
         except Exception:
-            pass
+            logger.debug("clean_thought: reviewer JSON parse failed", exc_info=True)
     if worker == "planner" and t.startswith("["):
         try:
             tasks = json.loads(t)
@@ -171,7 +174,7 @@ def clean_thought(text: str, worker: str = "") -> str:
             if names:
                 return f"规划 {len(names)} 个任务: " + "; ".join(names)[:300]
         except Exception:
-            pass
+            logger.debug("clean_thought: planner JSON parse failed", exc_info=True)
     # artifact/file links -> bare text
     t = re.sub(r"\[([^\]]*)\]\((?:artifact|file|attachment):[^)]*\)", r"\1", t)
     # code fences -> placeholder
@@ -224,7 +227,7 @@ class Orchestrator:
             try:
                 self.event_sink(kind, payload)
             except Exception:
-                pass
+                logger.exception("event_sink %s failed", kind)
 
     def _worker_feed(self, worker: str, task_id: str = "") -> Callable[[str, dict], None]:
         """Wrap a worker engine's on_event into sink events (chain-of-thought feed),
@@ -329,24 +332,40 @@ class Orchestrator:
 
     # -- validation ---------------------------------------------------------
     async def _review(self, task: Task, result: str) -> ReviewVerdict:
-        engine = build_reviewer_engine(
-            workspace=self.workspace,
-            provider=self.provider,
-            model=self.model,
-            model_settings=self.model_settings,
+        # Reviewer JSON can be flaky — retry before giving up, mirroring the
+        # planner's 3-attempt policy. A single malformed verdict must NEVER crash
+        # the whole asyncio.gather batch (owner-audit 2026-08-07: bug #2).
+        last_err: Exception | None = None
+        for attempt in range(2):
+            try:
+                engine = build_reviewer_engine(
+                    workspace=self.workspace,
+                    provider=self.provider,
+                    model=self.model,
+                    model_settings=self.model_settings,
+                )
+                prompt = (
+                    f"Task [{task.id}]: {task.description}\n\n"
+                    f"Executor's result:\n{result[:4000]}\n\n"
+                    "Validate the result against the task. Return the JSON verdict."
+                )
+                text, status = await _run_engine_async(
+                    engine, prompt, on_event=self._worker_feed("reviewer", task.id)
+                )
+                if not text:
+                    # No verdict → treat as accepted with low confidence rather than looping forever.
+                    return ReviewVerdict(accepted=True, reason=f"no verdict (status: {status})", confidence=0.3)
+                return parse_verdict(text)
+            except (ValueError, RuntimeError) as exc:
+                last_err = exc
+                self._emit("reviewer_retry", {"id": task.id, "attempt": attempt + 1, "error": str(exc)})
+        # Degrade to a low-confidence accept instead of raising — a malformed
+        # reviewer reply must not deadlock the swarm (asymmetric handling fixed).
+        return ReviewVerdict(
+            accepted=True,
+            reason=f"reviewer parse failed after retries: {last_err}",
+            confidence=0.2,
         )
-        prompt = (
-            f"Task [{task.id}]: {task.description}\n\n"
-            f"Executor's result:\n{result[:4000]}\n\n"
-            "Validate the result against the task. Return the JSON verdict."
-        )
-        text, status = await _run_engine_async(
-            engine, prompt, on_event=self._worker_feed("reviewer", task.id)
-        )
-        if not text:
-            # No verdict → treat as accepted with low confidence rather than looping forever.
-            return ReviewVerdict(accepted=True, reason=f"no verdict (status: {status})", confidence=0.3)
-        return parse_verdict(text)
 
     # -- main loop ----------------------------------------------------------
     async def run(self, intent: str) -> OrchestrationResult:
@@ -391,11 +410,14 @@ class Orchestrator:
         run_token = str(uuid.uuid4())
         if self.memory is not None:
             mem = self.memory
+            _own_mem = False  # caller owns lifecycle; do not close here
         elif self.memory_scope is not None:
             db = self.memory_db or str(Path(self.workspace) / ".qunwork" / "memory.db")
             mem = PersistentVectorMemory(db, scope=self.memory_scope, embedder=self.embedder)
+            _own_mem = True  # owner-audit 2026-08-07 (bug #4): we created it, we close it
         else:
             mem = VectorMemory(embedder=self.embedder)
+            _own_mem = True
         gov_log: list[str] = []
         governance_paused = False
         budget_exhausted = False  # set when the soft deadline passes; stops new batches
@@ -544,8 +566,11 @@ class Orchestrator:
                 directives = []
             # Governance inspection BEFORE dispatch (every N steps): red lines must
             # block a task before it runs; drift/viscosity checks the live plan.
+            # Owner-audit 2026-08-07 (bug #1): compute ready FIRST so drift()
+            # measures the task about to be dispatched, not plan.tasks[-1].
+            ready = [t for t in plan.tasks if t.ready(by_id)]
             if self._runs % gov.config.check_every == 0:
-                cmd = gov.inspect(plan)
+                cmd = gov.inspect(plan, current_task=ready[0] if ready else None)
                 gov_log.append(f"[step {self._runs}] {cmd.action}: {cmd.reason} {cmd.metrics}")
                 self._emit("governance", {"step": self._runs, "action": cmd.action, "reason": cmd.reason, "metrics": cmd.metrics})
                 if cmd.action == REVERT:
@@ -555,6 +580,13 @@ class Orchestrator:
                         tgt.status = "pending"
                         tgt.result = ""
                         tgt.confidence = 0.0
+                        # Owner-audit 2026-08-07 (bug #8): reset retries so the
+                        # re-dispatched task gets a full retry budget instead of
+                        # immediately hitting max_retries → needs_human.
+                        tgt.retries = 0
+                        # REVERT changed a done task back to pending — recompute
+                        # ready so the reverted task is picked up THIS round.
+                        ready = [t for t in plan.tasks if t.ready(by_id)]
                 elif cmd.action == WARN:
                     gov.note_warning(cmd)
                 elif cmd.action in (PAUSE, ESCALATE):
@@ -562,7 +594,6 @@ class Orchestrator:
                     governance_paused = True
                     break
 
-            ready = [t for t in plan.tasks if t.ready(by_id)]
             if not ready:
                 blocked = [t.id for t in plan.tasks if t.status == "pending"]
                 break
@@ -639,6 +670,15 @@ class Orchestrator:
             governance_report="\n".join(gov_log),
         )
         self._persist_report(result)
+        # Owner-audit 2026-08-07 (bug #4): close SQLite-backed memory we
+        # created for this run so connections don't leak across many runs.
+        if _own_mem:
+            close = getattr(mem, "close", None)
+            if close is not None:
+                try:
+                    close()
+                except Exception:
+                    pass
         return result
 
     def _persist_report(self, result: OrchestrationResult) -> None:
@@ -679,7 +719,7 @@ class Orchestrator:
                     backup_path = backup_dir / f"{path.stem}.{_time.strftime('%Y%m%d-%H%M%S')}{path.suffix}"
                     backup_path.write_bytes(path.read_bytes())
                 except Exception:
-                    pass  # backup is best-effort; never block the deliverable write
+                    logger.debug("report backup failed (best-effort)", exc_info=True)
             path.write_text(report, encoding="utf-8")
             # verify the write actually landed with the right content — an
             # executor's "claimed success" must never mask an empty/hollow file.
@@ -687,5 +727,10 @@ class Orchestrator:
                 path.write_text(report, encoding="utf-8")
             result.report_path = str(path)
             self._emit("report_saved", {"path": str(path), "status": result.status})
-        except OSError:
-            pass
+        except OSError as exc:
+            # Owner-audit 2026-08-07 (bug #13): never silently swallow the
+            # report write failure — emit an event + log so the caller knows
+            # report_path is empty because the write failed, not because there
+            # was no report.
+            logger.warning("report persist failed: %s", exc, exc_info=True)
+            self._emit("report_save_failed", {"error": str(exc), "status": result.status})

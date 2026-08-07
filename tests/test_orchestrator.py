@@ -62,9 +62,9 @@ async def test_completes_two_task_plan(tmp_path):
         [
             AssistantTurn(text='[{"id":"t0","description":"Write outline","deps":[]},'
                                  '{"id":"t1","description":"Write report","deps":["t0"]}]'),
-            AssistantTurn(text="Outline: 1. Intro 2. Body", finish_reason="stop"),
+            AssistantTurn(text="Outline: 1. Intro 2. Body. " + "x" * 100, finish_reason="stop"),
             AssistantTurn(text='{"accepted":true,"confidence":0.9,"reason":"outline ok","needs_human":false}'),
-            AssistantTurn(text="Report draft complete.", finish_reason="stop"),
+            AssistantTurn(text="Report draft complete. " + "x" * 100, finish_reason="stop"),
             AssistantTurn(text='{"accepted":true,"confidence":0.95,"reason":"complete","needs_human":false}'),
         ]
     )
@@ -80,9 +80,9 @@ async def test_requeues_on_rejected_verdict(tmp_path):
     provider = ScriptedProvider(
         [
             AssistantTurn(text='[{"id":"t0","description":"Fix the bug","deps":[]}]'),
-            AssistantTurn(text="attempt 1: patch applied", finish_reason="stop"),
+            AssistantTurn(text="attempt 1: patch applied. " + "x" * 100, finish_reason="stop"),
             AssistantTurn(text='{"accepted":false,"confidence":0.3,"reason":"tests still fail","needs_human":false}'),
-            AssistantTurn(text="attempt 2: fixed the root cause", finish_reason="stop"),
+            AssistantTurn(text="attempt 2: fixed the root cause. " + "x" * 100, finish_reason="stop"),
             AssistantTurn(text='{"accepted":true,"confidence":0.9,"reason":"tests pass now","needs_human":false}'),
         ]
     )
@@ -98,7 +98,7 @@ async def test_escalates_to_human(tmp_path):
     provider = ScriptedProvider(
         [
             AssistantTurn(text='[{"id":"t0","description":"Delete prod row","deps":[]}]'),
-            AssistantTurn(text="attempted the deletion", finish_reason="stop"),
+            AssistantTurn(text="attempted the deletion. " + "x" * 100, finish_reason="stop"),
             AssistantTurn(text='{"accepted":false,"confidence":0.1,"reason":"needs sign-off","needs_human":true}'),
         ]
     )
@@ -112,11 +112,11 @@ async def test_retry_exhaustion_escalates(tmp_path):
     provider = ScriptedProvider(
         [
             AssistantTurn(text='[{"id":"t0","description":"Parse the file","deps":[]}]'),
-            AssistantTurn(text="bad attempt 1", finish_reason="stop"),
+            AssistantTurn(text="bad attempt 1. " + "x" * 110, finish_reason="stop"),
             AssistantTurn(text='{"accepted":false,"confidence":0.2,"reason":"wrong format","needs_human":false}'),
-            AssistantTurn(text="bad attempt 2", finish_reason="stop"),
+            AssistantTurn(text="bad attempt 2. " + "x" * 110, finish_reason="stop"),
             AssistantTurn(text='{"accepted":false,"confidence":0.2,"reason":"still wrong","needs_human":false}'),
-            AssistantTurn(text="bad attempt 3", finish_reason="stop"),
+            AssistantTurn(text="bad attempt 3. " + "x" * 110, finish_reason="stop"),
             AssistantTurn(text='{"accepted":false,"confidence":0.2,"reason":"still wrong","needs_human":false}'),
         ]
     )
@@ -183,13 +183,13 @@ async def test_governance_revert_redispatch_low_confidence(tmp_path):
             AssistantTurn(text='[{"id":"t0","description":"Write intro","deps":[]},'
                                  '{"id":"t1","description":"Draft body","deps":["t0"]},'
                                  '{"id":"t2","description":"Final report","deps":["t1"]}]'),
-            AssistantTurn(text="stuck output", finish_reason="stop"),
+            AssistantTurn(text="stuck output " + "x" * 108, finish_reason="stop"),
             AssistantTurn(text='{"accepted":true,"confidence":0.2,"reason":"ok","needs_human":false}'),
-            AssistantTurn(text="stuck output", finish_reason="stop"),
+            AssistantTurn(text="stuck output " + "x" * 108, finish_reason="stop"),
             AssistantTurn(text='{"accepted":true,"confidence":0.3,"reason":"ok","needs_human":false}'),
-            AssistantTurn(text="final good intro", finish_reason="stop"),
+            AssistantTurn(text="final good intro " + "x" * 104, finish_reason="stop"),
             AssistantTurn(text='{"accepted":true,"confidence":0.9,"reason":"complete","needs_human":false}'),
-            AssistantTurn(text="final report body", finish_reason="stop"),
+            AssistantTurn(text="final report body " + "x" * 102, finish_reason="stop"),
             AssistantTurn(text='{"accepted":true,"confidence":0.95,"reason":"complete","needs_human":false}'),
         ]
     )

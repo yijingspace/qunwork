@@ -1,3 +1,4 @@
+# Python
 .venv/
 __pycache__/
 *.pyc
@@ -6,4 +7,49 @@ __pycache__/
 build/
 dist/
 .coverage
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+
+# Local state directories (contain SQLite DBs, tokens, secrets — never commit)
 .state/
+.coworker/
+.qunwork/
+.tmp-ws/
+.reasonix/
+
+# Node / frontend
+node_modules/
+.next/
+.turbo/
+*.tsbuildinfo
+
+# Desktop / OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Logs
+*.log
+logs/
+
+# Generated artifacts (runtime outputs, not source)
+weekly_reports/
+_swarm_reports/
+runs_last7d_*.md
+W*_数据事实表_*.md
+周报_*.md
+组织资产健康报告_*.md
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo

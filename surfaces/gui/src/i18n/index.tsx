@@ -73,8 +73,22 @@ const LanguageContext = createContext<I18n>({
 export const useLanguage = (): I18n => useContext(LanguageContext);
 export const useT = (): I18n["t"] => useContext(LanguageContext).t;
 
+/** Synchronize <html lang> with the active UI language (a11y: screen readers
+ * and search engines rely on it). Owner-audit 2026-08-07. */
+function syncHtmlLang(lang: Lang): void {
+  try {
+    document.documentElement.lang = lang;
+  } catch {
+    // non-DOM environment (tests) — ignore
+  }
+}
+
 export const LanguageProvider = ({ children }: { children: React.ReactNode }) => {
-  const [lang, setLang] = useState<Lang>(resolveLanguage);
+  const [lang, setLang] = useState<Lang>(() => {
+    const initial = resolveLanguage();
+    syncHtmlLang(initial);
+    return initial;
+  });
   const [pref, setPref] = useState<LangPref>(resolvePref);
   const dict: Messages = lang === "zh" ? zh : en;
 
@@ -85,7 +99,9 @@ export const LanguageProvider = ({ children }: { children: React.ReactNode }) =>
       // ignore storage failures — in-memory switch still applies
     }
     setPref(p);
-    setLang(p === "auto" ? detectLanguage() : p);
+    const next = p === "auto" ? detectLanguage() : p;
+    syncHtmlLang(next);
+    setLang(next);
   }, []);
 
   const value = useMemo<I18n>(

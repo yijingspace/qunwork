@@ -224,10 +224,10 @@ export function SwarmView({ onBack, workspace }: { onBack: () => void; workspace
     const thoughts: Thought[] = [];
     const gov: string[] = [];
     for (const ev of snap.events) {
-      const p = ev.payload as Record<string, any>;
+      const p = ev.payload as Record<string, unknown>;
       if (ev.kind === "plan_ready") {
-        for (const raw of (p.tasks as any[]) ?? []) {
-          tasks.push({ id: raw.id, description: raw.description, deps: raw.deps, status: "pending", confidence: 0, result: "" });
+        for (const raw of (p.tasks as Record<string, unknown>[]) ?? []) {
+          tasks.push({ id: String(raw.id), description: String(raw.description ?? ""), deps: raw.deps as string[] | undefined, status: "pending", confidence: 0, result: "" });
         }
       } else if (ev.kind === "task_started") {
         const td = tasks.find((x) => x.id === p.id);

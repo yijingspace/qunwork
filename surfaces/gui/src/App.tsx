@@ -553,7 +553,6 @@ export function App() {
     if (booting) return; // wait until boot/resume settles the session before connecting
     if (gatesWorkspace(agent) && !workspace) return; // Code needs a folder (gate handles it)
     const handleEvent = (ev: WsEvent) => {
-      const d = ev.data || {};
       // An interrupted/errored turn never emits assistant_message, so its streamed partial
       // would otherwise live only in the ephemeral buffer until the next turn_start wipes it
       // (owner-hit 2026-07-22). Promote it to a durable transcript item — the engine persists
@@ -575,7 +574,8 @@ export function App() {
         ]);
       };
       switch (ev.type) {
-        case "ready":
+        case "ready": {
+          const d = ev.data;
           setConnected(true);
           if (d.model) setModel(d.model);
           if (d.mode) setMode(d.mode);
@@ -583,7 +583,9 @@ export function App() {
           // Cowork: adopt the server-provisioned scratch dir (only when we don't already have one).
           if (d.workspace) setWorkspace((cur) => cur || d.workspace);
           break;
-        case "turn_start":
+        }
+        case "turn_start": {
+          const d = ev.data;
           setRunning(true);
           setStreaming("");
           setReasoningStream("");
@@ -608,13 +610,19 @@ export function App() {
             });
           }
           break;
-        case "assistant_delta":
+        }
+        case "assistant_delta": {
+          const d = ev.data;
           setStreaming((s) => s + (d.text || ""));
           break;
-        case "reasoning_delta":
+        }
+        case "reasoning_delta": {
+          const d = ev.data;
           setReasoningStream(reasoningRef.current + (d.text || ""));
           break;
+        }
         case "assistant_message": {
+          const d = ev.data;
           // The event's reasoning is authoritative (covers background-delivered turns);
           // the local buffer is the fallback for older servers.
           const reasoning = d.reasoning || reasoningRef.current;
@@ -632,7 +640,8 @@ export function App() {
           setReasoningStream("");
           break;
         }
-        case "tool_proposed":
+        case "tool_proposed": {
+          const d = ev.data;
           if (d.name === "todo_write" && (d.arguments?.todos || d.arguments?.items))
             setTodo(normalizeTodos(d.arguments.todos ?? d.arguments.items));
           setItems((p) => [
@@ -640,7 +649,9 @@ export function App() {
             { kind: "tool", id: newId(), name: d.name, args: d.arguments, status: "…" },
           ]);
           break;
-        case "permission_required":
+        }
+        case "permission_required": {
+          const d = ev.data;
           // Unattended → the backend parked it in the Inbox; don't also surface a live card.
           if (unattendedRef.current) break;
           setItems((p) => [
@@ -655,18 +666,24 @@ export function App() {
             },
           ]);
           break;
-        case "directory_requested":
+        }
+        case "directory_requested": {
+          const d = ev.data;
           if (unattendedRef.current) break;
           setItems((p) => [
             ...p,
             { kind: "dirreq", reason: d.reason || "", path: d.path || "", writable: !!d.writable },
           ]);
           break;
-        case "plan_proposed":
+        }
+        case "plan_proposed": {
+          const d = ev.data;
           if (unattendedRef.current) break;
           setItems((p) => [...p, { kind: "planreq", plan: d.plan || "" }]);
           break;
-        case "question_requested":
+        }
+        case "question_requested": {
+          const d = ev.data;
           // ask_user in an attended session — answered inline (not routed to the Inbox).
           setItems((p) => [
             ...p,
@@ -679,7 +696,9 @@ export function App() {
             },
           ]);
           break;
-        case "tool_finished":
+        }
+        case "tool_finished": {
+          const d = ev.data;
           setItems((p) =>
             updateLastTool(
               p,
@@ -696,33 +715,42 @@ export function App() {
             setBrowserRefreshKey((k) => k + 1);
           }
           break;
-        case "turn_end":
+        }
+        case "turn_end": {
+          const d = ev.data;
           if (d.status === "max_iterations_exceeded")
             setItems((p) => [...p, { kind: "notice", tone: "warn", text: t("Stopped: max iterations reached.") }]);
           break;
-        case "model_changed":
+        }
+        case "model_changed": {
+          const d = ev.data;
           // Mid-session switch (server-applied): update the header fact and drop the
           // persisted marker into the live transcript (replay renders it from history).
           if (d.model) setModel(d.model);
           setItems((p) => [...p, { kind: "notice", tone: "info", text: d.text || t("Model switched") }]);
           break;
+        }
         case "interrupted":
           flushPartialStream();
           setItems((p) => [...p, { kind: "notice", tone: "warn", text: t("Interrupted.") }]);
           break;
-        case "error":
+        case "error": {
+          const d = ev.data;
           flushPartialStream();
           setItems((p) => [
             ...p,
             { kind: "notice", tone: "warn", text: t("Error: ") + (d.error || "unknown"), retriable: true },
           ]);
           break;
-        case "input_rejected":
+        }
+        case "input_rejected": {
+          const d = ev.data;
           setItems((p) => [
             ...p,
             { kind: "notice", tone: "warn", text: d.error || t("That message was rejected.") },
           ]);
           break;
+        }
         case "turn_done":
           setRunning(false);
           refreshSessions();
@@ -1487,7 +1515,19 @@ export function App() {
                       <div className="suggestions">
                         <div className="suggest-head">{t("Start with a task")}</div>
                         {SUGGESTIONS.map((s, i) => (
-                          <div className="suggest" key={i} onClick={() => workspace && send(s.text)}>
+                          <div
+                            className="suggest"
+                            key={i}
+                            role="button"
+                            tabIndex={0}
+                            onClick={() => workspace && send(s.text)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter" || e.key === " ") {
+                                e.preventDefault();
+                                workspace && send(s.text);
+                              }
+                            }}
+                          >
                             <span className="ico">{s.ico}</span>
                             {t(s.text)}
                           </div>

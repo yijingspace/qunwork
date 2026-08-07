@@ -28,9 +28,9 @@ def manager(tmp_path, monkeypatch):
         [
             AssistantTurn(text='[{"id":"t0","description":"Write a report","deps":[]},'
                                  '{"id":"t1","description":"Review it","deps":["t0"]}]'),
-            AssistantTurn(text="report draft", finish_reason="stop"),
+            AssistantTurn(text="report draft " + "x" * 110, finish_reason="stop"),
             AssistantTurn(text='{"accepted":true,"confidence":0.9,"reason":"ok","needs_human":false}'),
-            AssistantTurn(text="review notes", finish_reason="stop"),
+            AssistantTurn(text="review notes " + "x" * 110, finish_reason="stop"),
             AssistantTurn(text='{"accepted":true,"confidence":0.95,"reason":"ok","needs_human":false}'),
         ]
     )

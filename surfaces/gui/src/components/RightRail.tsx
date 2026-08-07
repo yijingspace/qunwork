@@ -544,16 +544,25 @@ function SheetViewer({ dataUrl }: { dataUrl: string }) {
     setError("");
     setActive(0);
     const base64 = dataUrl.split(",")[1] || "";
-    import("xlsx")
-      .then((XLSX) => {
+    const binary = atob(base64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    import("exceljs")
+      .then((ExcelJS) => {
         if (cancelled) return;
-        const wb = XLSX.read(base64, { type: "base64" });
-        setSheets(
-          wb.SheetNames.map((name) => ({
-            name,
-            rows: XLSX.utils.sheet_to_json(wb.Sheets[name], { header: 1, defval: "" }) as unknown[][],
-          })),
-        );
+        const wb = new ExcelJS.Workbook();
+        return wb.xlsx.load(bytes).then(() => {
+          if (cancelled) return;
+          setSheets(
+            wb.worksheets.map((ws) => ({
+              name: ws.name,
+              rows: (ws.getRows(1, ws.rowCount) ?? []).map((row) => {
+                const vals = row.values as unknown[];
+                return vals.slice(1).map((v) => (v == null ? "" : v));
+              }),
+            })),
+          );
+        });
       })
       .catch((e) => !cancelled && setError(String(e?.message || e)));
     return () => {

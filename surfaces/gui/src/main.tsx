@@ -4,6 +4,7 @@ import { App } from "./App";
 import { LanguageProvider } from "./i18n";
 import { initTheme } from "./theme";
 import { platformOS } from "./tauri";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 import "./tailwind.css";
 import "./styles.css";
 
@@ -20,8 +21,10 @@ window.addEventListener("drop", (e) => e.preventDefault());
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
-    <LanguageProvider>
-      <App />
-    </LanguageProvider>
+    <ErrorBoundary>
+      <LanguageProvider>
+        <App />
+      </LanguageProvider>
+    </ErrorBoundary>
   </React.StrictMode>,
 );

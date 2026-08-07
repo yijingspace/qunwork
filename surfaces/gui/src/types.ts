@@ -20,14 +20,37 @@ export type EventType =
   | "model_changed"
   | "turn_done";
 
-export interface WsEvent {
-  type: EventType;
-  data: any;
-}
-
 // Re-exported for transcript items below. Lives in api.ts (the REST/WS contract source of truth);
 // type-only import, so there's no runtime cycle with api.ts's `import type { ... } from "./types"`.
 import type { MessageSource } from "./api";
+
+/**
+ * WsEvent — discriminated union by `type`. Owner-audit 2026-08-07: previously
+ * `data: any`, which let the whole event-handling switch lose type safety.
+ * Branches whose payload shape is stable are typed precisely; loose branches
+ * use `Record<string, unknown>` so callers can still opt into narrowing.
+ */
+export type WsEvent =
+  | { type: "ready"; data: { model?: string; mode?: string; workspace?: string; agent?: string; command_trust?: { required?: unknown; [k: string]: unknown } } }
+  | { type: "turn_start"; data: { source?: MessageSource; input?: string } }
+  | { type: "assistant_delta"; data: { text?: string } }
+  | { type: "reasoning_delta"; data: { text?: string } }
+  | { type: "assistant_message"; data: { text?: string; reasoning?: string } }
+  | { type: "tool_proposed"; data: { name: string; arguments: Record<string, any> } }
+  | { type: "permission_required"; data: { name: string; arguments: Record<string, any>; reason: string; category?: string; standing_target?: string } }
+  | { type: "directory_requested"; data: { reason?: string; path?: string; writable?: boolean } }
+  | { type: "plan_proposed"; data: { plan?: string } }
+  | { type: "question_requested"; data: { question?: string; options?: string[]; allow_text?: boolean; multi?: boolean } }
+  | { type: "tool_finished"; data: { name?: string; status?: string; result_preview?: string; reason?: string; display?: { hidden_by_filters?: unknown; [k: string]: unknown }; standing_rule?: string } }
+  | { type: "turn_end"; data: { status?: string } }
+  | { type: "model_changed"; data: { model?: string; text?: string } }
+  | { type: "interrupted"; data: Record<string, unknown> }
+  | { type: "error"; data: { error?: string } }
+  | { type: "input_rejected"; data: { error?: string } }
+  | { type: "turn_done"; data: Record<string, unknown> }
+  | { type: "inbound"; data: Record<string, unknown> }
+  | { type: "tool_started"; data: Record<string, unknown> }
+  | { type: "iteration_end"; data: Record<string, unknown> };
 
 // "always_task" persists to the owning automation's task record (standing scoped
 // approval, UX-DECISIONS §25) — offered only on automation-run approval cards, in-app.

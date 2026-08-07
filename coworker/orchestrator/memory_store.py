@@ -13,16 +13,27 @@ in-memory VectorMemory on open; adds are written through immediately.
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
+import threading
 import time
 from pathlib import Path
 from typing import Any, Optional
 
 from .vectormemory import Embedder, MemoryHit, VectorMemory
 
+logger = logging.getLogger(__name__)
+
 
 class PersistentVectorMemory:
-    """SQLite-backed vector memory with scope isolation."""
+    """SQLite-backed vector memory with scope isolation.
+
+    Owner-audit 2026-08-07 (bug #7): sqlite3 connections are thread-bound by
+    default. ``run_orchestration`` may be invoked from a worker thread while
+    the same store is read from the main thread (or vice-versa via the asset
+    interconnect). We open with ``check_same_thread=False`` and guard every
+    DB access with a lock, matching the pattern in ``run_store.py``.
+    """
 
     def __init__(
         self,
@@ -35,7 +46,8 @@ class PersistentVectorMemory:
         self._mem = VectorMemory(embedder=embedder)
         self._path = Path(db_path)
         self._path.parent.mkdir(parents=True, exist_ok=True)
-        self._db = sqlite3.connect(str(self._path))
+        self._lock = threading.Lock()
+        self._db = sqlite3.connect(str(self._path), check_same_thread=False)
         self._db.execute(
             """CREATE TABLE IF NOT EXISTS vector_memories (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -61,10 +73,11 @@ class PersistentVectorMemory:
 
     # -- persistence --------------------------------------------------------
     def _load(self) -> None:
-        rows = self._db.execute(
-            "SELECT text, meta, vector FROM vector_memories WHERE scope = ?",
-            (self.scope,),
-        ).fetchall()
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT text, meta, vector FROM vector_memories WHERE scope = ?",
+                (self.scope,),
+            ).fetchall()
         for text, meta, vec in rows:
             item = self._mem._new_item(text, json.loads(meta))
             if vec:
@@ -84,20 +97,21 @@ class PersistentVectorMemory:
             try:
                 item.vector = self._mem.embedder(text)
             except Exception:
-                pass
+                logger.debug("persistent memory embedder failed", exc_info=True)
         self._mem.items.append(item)
-        self._db.execute(
-            "INSERT INTO vector_memories (scope, text, meta, vector, created_at, phase) VALUES (?,?,?,?,?,?)",
-            (
-                self.scope,
-                text,
-                json.dumps(meta, ensure_ascii=False),
-                json.dumps(item.vector) if item.vector is not None else None,
-                time.time(),
-                int(phase) if phase is not None else None,
-            ),
-        )
-        self._db.commit()
+        with self._lock:
+            self._db.execute(
+                "INSERT INTO vector_memories (scope, text, meta, vector, created_at, phase) VALUES (?,?,?,?,?,?)",
+                (
+                    self.scope,
+                    text,
+                    json.dumps(meta, ensure_ascii=False),
+                    json.dumps(item.vector) if item.vector is not None else None,
+                    time.time(),
+                    int(phase) if phase is not None else None,
+                ),
+            )
+            self._db.commit()
 
     def search(
         self, query: str, k: int = 3, phase: Optional[int] = None
@@ -107,10 +121,11 @@ class PersistentVectorMemory:
         hits = self._mem.search(query, k=k)
         if phase is None:
             return hits
-        rows = self._db.execute(
-            "SELECT text, meta, vector FROM vector_memories WHERE scope = ? AND phase = ?",
-            (self.scope, int(phase)),
-        ).fetchall()
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT text, meta, vector FROM vector_memories WHERE scope = ? AND phase = ?",
+                (self.scope, int(phase)),
+            ).fetchall()
         if not rows:
             return hits
         temp = VectorMemory(embedder=self._mem.embedder)
@@ -139,7 +154,8 @@ class PersistentVectorMemory:
         return len(self._mem)
 
     def close(self) -> None:
-        try:
-            self._db.close()
-        except Exception:
-            pass
+        with self._lock:
+            try:
+                self._db.close()
+            except Exception:
+                logger.debug("memory store close failed", exc_info=True)

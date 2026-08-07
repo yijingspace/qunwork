@@ -12,12 +12,15 @@ Tables:
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 import threading
 import time
 import uuid
 from pathlib import Path
 from typing import Any, Optional
+
+logger = logging.getLogger(__name__)
 
 
 class OrchestrationRunStore:
@@ -144,4 +147,4 @@ class OrchestrationRunStore:
         try:
             self._db.close()
         except Exception:
-            pass
+            logger.debug("run store close failed", exc_info=True)

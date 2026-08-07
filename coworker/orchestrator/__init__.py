@@ -111,40 +111,48 @@ def orchestration_tools(
 
         store = OrchestrationRunStore(Path(workspace) / ".qunwork" / "orchestration.db")
         run_id = store.create_run(intent)
-        result = run_orchestration(
-            intent=intent,
-            workspace=workspace,
-            provider=provider,
-            model=model,
-            # Do NOT inherit the parent session's model_settings: output caps there
-            # (e.g. a small max_tokens) truncate worker JSON plans and stall the
-            # swarm. Workers use the provider's defaults.
-            model_settings=None,
-            # share episodic memory across runs for this workspace so later swarm
-            # runs (and the main session) benefit from earlier lessons
-            memory_scope=str(workspace),
-            approver=approver,
-            event_sink=lambda kind, payload: store.append_event(run_id, kind, payload),
-            executor_agent=executor_agent,
-        )
-        store.update_status(run_id, result.status, final=result.final_report())
-        out: dict[str, Any] = {
-            "status": result.status,
-            # the finished deliverable (consolidation output) + where it was saved
-            "report": result.final_report(),
-            "report_path": result.report_path,
-        }
-        if result.report_path:
-            out["note"] = (
-                "The complete deliverable has ALREADY been written to "
-                f"{result.report_path}. Do NOT write or overwrite that file again — "
-                "present the report to the user as-is."
+        try:
+            result = run_orchestration(
+                intent=intent,
+                workspace=workspace,
+                provider=provider,
+                model=model,
+                # Do NOT inherit the parent session's model_settings: output caps there
+                # (e.g. a small max_tokens) truncate worker JSON plans and stall the
+                # swarm. Workers use the provider's defaults.
+                model_settings=None,
+                # share episodic memory across runs for this workspace so later swarm
+                # runs (and the main session) benefit from earlier lessons
+                memory_scope=str(workspace),
+                approver=approver,
+                event_sink=lambda kind, payload: store.append_event(run_id, kind, payload),
+                executor_agent=executor_agent,
             )
-        elif result.status != "completed":
-            out["note"] = (
-                "not fully completed — see the task report for what needs human attention"
-            )
-        return out
+            store.update_status(run_id, result.status, final=result.final_report())
+            out: dict[str, Any] = {
+                "status": result.status,
+                # the finished deliverable (consolidation output) + where it was saved
+                "report": result.final_report(),
+                "report_path": result.report_path,
+            }
+            if result.report_path:
+                out["note"] = (
+                    "The complete deliverable has ALREADY been written to "
+                    f"{result.report_path}. Do NOT write or overwrite that file again — "
+                    "present the report to the user as-is."
+                )
+            elif result.status != "completed":
+                out["note"] = (
+                    "not fully completed — see the task report for what needs human attention"
+                )
+            return out
+        finally:
+            # Owner-audit 2026-08-07 (bug #5): close the run store so its SQLite
+            # connection doesn't leak across many orchestrate() invocations.
+            try:
+                store.close()
+            except Exception:
+                pass
 
     return [
         ai.tool(

@@ -21,10 +21,13 @@ Health metrics (research doc §3.1):
 from __future__ import annotations
 
 import difflib
+import logging
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
 from .models import Plan, Task
+
+logger = logging.getLogger(__name__)
 
 # Governance actions, in increasing severity.
 NOP = "NOP"
@@ -81,7 +84,7 @@ def text_similarity(a: str, b: str, embedder: Optional[Embedder] = None) -> floa
         try:
             return max(0.0, _cosine(embedder(a), embedder(b)))
         except Exception:
-            pass  # fall through to character similarity
+            logger.debug("embedder similarity failed, falling back to difflib", exc_info=True)
     if not a or not b:
         return 0.0
     return difflib.SequenceMatcher(None, a, b).ratio()
@@ -130,10 +133,20 @@ class Governance:
                 stuck += 1
         return stuck / (len(recent) - 1)
 
-    def drift(self, plan: Plan) -> float:
-        """1 - similarity(goal, the task currently being worked)."""
-        current = next((t for t in plan.tasks if t.status == "running"), None)
-        text = current.description if current else (plan.tasks[-1].description if plan.tasks else self.goal)
+    def drift(self, plan: Plan, current_task: Optional[Task] = None) -> float:
+        """1 - similarity(goal, the task currently being worked).
+
+        Owner-audit 2026-08-07 (bug #1): previously this searched for a task
+        with status == "running", but inspect() is invoked BEFORE dispatch,
+        so no task is running yet — drift always measured plan.tasks[-1],
+        making the metric meaningless. The orchestrator now passes the next
+        task to be dispatched (the head of the ready batch) explicitly.
+        """
+        text = (
+            current_task.description
+            if current_task is not None
+            else (plan.tasks[-1].description if plan.tasks else self.goal)
+        )
         return 1.0 - text_similarity(self.goal, text, self.embedder)
 
     def red_line_hit(self, plan: Plan) -> bool:
@@ -149,12 +162,16 @@ class Governance:
         return sum(1 for s in self.steps if s.accepted) / len(self.steps)
 
     # -- decision -----------------------------------------------------------
-    def inspect(self, plan: Plan) -> GovernanceCommand:
-        """Decision tree mirroring the research doc's governmental-loop scheduler."""
+    def inspect(self, plan: Plan, *, current_task: Optional[Task] = None) -> GovernanceCommand:
+        """Decision tree mirroring the research doc's governmental-loop scheduler.
+
+        `current_task` is the task about to be dispatched (head of the ready
+        batch); it drives the drift metric. See drift() docstring.
+        """
         self._checked += 1
         metrics = {
             "viscosity": round(self.viscosity(), 3),
-            "drift": round(self.drift(plan), 3),
+            "drift": round(self.drift(plan, current_task=current_task), 3),
             "autonomy": round(self.autonomy_ratio(), 3),
             "steps": float(len(self.steps)),
         }

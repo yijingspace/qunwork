@@ -11,8 +11,11 @@ Also powers the governance drift metric when an embedder is supplied.
 from __future__ import annotations
 
 import difflib
+import logging
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
+
+logger = logging.getLogger(__name__)
 
 Embedder = Callable[[str], list[float]]
 
@@ -53,6 +56,7 @@ class VectorMemory:
             try:
                 vec = self.embedder(text)
             except Exception:
+                logger.debug("embedder failed on add", exc_info=True)
                 vec = None
         return MemoryItem(text=text, meta=meta, vector=vec)
 
@@ -67,13 +71,18 @@ class VectorMemory:
         if not self.items:
             return []
         scored: list[MemoryHit] = []
+        # Owner-audit 2026-08-07 (bug #15): cache the query embedding once
+        # instead of recomputing it inside the loop for every item.
+        qv: Optional[list[float]] = None
+        if self.embedder is not None:
+            try:
+                qv = self.embedder(query)
+            except Exception:
+                logger.debug("embedder failed on query", exc_info=True)
+                qv = None
         for item in self.items:
-            if item.vector is not None and self.embedder is not None:
-                try:
-                    qv = self.embedder(query)
-                    score = cosine(qv, item.vector)
-                except Exception:
-                    score = difflib.SequenceMatcher(None, query, item.text).ratio()
+            if item.vector is not None and qv is not None:
+                score = cosine(qv, item.vector)
             else:
                 score = difflib.SequenceMatcher(None, query, item.text).ratio()
             scored.append(MemoryHit(text=item.text, score=score, meta=item.meta))
