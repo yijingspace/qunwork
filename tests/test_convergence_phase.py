@@ -362,3 +362,28 @@ def test_shell_chinese_commands_survive_cold_start(tmp_path):
         finally:
             ex.close()
     assert checked >= 1
+
+
+def test_task_phase_uses_identity_not_eq():
+    """bug #3: two tasks with identical fields must get distinct phase slots."""
+    from coworker.orchestrator.orchestrator import Plan, Task, task_phase
+
+    plan = Plan(
+        goal="g",
+        tasks=[Task(id="t0", description="same"), Task(id="t1", description="same")],
+    )
+    assert task_phase(plan.tasks[0], plan) == 0
+    assert task_phase(plan.tasks[1], plan) == 1
+    assert task_phase(plan.tasks[0], plan) == 0  # stable across calls
+
+
+def test_parse_plan_ignores_bare_year_prefix():
+    """bug #17: '2024 年数据…' must not be parsed as a numbered task."""
+    from coworker.orchestrator.orchestrator import parse_plan
+
+    plan = parse_plan("2024 年数据汇总\n2025 年目标\n- 实际任务甲汇总整理\n2. 实际任务乙汇总整理", goal="goal")
+    assert plan is not None
+    descs = [t.description for t in plan.tasks]
+    assert "实际任务甲汇总整理" in descs
+    assert "实际任务乙汇总整理" in descs
+    assert not any("年" in d for d in descs)

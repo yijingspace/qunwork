@@ -111,7 +111,9 @@ def test_revert_target_picks_low_confidence_done_task():
     )
     tgt = gov.revert_target(plan)
     assert tgt is not None and tgt.id == "t1"
-    assert gov.revert_target(plan) is None  # not reverted twice
+    # bug #14: a stuck-again task may be reverted again (capped at _MAX_REVERTS)
+    assert gov.revert_target(plan) is not None  # second revert allowed
+    assert gov.revert_target(plan) is None  # capped — no oscillation
 
 
 def test_max_warnings_escalates():
@@ -125,3 +127,22 @@ def test_max_warnings_escalates():
             gov.note_warning(cmd)
     cmd = gov.inspect(plan)
     assert cmd.action == ESCALATE
+
+
+def test_red_line_sees_execution_intent():
+    """bug #12: a benign description hiding a dangerous executed action must trip the red line."""
+    gov = _gov(goal="Summarize the file", red_lines=["rm -rf"])
+    plan = _plan(
+        _task("t0", "Read the file", confidence=0.9, result="I ran rm -rf /tmp to clean up"),
+        _task("t1", "Summarize", status="pending", confidence=0.0, result=""),
+    )
+    assert gov.red_line_hit(plan) is True
+
+
+def test_revert_second_occurrence_and_cap():
+    """bug #14: second revert allowed, third capped."""
+    gov = _gov()
+    plan = _plan(_task("t0", "a", confidence=0.9), _task("t1", "b", confidence=0.3))
+    assert gov.revert_target(plan) is not None
+    assert gov.revert_target(plan) is not None
+    assert gov.revert_target(plan) is None

@@ -44,8 +44,11 @@ def task_phase(task: Any, plan: Any) -> int:
     every ~60-task run) share same-phase history in the memory pool — the
     DPNN closed-loop idea applied to swarm memory reuse."""
     try:
-        idx = plan.tasks.index(task)
-    except (ValueError, AttributeError):
+        # bug #3 (owner-audit 2026-08-07): list.index() compares with dataclass
+        # __eq__ — two tasks with identical fields collide and get the wrong
+        # phase slot. Identity (`is`) is the correct ordinal source.
+        idx = next(i for i, t in enumerate(plan.tasks) if t is task)
+    except (StopIteration, AttributeError):
         return 0
     return idx % 60
 
@@ -120,11 +123,12 @@ def parse_plan(text: str, *, goal: str) -> Plan:
             goal=goal,
             tasks=[Task(id=f"t{i}", description=d) for i, d in enumerate(descs)],
         )
-    # fallback 2: treat bullet/numbered lines as tasks
+    # fallback 2: explicit bullet / numbered list lines only — a bare year
+    # prefix like "2024 年数据…" must NOT be treated as a task (bug #17).
     lines = [
-        re.sub(r"^[-*\d.\s\u2022]+", "", ln).strip()
+        re.sub(r"^\s*[-*\u2022]|^\s*\d+[.)]\s+", "", ln).strip()
         for ln in text.splitlines()
-        if re.match(r"^\s*[-*\d.\u2022]", ln) and len(ln.strip()) > 10
+        if re.match(r"^\s*(?:[-*\u2022]|\d+[.)])\s+", ln) and len(ln.strip()) > 10
     ]
     if lines:
         return Plan(
@@ -473,7 +477,9 @@ class Orchestrator:
                     "no content was produced before the timeout"
                 )
                 task.confidence = 0.4 if partial else 0.3
-                gov.record_step(task, task.result, True)
+                # bug #11: a timeout is NOT an accepted step — marking it True
+                # inflated the governance autonomy ratio.
+                gov.record_step(task, task.result, False)
                 self._emit("task_timeout", {"id": task.id, "seconds": self.task_timeout_seconds})
                 self._emit("task_done", {"id": task.id, "status": task.status, "confidence": task.confidence})
                 return True
@@ -481,6 +487,9 @@ class Orchestrator:
                 task.status = "pending" if task.retries < self.max_retries else "needs_human"
                 task.result = f"executor error: {exc}"
                 task.retries += 1
+                # bug #10: a crashed attempt is still a recorded step — without
+                # this the governance autonomy ratio ignores failed work.
+                gov.record_step(task, task.result, False)
                 self._emit("task_result", {"id": task.id, "error": str(exc), "status": task.status})
                 return True
 
@@ -569,7 +578,10 @@ class Orchestrator:
             # Owner-audit 2026-08-07 (bug #1): compute ready FIRST so drift()
             # measures the task about to be dispatched, not plan.tasks[-1].
             ready = [t for t in plan.tasks if t.ready(by_id)]
-            if self._runs % gov.config.check_every == 0:
+            # bug #18: gate by completed STEPS (len(gov.steps)), not by loop
+            # rounds (self._runs) — batch size distorted "every N steps" into
+            # "every N rounds". 0 % N == 0 keeps the first-round check.
+            if len(gov.steps) % gov.config.check_every == 0:
                 cmd = gov.inspect(plan, current_task=ready[0] if ready else None)
                 gov_log.append(f"[step {self._runs}] {cmd.action}: {cmd.reason} {cmd.metrics}")
                 self._emit("governance", {"step": self._runs, "action": cmd.action, "reason": cmd.reason, "metrics": cmd.metrics})
@@ -633,9 +645,6 @@ class Orchestrator:
                     )
                     self._emit("run_stalled", {"reason": stalled_reason})
                     break
-            if not any(results):
-                break
-            # Soft budget exhausted: the final batch ran — stop scheduling new ones.
             if budget_exhausted:
                 break
 

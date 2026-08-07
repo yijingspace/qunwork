@@ -105,10 +105,12 @@ class Governance:
         self.embedder = embedder
         self.steps: list[StepRecord] = []
         self.warnings: list[str] = []
-        self._reverted: set[str] = set()
+        self._reverted: dict[str, int] = {}  # bug #14: count, not a permanent tombstone
         self._checked = 0
 
     # -- recording ----------------------------------------------------------
+    _MAX_REVERTS = 2  # bug #14: a task stuck again may be reverted again — capped to avoid oscillation
+
     def record_step(self, task: Task, result: str, accepted: bool) -> None:
         self.steps.append(
             StepRecord(
@@ -152,7 +154,13 @@ class Governance:
     def red_line_hit(self, plan: Plan) -> bool:
         if not self.config.red_lines:
             return False
-        haystack = " ".join(t.description.lower() for t in plan.tasks if not t.done)
+        # bug #12: red lines must also see the EXECUTION intent — a benign task
+        # description can hide a dangerous action that only shows up in the
+        # completed result. Goal + every description + completed results.
+        parts = [self.goal or ""]
+        parts += [t.description for t in plan.tasks]
+        parts += [(t.result or "") for t in plan.tasks if t.done and t.result]
+        haystack = " ".join(parts).lower()
         return any(kw.lower() in haystack for kw in self.config.red_lines)
 
     def autonomy_ratio(self) -> float:
@@ -202,12 +210,15 @@ class Governance:
         self.warnings.append(cmd.reason)
 
     def revert_target(self, plan: Plan) -> Optional[Task]:
-        """Pick the lowest-confidence completed task (not yet reverted) to re-dispatch."""
-        done = [t for t in plan.tasks if t.done and t.id not in self._reverted]
+        """Pick the lowest-confidence completed task to re-dispatch. A task can
+        be reverted up to _MAX_REVERTS times (bug #14): a permanent tombstone
+        meant a task stuck again after one revert was never revisable — its bad
+        result sailed into the deliverable."""
+        done = [t for t in plan.tasks if t.done]
         if not done:
             return None
         tgt = min(done, key=lambda t: t.confidence)
-        if tgt.confidence < 0.5:
-            self._reverted.add(tgt.id)
+        if tgt.confidence < 0.5 and self._reverted.get(tgt.id, 0) < self._MAX_REVERTS:
+            self._reverted[tgt.id] = self._reverted.get(tgt.id, 0) + 1
             return tgt
         return None
