@@ -218,3 +218,62 @@ def test_content_to_text_renders_pdf_placeholder():
     ]
     assert content_to_text(parts) == "see attached [pdf]"
     assert content_to_text(parts, image_placeholder="") == "see attached"
+
+
+def test_image_attachment_saved_to_dir_and_replaced_by_text(tmp_path):
+    """Text-only providers: image data_url is persisted and becomes [image: path]."""
+    import base64
+
+    from PIL import Image
+    from coworker.attachments import build_user_content
+
+    img_path = tmp_path / "shot.png"
+    Image.new("RGB", (24, 24), "red").save(img_path)
+    url = f"data:image/png;base64,{base64.b64encode(img_path.read_bytes()).decode()}"
+    dest = tmp_path / "attachments"
+
+    content = build_user_content(
+        "读图", [{"kind": "image", "name": "截图.png", "data_url": url}], save_images_to=dest
+    )
+    assert isinstance(content, list)
+    assert any(
+        p.get("type") == "text" and str(p.get("text", "")).startswith("[image: ")
+        for p in content
+    )
+    saved = list(dest.glob("*.png"))
+    assert len(saved) == 1
+    assert saved[0].read_bytes() == img_path.read_bytes()
+
+
+def test_image_attachment_stays_native_without_save_dir(tmp_path):
+    """Vision-capable path: no save_images_to → image_url part preserved."""
+    import base64
+
+    from PIL import Image
+    from coworker.attachments import build_user_content
+
+    img_path = tmp_path / "shot.png"
+    Image.new("RGB", (24, 24), "blue").save(img_path)
+    url = f"data:image/png;base64,{base64.b64encode(img_path.read_bytes()).decode()}"
+    content = build_user_content(
+        "读图", [{"kind": "image", "name": "截图.png", "data_url": url}]
+    )
+    assert any(
+        p.get("type") == "image_url"
+        and p.get("image_url", {}).get("url", "").startswith("data:image/")
+        for p in content
+    )
+
+
+def test_vision_skill_shipped_in_builtin_dir():
+    """The image-understanding skill must ship inside the app bundle (read-only)."""
+    from pathlib import Path
+
+    from coworker.skills.base import SkillLoader, skill_catalog_text
+
+    loader = SkillLoader([Path(__file__).resolve().parent.parent / "coworker" / "skills"])
+    catalog = skill_catalog_text(loader)
+    assert "image-understanding" in catalog
+    assert "vision_analyze.py" in str(
+        Path(__file__).resolve().parent.parent / "coworker" / "skills" / "vision" / "resources" / "vision_analyze.py"
+    )

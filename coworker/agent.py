@@ -101,7 +101,12 @@ def _enabled_connector_tools(secrets: SecretStore) -> tuple[set[str], set[str]]:
 
 
 def _skill_dirs(workspace: Optional[Path]) -> list[Path]:
-    dirs = [state_dir() / "skills"]
+    # Built-in skills ship inside the app bundle (coworker/skills — read-only
+    # layer, e.g. vision/image-understanding). User skills live in the state
+    # dir and (workspace-scoped) .coworker/skills — scanned later so they win
+    # on name conflicts.
+    dirs = [Path(__file__).resolve().parent.parent / "skills"]
+    dirs.append(state_dir() / "skills")
     if workspace is not None:
         dirs.append(workspace / ".coworker" / "skills")
     return dirs

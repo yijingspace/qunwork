@@ -2363,7 +2363,22 @@ def create_app(manager: SessionManager) -> FastAPI:
                         continue
                     await _apply_model(model)
                     if text or attachments:
-                        content = build_user_content(text, attachments)
+                        # Text-only providers (e.g. deepseek-v4-flash) can't read
+                        # image_url parts — persist image attachments to the session
+                        # workspace instead, so the image-understanding skill can
+                        # OCR / analyze them from the path left in context.
+                        _rec = manager.session_store.load(session_id)
+                        _ws_dir = (
+                            _rec.workspace if _rec and _rec.workspace else manager.default_workspace
+                        )
+                        _img_dir = (
+                            Path(_ws_dir).expanduser() / ".qunwork_attachments"
+                            if _ws_dir
+                            else None
+                        )
+                        content = build_user_content(
+                            text, attachments, save_images_to=_img_dir
+                        )
                         await claim_turn(content=content)
                 else:
                     await reject_input(f"Unknown WebSocket message type: {kind}.")
