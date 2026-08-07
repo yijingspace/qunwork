@@ -1,4 +1,4 @@
-# install.ps1 — graceful reinstall helper for QunWork desktop.
+﻿# install.ps1 — graceful reinstall helper for QunWork desktop.
 #
 # WHY THIS EXISTS: overwriting the app while it is running can leave the sidecar
 # half-replaced, and a hard-kill during install made the UI look like all data
@@ -25,7 +25,7 @@ function Stop-App {
     # then force-kill whatever is left so the installer never hits locked files.
     foreach ($name in $exeNames) {
         Get-Process -Name ($name -replace "\.exe$", "") -ErrorAction SilentlyContinue |
-            Close-MainWindow -ErrorAction SilentlyContinue
+            ForEach-Object { $_.CloseMainWindow() | Out-Null }
     }
     Start-Sleep -Milliseconds 800
     foreach ($name in $exeNames) {
