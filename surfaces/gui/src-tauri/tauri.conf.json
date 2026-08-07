@@ -13,7 +13,7 @@
     "withGlobalTauri": true,
     "windows": [],
     "security": {
-      "csp": "default-src 'self'; img-src 'self' asset: https://asset.localhost data: blob: https:; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' ipc: http://ipc.localhost ws: wss: http://localhost:* https://localhost:*; font-src 'self' data:"
+      "csp": "default-src 'self'; img-src 'self' asset: https://asset.localhost data: blob: https:; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' ipc: http://ipc.localhost ws: wss: http://localhost:* https://localhost:* http://127.0.0.1:*; font-src 'self' data:"
     }
   },
   "bundle": {
