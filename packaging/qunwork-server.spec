@@ -43,7 +43,6 @@ binaries = []
 
 for pkg in ("coworker", "aisuite", "mcp", "ddgs", "croniter", "docstring_parser"):
     hiddenimports += collect_submodules(pkg)
-
 if not INCLUDE_EXPERIMENTAL:
     hiddenimports = [
         m for m in hiddenimports if not m.startswith("coworker.connectors.experimental")
@@ -55,6 +54,16 @@ if not INCLUDE_EXPERIMENTAL:
 # `pypdf`/`pypdfium2` are lazy-imported the same way (pdf_support.py) — and pypdfium2
 # carries the libpdfium binary, which collect_all is what actually stages.
 for pkg in ("uvicorn", "certifi", "anyio", "websockets", "pypdf", "pypdfium2"):
+    d, b, h = collect_all(pkg)
+    datas += d
+    binaries += b
+    hiddenimports += h
+
+# `rapidocr_onnxruntime` powers the vision skill's local OCR. It is imported
+# lazily inside vision_analyze.py, so static analysis misses it — and its ONNX
+# models ship as package data, so it needs collect_all (not just submodules) or
+# the packaged sidecar degrades to metadata-only image analysis.
+for pkg in ("rapidocr_onnxruntime", "onnxruntime"):
     d, b, h = collect_all(pkg)
     datas += d
     binaries += b
