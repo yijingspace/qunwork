@@ -43,7 +43,8 @@ export default function KnowledgeView({ onResume }: KnowledgeViewProps) {
     setExpanded(id);
     setDetailBusy(true);
     try {
-      const res = await fetch(`${(globalThis as any).__COWORKER_HTTP__ || "http://127.0.0.1:8765"}/v1/knowledge/${id}/detail`);
+      const { authedFetch } = await import("../api");
+      const res = await authedFetch(`${(globalThis as any).__COWORKER_HTTP__ || "http://127.0.0.1:8765"}/v1/knowledge/${id}/detail`);
       const data = await res.json();
       if (data.ok) {
         setDetail({

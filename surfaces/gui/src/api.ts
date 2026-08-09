@@ -30,6 +30,11 @@ const fetch = (
   return globalThis.fetch(input, { ...init, headers });
 };
 
+// The authenticated fetch: every api.ts helper goes through the module-local
+// `fetch` above; components that hand-write requests must use this instead of
+// the global fetch (which lacks the launch token and 401s on the desktop).
+export const authedFetch = fetch;
+
 const openWebSocket = (url: string): WebSocket => {
   const token = apiToken();
   return token
