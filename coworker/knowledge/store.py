@@ -363,8 +363,17 @@ class KnowledgeStore:
             self._con.commit()
         return cur.rowcount > 0
 
-    def count_items(self, workspace: Optional[str] = None) -> int:
-        """Total number of knowledge items for the workspace (or all workspaces)."""
+    def item_content(self, item_id: int) -> str:
+        """Reassemble an item's full text from its chunks (HORNET builder needs
+        the body, which list_items deliberately omits)."""
+        with self._lock:
+            rows = self._con.execute(
+                "SELECT content FROM knowledge_chunks WHERE item_id=? ORDER BY chunk_index",
+                (item_id,),
+            ).fetchall()
+        return "\n".join(r[0] for r in rows)
+
+    def count_items(self, workspace: Optional[str] = None) -> int:        """Total number of knowledge items for the workspace (or all workspaces)."""
         ws = str(workspace) if workspace else self._default_workspace
         with self._lock:
             if ws:

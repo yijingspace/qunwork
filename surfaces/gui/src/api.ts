@@ -2294,3 +2294,78 @@ export async function setKnowledgeRetired(
   });
   return await res.json();
 }
+
+// -- HORNET (蜂巢共振神经拓扑) 2D layer --------------------------------------
+
+export interface HornetNode {
+  id: number;
+  title: string;
+  x: number;
+  y: number;
+  phase: number[];
+  degree: number;
+}
+
+export interface HornetEdge {
+  src: number;
+  dst: number;
+  relation: string;
+  channel: string;
+  weight: number;
+}
+
+export interface HornetHit {
+  node_id: number;
+  title: string;
+  amplitude: number;
+  path: string[];
+  x: number;
+  y: number;
+  similarity: number;
+}
+
+export async function hornetBuild(rebuild = true): Promise<{ nodes: number; edges: number }> {
+  const res = await fetch(`${httpBase()}/v1/hornet/build`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ rebuild }),
+  });
+  return await res.json();
+}
+
+export async function hornetResonate(
+  query: string,
+  k = 10,
+): Promise<{ run_id?: number; hits: HornetHit[]; query_phase?: number[]; warnings?: string[] }> {
+  const res = await fetch(`${httpBase()}/v1/hornet/resonate`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ query, k }),
+  });
+  return await res.json();
+}
+
+export async function hornetEvolve(limit = 20): Promise<{ emerged: number; counts: Record<string, number>; items: unknown[] }> {
+  const res = await fetch(`${httpBase()}/v1/hornet/evolve`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ limit }),
+  });
+  return await res.json();
+}
+
+export async function hornetGraph(): Promise<{ nodes: HornetNode[]; edges: HornetEdge[] }> {
+  const res = await fetch(`${httpBase()}/v1/hornet/graph`);
+  return await res.json();
+}
+
+export async function hornetStats(): Promise<{
+  nodes: number;
+  edges: number;
+  resonance_runs: number;
+  emergent: number;
+  emergent_items: { id: number; kind: string; title: string; detail: unknown }[];
+}> {
+  const res = await fetch(`${httpBase()}/v1/hornet/stats`);
+  return await res.json();
+}

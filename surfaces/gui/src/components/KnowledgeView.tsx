@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import {
+import { HornetHive } from "./HornetHive";import {
   addKnowledge,
   deleteKnowledge,
   importKnowledgeFolder,
@@ -25,6 +25,7 @@ export default function KnowledgeView() {
   const [adding, setAdding] = useState(false);
   const [scanning, setScanning] = useState(false);
   const [importingFolder, setImportingFolder] = useState(false);
+  const [view, setView] = useState<"list" | "hive">("list");
 
   const flash = (msg: string) => {
     setNotice(msg);
@@ -146,6 +147,13 @@ export default function KnowledgeView() {
           </p>
         </div>
         <div className="flex items-center gap-2">
+          <button
+            className={"btn-secondary " + (view === "hive" ? "ring-1 ring-accent text-accent" : "")}
+            onClick={() => setView(view === "hive" ? "list" : "hive")}
+            data-testid="hornet-toggle"
+          >
+            🐝 {t("HORNET hive")}
+          </button>
           <button className="btn-secondary" disabled={importingFolder} onClick={handleImportFolder}>
             {importingFolder ? t("Importing…") : t("Import folder")}
           </button>
@@ -157,6 +165,10 @@ export default function KnowledgeView() {
 
       {notice && <div className="mb-3 px-3 py-2 rounded-lg bg-surface border border-line text-[12.5px]">{notice}</div>}
 
+      {view === "hive" ? (
+        <HornetHive />
+      ) : (
+        <>
       {/* search */}
       <div className="mb-4">
         <div className="flex gap-2">
@@ -262,6 +274,8 @@ export default function KnowledgeView() {
             </div>
           ))}
         </div>
+      )}
+        </>
       )}
     </div>
   );

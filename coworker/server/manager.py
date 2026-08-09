@@ -151,6 +151,15 @@ class SessionManager:
             base / "knowledge.db",
             workspace=self.default_workspace,
         )
+        # HORNET (蜂巢共振神经拓扑) 2D layer — stacked on top of the knowledge
+        # store; data stays in knowledge.db, HORNET adds hive cells + edges +
+        # resonance + emergence in its own db.
+        from ..hornet import HornetBuilder, HornetObserver, HornetResonator, HornetStore
+
+        self.hornet = HornetStore(base / "hornet.db")
+        self._hornet_builder = HornetBuilder(self.hornet)
+        self._hornet_resonator = HornetResonator(self.hornet)
+        self._hornet_observer = HornetObserver(self.hornet)
         if self.default_workspace:
             self.session_store.touch_workspace(self.default_workspace)
         self._engines: dict[str, TurnEngine] = {}
@@ -3896,8 +3905,54 @@ class SessionManager:
             return {"ok": False, "error": str(exc)}
         return {"id": item_id, "title": title, "ok": True}
 
-    def knowledge_delete(self, item_id: int) -> bool:
-        return self.knowledge.delete(item_id)
+    # -- HORNET (蜂巢共振神经拓扑) 2D layer ----------------------------------
+    def hornet_build(self, rebuild: bool = True) -> dict:
+        """Map every knowledge item into hive cells + auto-build six semantic edges."""
+        items = []
+        rows = self.knowledge.list_items(limit=5000)
+        for r in rows:
+            items.append(
+                (r.get("id"), r.get("title") or f"item-{r.get('id')}",
+                 self.knowledge.item_content(r["id"]) or "", r.get("created_at") or 0.0)
+            )
+        if not items:
+            return {"nodes": 0, "edges": 0, "note": "knowledge store empty"}
+        return self._hornet_builder.build(items, rebuild=rebuild)
+
+    def hornet_resonate(self, query: str, k: int = 10, hops: Optional[int] = None) -> dict:
+        if not query or not query.strip():
+            return {"hits": [], "query_phase": [], "warnings": ["empty query"]}
+        return self._hornet_resonator.resonate(query.strip(), k=k, hops=hops)
+
+    def hornet_evolve(self, limit: int = 20) -> dict:
+        return self._hornet_observer.evolve(limit=limit)
+
+    def hornet_graph(self) -> dict:
+        nodes = self.hornet.list_nodes()
+        edges = self.hornet.list_edges()
+        degree: dict[int, int] = {}
+        for e in edges:
+            degree[e["src"]] = degree.get(e["src"], 0) + 1
+            degree[e["dst"]] = degree.get(e["dst"], 0) + 1
+        return {
+            "nodes": [
+                {"id": n["id"], "title": n["title"], "x": n["x"], "y": n["y"],
+                 "phase": n["phase"], "degree": degree.get(n["id"], 0)}
+                for n in nodes
+            ],
+            "edges": edges,
+        }
+
+    def hornet_stats(self) -> dict:
+        return {
+            "nodes": self.hornet.node_count(),
+            "edges": self.hornet.edge_count(),
+            "resonance_runs": len(self.hornet.recent_resonance(10000)),
+            "emergent": self.hornet.emergent_count(),
+            "emergent_items": self.hornet.list_emergent(10),
+        }
+
+    def knowledge_delete(self, item_id: int) -> bool:        return self.knowledge.delete(item_id)
 
     def knowledge_set_retired(self, item_id: int, retired: bool) -> bool:
         """Asset lifecycle (Phase 3): retire/restore a knowledge entry."""

@@ -934,6 +934,32 @@ def create_app(manager: SessionManager) -> FastAPI:
     def knowledge_delete(item_id: int) -> dict[str, Any]:
         return {"ok": manager.knowledge_delete(item_id), "id": item_id}
 
+    # -- HORNET (蜂巢共振神经拓扑) 2D layer ---------------------------------
+    @app.post("/v1/hornet/build")
+    def hornet_build(body: dict) -> dict[str, Any]:
+        return manager.hornet_build(rebuild=bool((body or {}).get("rebuild", True)))
+
+    @app.post("/v1/hornet/resonate")
+    def hornet_resonate(body: dict) -> dict[str, Any]:
+        b = body or {}
+        return manager.hornet_resonate(
+            b.get("query", ""),
+            k=int(b.get("k") or 10),
+            hops=int(b["hops"]) if b.get("hops") else None,
+        )
+
+    @app.post("/v1/hornet/evolve")
+    def hornet_evolve(body: dict) -> dict[str, Any]:
+        return manager.hornet_evolve(limit=int((body or {}).get("limit") or 20))
+
+    @app.get("/v1/hornet/graph")
+    def hornet_graph() -> dict[str, Any]:
+        return manager.hornet_graph()
+
+    @app.get("/v1/hornet/stats")
+    def hornet_stats() -> dict[str, Any]:
+        return manager.hornet_stats()
+
     @app.post("/v1/knowledge/{item_id}/retire")
     def knowledge_retire(item_id: int, body: dict) -> dict[str, Any]:
         """Asset lifecycle (Phase 3): retire (hide from search) or restore."""
