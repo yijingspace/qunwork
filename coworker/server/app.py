@@ -959,7 +959,10 @@ def create_app(manager: SessionManager) -> FastAPI:
     # -- HORNET (蜂巢共振神经拓扑) 2D layer ---------------------------------
     @app.post("/v1/hornet/build")
     def hornet_build(body: dict) -> dict[str, Any]:
-        return manager.hornet_build(rebuild=bool((body or {}).get("rebuild", True)))
+        return manager.hornet_build(
+            rebuild=bool((body or {}).get("rebuild", True)),
+            topo=bool((body or {}).get("topo", False)),
+        )
 
     @app.post("/v1/hornet/resonate")
     def hornet_resonate(body: dict) -> dict[str, Any]:

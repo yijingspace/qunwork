@@ -93,6 +93,100 @@ def run_simulation(cells: int = 64, steps: int = 40, seed: int = 0, freq: float 
     }
 
 
+def run_hybrid_sim(
+    cells: int = 64,
+    steps: int = 40,
+    seed: int = 0,
+    freq: float = 0.20,
+    sync_threshold: float = 0.12,
+) -> dict:
+    """Hybrid-ODE-Sim (spec §Neural-ODE 轻量化): the bulk of the lattice keeps
+    the cheap discrete iteration; only local 3×3×3 sub-blocks whose sync rate
+    exceeds the threshold upgrade to a continuous RK4 ODE step (fine wave /
+    phase interference where resonance is actually emerging). Returns the share
+    of cells that ran continuous vs discrete per step."""
+    rng = np.random.default_rng(seed)
+    size = max(2, int(round(cells ** (1 / 3))))
+    grid = np.zeros((size, size, size), dtype=np.float64)
+    freq_grid = np.full((size, size, size), freq, dtype=np.float64)
+    freq_grid += rng.normal(0, 0.02, size=(size, size, size))
+    grid[0, 0, 0] = 1.0
+    continuous_cells_total = 0
+    discrete_cells_total = 0
+    wave_history: list[float] = []
+
+    def alpha_for(x: int, y: int, z: int) -> float:
+        # zone decay: Z+ diffuses (small α), Z- converges (large α)
+        mid = size // 2
+        return 0.9 if z < mid - 1 else 0.55 if z > mid + 1 else 0.72
+
+    def rk4_step(block: np.ndarray, fgrid: np.ndarray, h: float = 0.25) -> np.ndarray:
+        """One RK4 step of dA/dt = -α(z)A + β·laplacian(A) on a small sub-block."""
+        def rhs(A: np.ndarray) -> np.ndarray:
+            lap = np.zeros_like(A)
+            for dx, dy, dz in ((1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0), (0, 0, 1), (0, 0, -1)):
+                lap += np.roll(np.roll(np.roll(A, dx, 0), dy, 1), dz, 2)
+            lap -= 6 * A
+            return -A * alpha_for(0, 0, 0) + 0.06 * lap
+
+        k1 = rhs(block)
+        k2 = rhs(block + h / 2 * k1)
+        k3 = rhs(block + h / 2 * k2)
+        k4 = rhs(block + h * k3)
+        return block + h / 6 * (k1 + 2 * k2 + 2 * k3 + k4)
+
+    for _t in range(steps):
+        new = grid.copy()
+        # 1) detect hot sub-blocks: local sync rate = -std of neighbor amplitudes
+        hot: set[tuple[int, int, int]] = set()
+        for x in range(size):
+            for y in range(size):
+                for z in range(size):
+                    nbs = [
+                        grid[(x + dx) % size, (y + dy) % size, (z + dz) % size]
+                        for dx, dy, dz in ((1, 0, 0), (0, 1, 0), (0, 0, 1), (-1, 0, 0), (0, -1, 0), (0, 0, -1))
+                    ]
+                    if float(np.std(nbs)) < sync_threshold and abs(grid[x, y, z]) > 1e-3:
+                        hot.add((x, y, z))
+        # 2) continuous RK4 on 3×3×3 blocks around hot cells; discrete elsewhere
+        updated_continuous: set[tuple[int, int, int]] = set()
+        for (x, y, z) in hot:
+            sub = grid[max(0, x - 1):x + 2, max(0, y - 1):y + 2, max(0, z - 1):z + 2]
+            if sub.shape != (3, 3, 3):
+                continue
+            fg = freq_grid[max(0, x - 1):x + 2, max(0, y - 1):y + 2, max(0, z - 1):z + 2]
+            new[max(0, x - 1):x + 2, max(0, y - 1):y + 2, max(0, z - 1):z + 2] = rk4_step(sub, fg)
+            for i in range(-1, 2):
+                for j in range(-1, 2):
+                    for k in range(-1, 2):
+                        updated_continuous.add((max(0, x - 1) + i, max(0, y - 1) + j, max(0, z - 1) + k))
+        # 3) discrete update for the rest
+        for x in range(size):
+            for y in range(size):
+                for z in range(size):
+                    if (x, y, z) in updated_continuous:
+                        continue
+                    acc = 0.0
+                    for dx, dy, dz in ((1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0), (0, 0, 1), (0, 0, -1)):
+                        acc += alpha_for(x, y, z) * (grid[(x + dx) % size, (y + dy) % size, (z + dz) % size] - grid[x, y, z])
+                    new[x, y, z] += 0.06 * acc
+        grid = new * 0.96
+        continuous_cells_total += len(updated_continuous)
+        discrete_cells_total += size ** 3 - len(updated_continuous)
+        wave_history.append(float(np.abs(grid).sum()))
+
+    total = continuous_cells_total + discrete_cells_total
+    return {
+        "lattice": (size, size, size),
+        "steps": steps,
+        "sync_threshold": sync_threshold,
+        "continuous_share": round(continuous_cells_total / max(1, total), 4),
+        "discrete_share": round(discrete_cells_total / max(1, total), 4),
+        "hot_blocks_seen": continuous_cells_total,
+        "wave_history_tail": [round(h, 4) for h in wave_history[-4:]],
+    }
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="HORNET 3D Kelvin-cell wave simulation")
     ap.add_argument("--cells", type=int, default=64)

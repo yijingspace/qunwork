@@ -283,29 +283,70 @@ class HornetBuilder:
         items: list[tuple[Optional[int], str, str, float]],
         *,
         rebuild: bool = True,
+        topo: bool = False,
     ) -> dict[str, Any]:
         if rebuild:
             self.store.clear()
         vectors: list[dict[str, float]] = []
         for _kid, title, content, _ts in items:
             vectors.append(ngram_vector(f"{title} {content}"))
+        n = len(items)
+        if topo and n >= 8:
+            # topological soft-constraint embedding (numpy GCN + ring loss):
+            # layout and similar-edge weights follow the hive topology.
+            import numpy as np
+
+            df: dict[str, int] = {}
+            for v in vectors:
+                for g in v:
+                    df[g] = df.get(g, 0) + 1
+            basis = [g for g, _ in sorted(df.items(), key=lambda kv: -kv[1])[:200]]
+            idx = {g: i for i, g in enumerate(basis)}
+            X = np.zeros((n, len(basis)), dtype=np.float32)
+            for i, v in enumerate(vectors):
+                for g, c in v.items():
+                    j = idx.get(g)
+                    if j is not None:
+                        X[i, j] = c
+            # edges come from a first classification pass (used as GCN graph)
+            prelim: list[tuple[int, int]] = []
+            title_grams = [set(ngram_vector(t, 2).keys()) for _k, t, _c, _ts in items]
+            for i in range(n):
+                gi = title_grams[i]
+                for j in range(i + 1, n):
+                    if gi & title_grams[j]:
+                        rel, _w, _ch = _classify(
+                            items[i][1], items[i][2], items[j][1], items[j][2],
+                            items[i][3], items[j][3], True,
+                        )
+                        if rel:
+                            prelim.append((i, j))
+            from .topo_embed import topo_embed
+
+            tres = topo_embed(X, prelim, epochs=8)
+            E = tres["embedding"]  # n x out_dim
+            layout_vecs = [dict(enumerate(map(float, E[i]))) for i in range(n)]
+        else:
+            E = None
+            layout_vecs = vectors
         occupied: set[tuple[int, int, int]] = set()
-        coords = _layout3(vectors, occupied)
+        coords = _layout3(layout_vecs, occupied)
 
         node_ids: list[int] = []
-        for (kid, title, content, ts), (x, y, z) in zip(items, coords):
+        for k, (kid, title, content, ts) in enumerate(items):
+            x, y, z = coords[k]
             phase = _phase_from_content_3d(f"{title} {content}")
             nid = self.store.add_node(
                 title, content[:4000], kb_item_id=kid,
                 vec=ngram_vector(f"{title} {content}"),
                 phase=phase, x=x, y=y, z=z,
+                topo=list(map(float, E[k])) if E is not None else None,
             )
             node_ids.append(nid)
 
         # auto edges (title-gram prefilter keeps the O(n²) pass cheap: full-text
         # similarity only runs when two titles share a 2-gram)
         edges = 0
-        n = len(items)
         title_grams = [set(ngram_vector(t, 2).keys()) for _k, t, _c, _ts in items]
         for i in range(n):
             ti, ci = items[i][1], items[i][2]
@@ -318,9 +359,14 @@ class HornetBuilder:
                 )
                 if rel:
                     ch = RELATION_CHANNEL_3D.get(rel, "G3")
+                    if E is not None and rel == "similar":
+                        # topology-enhanced edge weight: blend 2-gram sim with
+                        # topological cosine so resonance follows the hive shape
+                        w_topo = float(np.dot(E[i], E[j]))
+                        weight = round(0.5 * weight + 0.5 * w_topo, 4)
                     if self.store.add_edge(node_ids[i], node_ids[j], rel, weight=weight, channel=ch):
                         edges += 1
-        return {"nodes": len(node_ids), "edges": edges}
+        return {"nodes": len(node_ids), "edges": edges, "topo": bool(E is not None)}
 
 
 def _phase_from_content_3d(text: str) -> list[float]:

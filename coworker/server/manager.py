@@ -3906,7 +3906,7 @@ class SessionManager:
         return {"id": item_id, "title": title, "ok": True}
 
     # -- HORNET (蜂巢共振神经拓扑) 2D layer ----------------------------------
-    def hornet_build(self, rebuild: bool = True) -> dict:
+    def hornet_build(self, rebuild: bool = True, topo: bool = False) -> dict:
         """Map every knowledge item into hive cells + auto-build six semantic edges."""
         items = []
         rows = self.knowledge.list_items(limit=5000)
@@ -3917,7 +3917,7 @@ class SessionManager:
             )
         if not items:
             return {"nodes": 0, "edges": 0, "note": "knowledge store empty"}
-        return self._hornet_builder.build(items, rebuild=rebuild)
+        return self._hornet_builder.build(items, rebuild=rebuild, topo=topo)
 
     def hornet_resonate(self, query: str, k: int = 10, hops: Optional[int] = None) -> dict:
         if not query or not query.strip():

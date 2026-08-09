@@ -2325,11 +2325,11 @@ export interface HornetHit {
   similarity: number;
 }
 
-export async function hornetBuild(rebuild = true): Promise<{ nodes: number; edges: number }> {
+export async function hornetBuild(rebuild = true, topo = false): Promise<{ nodes: number; edges: number; topo?: boolean }> {
   const res = await fetch(`${httpBase()}/v1/hornet/build`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ rebuild }),
+    body: JSON.stringify({ rebuild, topo }),
   });
   return await res.json();
 }

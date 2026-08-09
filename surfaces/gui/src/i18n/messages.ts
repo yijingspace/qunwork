@@ -722,4 +722,6 @@ export const zh: Messages = {
   "findings": "",
   "View": "查看",
   "new": "新",
+  "Topo embed": "拓扑嵌入",
+  "Topological soft-constraint embedding (numpy GCN + ring loss) — slower build, topology-aware layout & edges.": "拓扑软约束嵌入(纯 numpy GCN + 环形损失)——构建更慢,布局与边更贴合知识拓扑。",
 };

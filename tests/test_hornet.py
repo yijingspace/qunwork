@@ -201,3 +201,47 @@ def test_cross_layer_hops_are_damped():
     # Z+ seeds dominate, and any Z- hit must have come through a relayed path
     # (amplitudes of direct cross-zone hops are damped ×0.30)
     assert out["hits"][0]["amplitude"] >= 0.5
+
+
+def test_topo_embed_produces_dense_manifold():
+    """Numpy GCN + ring-loss proxy: dense embedding, semantic neighbors close."""
+    import numpy as np
+    from coworker.hornet.topo_embed import topo_embed
+
+    rng = np.random.default_rng(1)
+    X = rng.normal(size=(20, 40)).astype(np.float32)
+    # two semantic clusters with edges inside each
+    edges = [(i, j) for i in range(10) for j in range(i + 1, 10)] + \
+            [(i, j) for i in range(10, 20) for j in range(i + 1, 20)]
+    res = topo_embed(X, edges, epochs=5, out_dim=8)
+    E = res["embedding"]
+    assert E.shape == (20, 8)
+    assert res["loss"] < 5.0
+    # intra-cluster cosine > inter-cluster (topology preserved)
+    intra = float(E[0] @ E[1])
+    inter = float(E[0] @ E[10])
+    assert intra > inter
+
+
+def test_build_with_topo_stores_embedding_and_weights(tmp_path):
+    """topo=True stores manifold embeddings and topology-blends similar weights."""
+    store, builder, _res, _obs = _hive(tmp_path)
+    res = builder.build(_sample_items(), topo=True)
+    assert res["topo"] is True
+    nodes = store.list_nodes()
+    assert any(len(n.get("topo") or []) == 16 for n in nodes)
+    sim_edges = [e for e in store.list_edges() if e["relation"] == "similar"]
+    assert sim_edges
+    # weights blended with topo cosine are fractional (not just raw sim)
+    assert all(0.0 < e["weight"] <= 1.0 for e in sim_edges)
+
+
+def test_hybrid_ode_sim_runs_and_splits_zones():
+    """Hybrid-ODE-Sim: hot sub-blocks go continuous RK4, rest stays discrete."""
+    from coworker.hornet.sim3d import run_hybrid_sim
+
+    out = run_hybrid_sim(cells=27, steps=10, seed=0)
+    assert 0.0 < out["continuous_share"] < 1.0
+    assert abs(out["continuous_share"] + out["discrete_share"] - 1.0) < 1e-6
+    out2 = run_hybrid_sim(cells=27, steps=10, seed=0)
+    assert out["continuous_share"] == out2["continuous_share"]  # deterministic

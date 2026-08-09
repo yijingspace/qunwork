@@ -174,6 +174,11 @@ class HornetStore:
                 c.commit()
             except sqlite3.OperationalError:
                 pass  # column already present (fresh table has it, or upgraded)
+            try:
+                c.execute("ALTER TABLE hornet_nodes ADD COLUMN topo TEXT")
+                c.commit()
+            except sqlite3.OperationalError:
+                pass
             c.commit()
 
     # -- nodes ---------------------------------------------------------------
@@ -196,11 +201,12 @@ class HornetStore:
         x: int = 0,
         y: int = 0,
         z: int = 0,
+        topo: Optional[list[float]] = None,
     ) -> int:
         with self._lock:
             cur = self._con.execute(
-                "INSERT INTO hornet_nodes (kb_item_id, title, content, vec, phase, x, y, z, created_at) "
-                "VALUES (?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO hornet_nodes (kb_item_id, title, content, vec, phase, x, y, z, topo, created_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?)",
                 (
                     kb_item_id,
                     title,
@@ -210,6 +216,7 @@ class HornetStore:
                     x,
                     y,
                     z,
+                    json.dumps(topo or [], ensure_ascii=False),
                     _now(),
                 ),
             )
@@ -219,13 +226,14 @@ class HornetStore:
     def list_nodes(self) -> list[dict[str, Any]]:
         with self._lock:
             rows = self._con.execute(
-                "SELECT id, kb_item_id, title, content, vec, phase, x, y, z, created_at FROM hornet_nodes"
+                "SELECT id, kb_item_id, title, content, vec, phase, x, y, z, topo, created_at FROM hornet_nodes"
             ).fetchall()
         out = []
         for r in rows:
             d = dict(r)
             d["vec"] = json.loads(d["vec"] or "{}")
             d["phase"] = json.loads(d["phase"] or "[0,0,0,0,0,0]")
+            d["topo"] = json.loads(d["topo"] or "[]") if d.get("topo") else []
             out.append(d)
         return out
 

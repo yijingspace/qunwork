@@ -70,6 +70,7 @@ export function HornetHive() {
   const [hits, setHits] = useState<HornetHit[] | null>(null);
   const [error, setError] = useState("");
   const [view, setView] = useState<ViewMode>("iso");
+  const [useTopo, setUseTopo] = useState(false);
   const svgRef = useRef<SVGSVGElement | null>(null);
 
   const refresh = useCallback(async () => {
@@ -132,7 +133,7 @@ export function HornetHive() {
     setBusy("build");
     setError("");
     try {
-      const r = await hornetBuild(true);
+      const r = await hornetBuild(true, useTopo);
       void r;
       setQuery("");
       setHits(null);
@@ -185,6 +186,10 @@ export function HornetHive() {
           <button className="btn-secondary text-[11.5px]" onClick={handleBuild} disabled={busy !== null}>
             {busy === "build" ? t("Building…") : t("Build hive")}
           </button>
+          <label className="inline-flex items-center gap-1 text-[11px] text-faint cursor-pointer" title={t("Topological soft-constraint embedding (numpy GCN + ring loss) — slower build, topology-aware layout & edges.")}>
+            <input type="checkbox" checked={useTopo} onChange={(e) => setUseTopo(e.target.checked)} className="accent-accent" data-testid="hornet-topo-toggle" />
+            {t("Topo embed")}
+          </label>
           <button className="btn-secondary text-[11.5px]" onClick={handleEvolve} disabled={busy !== null}>
             {busy === "evolve" ? t("Evolving…") : t("Evolve")}
           </button>
