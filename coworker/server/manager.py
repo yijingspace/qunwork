@@ -4207,11 +4207,18 @@ class SessionManager:
     def rhythm_is_valley(self) -> bool:
         """D: DPNN 周期×自动化调度 — predict whether now is a rhythm valley
         (good time for heavy tasks). Uses PeriodicForecaster on daily run counts;
-        if the predicted next value is below the series mean, we're in a valley."""
+        if the predicted next value is below the series mean, we're in a valley.
+        Result is cached 60s — this runs on every scheduler tick (30s) and the
+        full fetch+fit was blocking the event loop (review fix)."""
+        import time
+
         from datetime import date, timedelta
 
         from coworker.periodic.forecaster import PeriodicForecaster
 
+        cached = getattr(self, "_rhythm_valley_cache", None)
+        if cached and time.monotonic() - cached[0] < 60:
+            return cached[1]
         counts: dict[str, int] = {}
         for t in self.task_store.list():
             for r in self.task_store.runs(t.id, limit=200):
@@ -4223,15 +4230,20 @@ class SessionManager:
             for i in range(29, -1, -1)
         ]
         if len(series) < 4 or sum(series) == 0:
-            return True  # not enough data — allow all tasks
+            self._rhythm_valley_cache = (time.monotonic(), True)  # allow all tasks
+            return True
         fc = PeriodicForecaster().fit(series)
         if not fc.fitted:
+            self._rhythm_valley_cache = (time.monotonic(), True)
             return True
         pred = fc.predict(1)
         if not pred:
+            self._rhythm_valley_cache = (time.monotonic(), True)
             return True
         mean = sum(series) / len(series)
-        return pred[0] < mean  # valley if predicted below average
+        valley = pred[0] < mean  # valley if predicted below average
+        self._rhythm_valley_cache = (time.monotonic(), valley)
+        return valley
 
     def knowledge_scan(self, workspace: Optional[str] = None) -> dict[str, Any]:
         ws = self.resolve_workspace(workspace) or self.default_workspace

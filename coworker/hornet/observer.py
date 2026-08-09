@@ -236,6 +236,7 @@ class HornetObserver:
         if not nodes:
             return {"decayed": 0, "refreshed": 0, "downgraded": 0}
         decayed = refreshed = downgraded = 0
+        fresh_updates: dict[int, float] = {}
         for n in nodes:
             nid = n["id"]
             period = cell_period(n["title"], n.get("content", ""))
@@ -244,7 +245,7 @@ class HornetObserver:
             # short period + high load → fresh (actively resonating)
             if load > 0.15 and period <= 60:
                 if current < 1.0:
-                    self.store.set_freshness(nid, 1.0)
+                    fresh_updates[nid] = 1.0
                     refreshed += 1
                 continue
             # long period + low load → decay
@@ -255,12 +256,16 @@ class HornetObserver:
             if new_fresh <= 0:
                 new_fresh = 0.0
             if new_fresh < current:
-                self.store.set_freshness(nid, new_fresh)
+                fresh_updates[nid] = new_fresh
                 decayed += 1
-            # downgrade to Z- when stale enough and not already there
-            if new_fresh < stale_threshold and n.get("z", 0) >= 0:
-                self.store.set_z(nid, -1)
-                downgraded += 1
+            # Stale knowledge is marked by freshness alone (reversible — a later
+            # resonance refresh restores it). We do NOT permanently rewrite the
+            # z layout here: that would fight the cross-layer damping and the
+            # prior review fix (reversible failure feedback).
+            if new_fresh < stale_threshold:
+                downgraded += 1  # semantically stale (Z- "traceback" state)
+        if fresh_updates:
+            self.store.batch_freshness(fresh_updates)
         return {"decayed": decayed, "refreshed": refreshed, "downgraded": downgraded}
 
 

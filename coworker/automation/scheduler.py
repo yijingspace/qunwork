@@ -42,6 +42,7 @@ class Scheduler:
         self._task: Optional[asyncio.Task] = None
         self._running_ids: set[str] = set()  # overlap guard
         self._spawned: set[asyncio.Task] = set()  # keep spawned runs referenced
+        self._max_rhythm_deferrals = 5  # anti-starvation: run after 5 peak ticks
 
     def start(self) -> None:
         if self._task is None:
@@ -87,10 +88,18 @@ class Scheduler:
                 logger.exception("rhythm_gate failed — allowing all tasks")
                 in_valley = True
         for task in self.store.due():
-            # D: defer heavy tasks ([HORNET] prefix) during rhythm peaks
+            # D: defer heavy tasks ([HORNET] prefix) during rhythm peaks.
+            # Anti-starvation: a task deferred too many ticks runs anyway — an
+            # unbroken peak (growth period) must not postpone it forever.
             if not in_valley and task.title.startswith("[HORNET]"):
-                logger.info("deferring heavy task %s — rhythm peak", task.id)
-                continue
+                defer_count = getattr(task, "_rhythm_deferrals", 0) + 1
+                task._rhythm_deferrals = defer_count
+                if defer_count < self._max_rhythm_deferrals:
+                    logger.info("deferring heavy task %s — rhythm peak (%d/%d)",
+                                task.id, defer_count, self._max_rhythm_deferrals)
+                    continue
+                logger.info("running %s after %d rhythm deferrals (anti-starvation)",
+                            task.id, defer_count)
             # Spawn, don't await: a run can suspend on a parked approval (standing
             # scoped approvals, §25) and one blocked automation must never stall the
             # scheduler loop, other due tasks, or self-wake resumption. Overlap is

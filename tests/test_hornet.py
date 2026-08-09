@@ -476,3 +476,43 @@ def test_cavity_action_creates_question_tasks(tmp_path):
     # each cavity has a probe field that would feed question generation
     for c in cavities:
         assert "probe" in c["detail"]
+
+
+def test_import_hive_remaps_edges_with_noncontiguous_ids(tmp_path):
+    """C: import must remap edges by REAL node ids — a hive whose ids are not
+    1..n (fission children, deletions) must not silently drop topology edges."""
+    store = HornetStore(tmp_path / "h.db")
+    # local hive with non-contiguous ids: node 1..3 + a fission child at a big id
+    n1 = store.add_node("DPNN 研究", content="x", x=0, y=0, z=0)
+    n2 = store.add_node("周报", content="y", x=1, y=0, z=0)
+    big = store.add_node("分裂子", content="z", x=2, y=0, z=1)  # id 3..n
+    store.add_edge(n1, n2, "similar", weight=0.9, channel="G3")
+    store.add_edge(n2, big, "similar", weight=0.8, channel="G3")
+    # export → import into a fresh local store
+    payload = store.export_hive()
+    fresh = HornetStore(tmp_path / "h2.db")
+    res = fresh.import_hive(payload)
+    assert res["imported"] > 0
+    assert res["edges_added"] > 0, "edges must be remapped and imported"
+    assert fresh.edge_count() > 0
+
+
+def test_freshness_downgrade_is_reversible(tmp_path):
+    """A: stale knowledge decays via freshness only — z layout untouched."""
+    from coworker.hornet.observer import HornetObserver
+
+    store, builder, res, obs = _hive(tmp_path)
+    builder.build(_sample_items())
+    nodes_before = {n["id"]: n for n in store.list_nodes()}
+    r = obs.freshness_pass(stale_threshold=0.9)  # aggressive: everything decays
+    assert r["decayed"] > 0
+    nodes_after = {n["id"]: n for n in store.list_nodes()}
+    for nid, n in nodes_after.items():
+        assert n["z"] == nodes_before[nid]["z"], "z must not be rewritten"
+        assert 0.0 <= n["freshness"] <= 1.0
+    # a later resonance refresh restores freshness (reversible)
+    for _ in range(2):
+        res.resonate("DPNN 相位 周期", k=3)
+    r2 = obs.freshness_pass(stale_threshold=0.1)
+    restored = [n for n in store.list_nodes() if n["freshness"] > 0.95]
+    assert any(n["title"].startswith("DPNN") for n in restored)

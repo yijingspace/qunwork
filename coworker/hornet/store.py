@@ -272,8 +272,25 @@ class HornetStore:
             self._con.commit()
             return cur.rowcount > 0
 
+    def batch_freshness(self, updates: dict[int, float]) -> int:
+        """Apply many freshness updates in ONE transaction (A: freshness_pass
+        visits every node — per-node commits were up to 2N transactions)."""
+        if not updates:
+            return 0
+        with self._lock:
+            rows = 0
+            for nid, f in updates.items():
+                cur = self._con.execute(
+                    "UPDATE hornet_nodes SET freshness=? WHERE id=?",
+                    (round(max(0.0, min(1.0, f)), 4), nid),
+                )
+                rows += cur.rowcount
+            self._con.commit()
+            return rows
+
     def set_z(self, node_id: int, z: int) -> bool:
-        """Move a node to a different zone layer (A: stale → Z- traceback downgrade)."""
+        """Move a node to a different zone layer. Deprecated for freshness
+        downgrade — use freshness (reversible); z moves are reserved for build/import."""
         with self._lock:
             cur = self._con.execute(
                 "UPDATE hornet_nodes SET z=? WHERE id=?", (z, node_id)
@@ -474,6 +491,7 @@ class HornetStore:
         return {
             "nodes": [
                 {
+                    "id": n["id"],  # real id — import remaps edges by this
                     "title": n["title"],
                     "phase": n["phase"],
                     "x": n["x"], "y": n["y"], "z": n["z"],
@@ -505,12 +523,16 @@ class HornetStore:
         local_by_title = {n["title"]: n for n in local_nodes}
         id_map: dict[int, int] = {}
         imported = conflicts = 0
-        for i, rn in enumerate(remote_nodes):
-            title = rn.get("title", f"remote_{i}")
-            phase = rn.get("phase", [0.0] * 6)
+        for rn in remote_nodes:
+            title = str(rn.get("title") or f"remote_{i}")
+            phase = rn.get("phase") or [0.0] * 6
+            if not isinstance(phase, list) or not all(isinstance(p, (int, float)) for p in phase):
+                continue  # malformed payload — skip, never crash the import
+            rid = rn.get("id")
             local = local_by_title.get(title)
             if local:
-                id_map[i + 1] = local["id"]
+                if isinstance(rid, int):
+                    id_map[rid] = local["id"]
                 d = _phase_distance(local["phase"], phase)
                 if d > phase_conflict_threshold:
                     self.add_edge(local["id"], local["id"], "opposite", weight=0.5, channel="G8")
@@ -526,7 +548,8 @@ class HornetStore:
                     title, content="", vec=ngram_vector(title),
                     phase=phase, x=rn.get("x", 0), y=rn.get("y", 0), z=rn.get("z", 0),
                 )
-                id_map[i + 1] = nid
+                if isinstance(rid, int):
+                    id_map[rid] = nid
                 imported += 1
         edges_added = 0
         for re in remote_edges:
