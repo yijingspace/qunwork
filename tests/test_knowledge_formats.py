@@ -236,3 +236,50 @@ def test_parent_id_research_relay_chain(tmp_path):
     items = {i["id"]: i for i in store.list_items(workspace="w")}
     assert items[child]["parent_id"] == parent
     assert items[parent]["parent_id"] is None
+
+
+def test_resume_pack_carries_full_body_and_related(tmp_path):
+    """One-click research pack: full body + source + resonance related cells."""
+    from coworker.hornet import HornetBuilder, HornetStore
+    from coworker.hornet.resonator import HornetResonator
+    from coworker.knowledge.store import KnowledgeStore
+
+    ks = KnowledgeStore(tmp_path / "k.db")
+    hs = HornetStore(tmp_path / "h.db")
+    pid = ks.add_text("DPNN 白皮书", "离散周期神经网络 DPNN 相位记忆 周期 预测", kind="file", workspace="w")
+    from coworker.hornet.store import ngram_vector
+
+    hs.add_node("DPNN 白皮书", "离散周期神经网络 DPNN 相位记忆", kb_item_id=pid, vec=ngram_vector("DPNN 白皮书"), x=0, y=0, z=0)
+    hs.add_node("DPNN 研究报告", "DPNN 继续研究 报告 扩展", kb_item_id=None, vec=ngram_vector("DPNN 研究报告"), x=1, y=0, z=0)
+    hs.add_edge(1, 2, "similar", weight=0.9, channel="G3")
+    from coworker.server.manager import SessionManager
+
+    class _M:
+        hornet = hs
+        _hornet_resonator = HornetResonator(hs)
+        knowledge = ks
+        default_workspace = "w"
+        def knowledge_get(self, item_id):
+            for r in self.knowledge.list_items(limit=5000):
+                if r.get("id") == item_id:
+                    return {**r, "content": self.knowledge.item_content(item_id)}
+            return None
+
+        def knowledge_resume_pack(self, item_id, k=3):
+            item = self.knowledge_get(item_id)
+            if not item:
+                return None
+            related = []
+            try:
+                out = self._hornet_resonator.resonate(item.get("title") or "", k=k)
+                for h in out.get("hits", []):
+                    related.append({"title": h.get("title", ""), "snippet": "", "amplitude": h.get("amplitude", 0)})
+            except Exception:
+                pass
+            return {"title": item.get("title") or "", "content": item.get("content") or "", "source": item.get("source_path"), "related": related}
+
+    m = _M()
+    pack = m.knowledge_resume_pack(pid)
+    assert pack is not None
+    assert "DPNN" in pack["content"]  # full body present, not empty
+    assert pack["related"], "resonance context pack must not be empty"

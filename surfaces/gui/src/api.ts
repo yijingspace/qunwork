@@ -2422,3 +2422,10 @@ export async function revealKnowledgeSource(path: string): Promise<{ ok: boolean
   });
   return await res.json();
 }
+
+export async function knowledgeResumePack(
+  id: number,
+): Promise<{ ok: boolean; pack?: { title: string; content: string; source?: string | null; related: { title: string; snippet: string; amplitude: number }[] } }> {
+  const res = await fetch(`${httpBase()}/v1/knowledge/${id}/resume-pack`);
+  return await res.json();
+}

@@ -988,6 +988,14 @@ def create_app(manager: SessionManager) -> FastAPI:
         """Resonance context pack: related hive cells for a wider research start."""
         return {"ok": True, "related": manager.knowledge_resume_context(item_id)}
 
+    @app.get("/v1/knowledge/{item_id}/resume-pack")
+    def knowledge_resume_pack(item_id: int) -> dict[str, Any]:
+        """One-click research pack: full body + source + resonance related cells."""
+        pack = manager.knowledge_resume_pack(item_id)
+        if pack is None:
+            return {"ok": False, "error": "not found"}
+        return {"ok": True, "pack": pack}
+
     @app.post("/v1/knowledge/reveal-source")
     def knowledge_reveal_source(body: dict) -> dict[str, Any]:
         """Open a knowledge source path in the OS (folder via explorer)."""

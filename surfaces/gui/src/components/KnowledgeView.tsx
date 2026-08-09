@@ -63,6 +63,25 @@ export default function KnowledgeView({ onResume }: KnowledgeViewProps) {
     onResume?.({ title, content, source, id });
   };
 
+  const handleResumeById = async (id: number) => {
+    // One-click research pack: full body + source + resonance context, so the
+    // agent never gets an empty knowledge pack or has to hunt for the file.
+    try {
+      const { knowledgeResumePack } = await import("../api");
+      const res = await knowledgeResumePack(id);
+      if (res.ok && res.pack) {
+        onResume?.({
+          title: res.pack.title,
+          content: res.pack.content,
+          source: res.pack.source ?? undefined,
+          id,
+        });
+      }
+    } catch {
+      /* fall through */
+    }
+  };
+
   const handleReveal = async (path: string) => {
     const { revealKnowledgeSource } = await import("../api");
     await revealKnowledgeSource(path);
@@ -314,7 +333,7 @@ export default function KnowledgeView({ onResume }: KnowledgeViewProps) {
                   className="text-[11.5px] text-accent hover:underline shrink-0"
                   onClick={() => {
                     if (!item.title) return;
-                    handleResume(item.title, "", item.source_path ?? undefined, item.id);
+                    handleResumeById(item.id);
                   }}
                   data-testid={`knowledge-resume-${item.id}`}
                 >

@@ -121,7 +121,7 @@ function hexPoints(cx: number, cy: number, R = HEX_R): string {
 
 /** HORNET 2D hive: hexagonal cell grid + resonance wave highlighting. */
 interface HornetHiveProps {
-  onResume?: (payload: { title: string; content: string; source?: string }) => void;
+  onResume?: (payload: { title: string; content: string; source?: string; id?: number }) => void;
 }
 
 export function HornetHive({ onResume }: HornetHiveProps) {
@@ -136,6 +136,7 @@ export function HornetHive({ onResume }: HornetHiveProps) {
   const [error, setError] = useState("");
   const [view, setView] = useState<ViewMode>("iso");
   const [useTopo, setUseTopo] = useState(false);
+  const [selEmergent, setSelEmergent] = useState<{ id: number; kind: string; title: string; detail?: string; kbId?: number } | null>(null);
   const [health, setHealth] = useState<{ score: number; rating: string; dimensions: { structure: number; dynamics: number; evolution: number } } | null>(null);
   const [soundOn, setSoundOn] = useState(false);
   const svgRef = useRef<SVGSVGElement | null>(null);
@@ -433,15 +434,29 @@ export function HornetHive({ onResume }: HornetHiveProps) {
                 </span>
                 <button
                   className="truncate text-ink hover:text-accent text-left min-w-0 flex-1"
-                  title={t("Click to view / research this emergent finding")}
-                  onClick={() =>
-                    onResume?.({
-                      title: e.title,
-                      content: `${t("Emergent kind")}: ${e.kind}
-${t("Auto-surfaced by the hive")}`,
-                      source: `${t("HORNET")} ${e.kind}`,
-                    })
-                  }
+                  title={t("Click to view this emergent finding")}
+                  onClick={async () => {
+                    // Show detail (persisted knowledge body if any) in a modal;
+                    // the user then decides to research it or dismiss.
+                    const { listKnowledge, knowledgeResumePack } = await import("../api");
+                    let body = `${t("Emergent kind")}: ${e.kind}
+${t("Auto-surfaced by the hive")}`;
+                    let kbId: number | undefined;
+                    try {
+                      const k = await listKnowledge(200, 0);
+                      const hit = (k.items ?? []).find(
+                        (x) => x.title === `[涌现] ${e.title}` || x.title === `[蜂胞分裂] ${e.title}`,
+                      );
+                      if (hit) {
+                        const pk = await knowledgeResumePack(hit.id);
+                        if (pk.ok && pk.pack) body = pk.pack.content || body;
+                        kbId = hit.id;
+                      }
+                    } catch {
+                      /* fall through */
+                    }
+                    setSelEmergent({ id: e.id, kind: e.kind, title: e.title, detail: body, kbId });
+                  }}
                   data-testid={`emergent-resume-${e.id}`}
                 >
                   {e.title}
@@ -449,6 +464,60 @@ ${t("Auto-surfaced by the hive")}`,
                 <span className="text-[10px] text-faint shrink-0">{e.kind}</span>
               </div>
             ))}
+          </div>
+        </div>
+      )}
+
+      {selEmergent && (
+        <div
+          className="fixed inset-0 z-[60] bg-black/40 flex items-center justify-center p-6"
+          onClick={() => setSelEmergent(null)}
+          data-testid="emergent-modal"
+        >
+          <div
+            className="max-w-xl w-full rounded-xl2 border border-line bg-panel p-4 shadow-xl"
+            onClick={(ev) => ev.stopPropagation()}
+          >
+            <div className="flex items-center gap-2 mb-2">
+              <span className="text-[14px]">
+                {selEmergent.kind === "hypernode" ? "🧬" : selEmergent.kind === "attractor" ? "⚠️" : selEmergent.kind === "fission" ? "🌱" : selEmergent.kind === "cavity" ? "🌀" : selEmergent.kind === "conflict" ? "⚡" : "🕳"}
+              </span>
+              <span className="text-[13.5px] font-semibold text-ink flex-1">{selEmergent.title}</span>
+              <button className="text-muted hover:text-ink shrink-0" onClick={() => setSelEmergent(null)} aria-label={t("Dismiss")}>
+                ✕
+              </button>
+            </div>
+            <div className="whitespace-pre-wrap max-h-72 overflow-y-auto hairline-scroll text-[12.5px] text-ink mb-3 bg-surface rounded-lg border border-line p-3">
+              {selEmergent.detail || t("No content")}
+            </div>
+            <div className="flex justify-end gap-2">
+              <button className="btn-secondary text-[12px]" onClick={() => setSelEmergent(null)}>
+                {t("Dismiss")}
+              </button>
+              <button
+                className="btn-primary text-[12px]"
+                onClick={async () => {
+                  if (selEmergent.kbId) {
+                    const { knowledgeResumePack } = await import("../api");
+                    try {
+                      const pk = await knowledgeResumePack(selEmergent.kbId);
+                      if (pk.ok && pk.pack) {
+                        onResume?.({ title: pk.pack.title, content: pk.pack.content, source: pk.pack.source ?? undefined, id: selEmergent.kbId });
+                        setSelEmergent(null);
+                        return;
+                      }
+                    } catch {
+                      /* fall through */
+                    }
+                  }
+                  onResume?.({ title: selEmergent.title, content: selEmergent.detail ?? "", source: `${t("HORNET")} ${selEmergent.kind}` });
+                  setSelEmergent(null);
+                }}
+                data-testid="emergent-modal-research"
+              >
+                🧠 {t("Research")}
+              </button>
+            </div>
           </div>
         </div>
       )}

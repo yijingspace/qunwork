@@ -739,4 +739,5 @@ export const zh: Messages = {
   "Auto-surfaced by the hive": "由蜂巢自动涌现",
   "HORNET": "HORNET",
   "Open in file explorer": "在文件资源管理器中打开",
+  "Click to view this emergent finding": "点击查看该涌现条目",
 };

@@ -4181,6 +4181,21 @@ class SessionManager:
                 }
         return None
 
+    def knowledge_resume_pack(self, item_id: int, k: int = 3) -> Optional[dict]:
+        """One-click research pack: full body + source link + resonance context.
+        The UI sends this whole pack as the session's first prompt, so the agent
+        never has to hunt for the original material (its scratch workspace is
+        empty by design)."""
+        item = self.knowledge_get(item_id)
+        if not item:
+            return None
+        return {
+            "title": item.get("title") or "",
+            "content": (item.get("content") or ""),
+            "source": item.get("source_path"),
+            "related": self.knowledge_resume_context(item_id, k=k),
+        }
+
     def knowledge_resume_context(self, item_id: int, k: int = 3) -> list[dict]:
         """Resonance context pack: the knowledge entry's HORNET cell plus the
         top-k resonating neighbors, so "continue research" starts from a wider
