@@ -165,6 +165,26 @@ from .manager import SessionManager
 def create_app(manager: SessionManager) -> FastAPI:
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
+        # HORNET emergence observer: an auto-evolve pass at boot, then a
+        # slow periodic sweep (6h) so new knowledge keeps surfacing to humans.
+        _hornet_loop_stop = asyncio.Event()
+
+        async def _hornet_observer_loop() -> None:
+            await asyncio.sleep(1.5)  # let manager finish wiring
+            try:
+                manager.hornet_auto_evolve()
+            except Exception:
+                pass
+            while not _hornet_loop_stop.is_set():
+                try:
+                    await asyncio.wait_for(_hornet_loop_stop.wait(), timeout=6 * 3600)
+                except asyncio.TimeoutError:
+                    try:
+                        manager.hornet_auto_evolve()
+                    except Exception:
+                        pass
+
+        task = asyncio.create_task(_hornet_observer_loop())
         try:
             live = (
                 await manager.start_gateway()
@@ -176,6 +196,8 @@ def create_app(manager: SessionManager) -> FastAPI:
 
             traceback.print_exc()
         yield
+        _hornet_loop_stop.set()
+        task.cancel()
         await manager.aclose()  # stop gateway + close MCP connections on shutdown
 
     app = FastAPI(title="coworker", version="0.0.0", lifespan=lifespan)
@@ -959,6 +981,16 @@ def create_app(manager: SessionManager) -> FastAPI:
     @app.get("/v1/hornet/stats")
     def hornet_stats() -> dict[str, Any]:
         return manager.hornet_stats()
+
+    @app.get("/v1/hornet/emergence")
+    def hornet_emergence(limit: int = 20) -> dict[str, Any]:
+        """Unread emergence feed — new knowledge surfaced by the hive."""
+        return manager.hornet_emergence(limit=limit)
+
+    @app.post("/v1/hornet/emergence/{eid}/mark")
+    def hornet_emergence_mark(eid: int, body: dict) -> dict[str, Any]:
+        ok = manager.hornet_emergence_mark(eid, (body or {}).get("status", "accepted"))
+        return {"ok": ok, "unread": manager.hornet.count_unread_emergent()}
 
     @app.post("/v1/knowledge/{item_id}/retire")
     def knowledge_retire(item_id: int, body: dict) -> dict[str, Any]:

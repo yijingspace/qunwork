@@ -110,8 +110,9 @@ class HornetObserver:
 
         saved = 0
         for em in emerged:
-            self.store.add_emergent(em["kind"], em["title"], em["detail"])
-            saved += 1
+            _eid, is_new = self.store.add_emergent(em["kind"], em["title"], em["detail"])
+            if is_new:
+                saved += 1
         return {"emerged": saved, "counts": counts, "items": emerged}
 
 

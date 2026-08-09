@@ -125,3 +125,23 @@ def test_sim3d_runs_and_finds_period():
     # reproducibility
     out2 = run_simulation(cells=27, steps=30, seed=0, freq=0.25)
     assert out["dominant_period"] == out2["dominant_period"]
+
+
+def test_emergence_dedup_and_unread_flow(tmp_path):
+    """Auto-evolve surfaces new findings once; humans mark them read."""
+    store, builder, res, obs = _hive(tmp_path)
+    builder.build(_sample_items())
+    for _ in range(2):
+        res.resonate("周报 目标 评估", k=3)
+    ev1 = obs.evolve()
+    assert ev1["emerged"] > 0
+    n1 = store.emergent_count()
+    # second evolve must NOT re-notify the same findings (dedup)
+    ev2 = obs.evolve()
+    assert store.emergent_count() == n1
+    assert ev2["emerged"] == 0
+    # unread feed + mark-read flow
+    assert store.count_unread_emergent() == n1
+    first = store.list_emergent(1)[0]
+    assert store.set_emergent_status(first["id"], "accepted") is True
+    assert store.count_unread_emergent() == n1 - 1

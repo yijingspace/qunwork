@@ -20,6 +20,8 @@ import {
   runAutomation,
   setSessionFlags,
   setUnattended,
+  hornetEmergence,
+  hornetMarkEmergence,
   Session,
   type InboxItem,
   type MessageSource,
@@ -163,9 +165,14 @@ export function App() {
   const [surfaces, setSurfaces] = useState<SurfaceVisibility>({ cowork: true, chat: false, code: false });
   const [mode, setMode] = useState("interactive");
   const [connected, setConnected] = useState(false);
+  // HORNET emergence: new knowledge surfaced by the hive, surfaced to the human.
+  const [emergenceUnread, setEmergenceUnread] = useState(0);
+  const [emergenceDismissed, setEmergenceDismissed] = useState(false);
   // Connection banner: once we've EVER connected, a later drop reads as
   // "reconnecting" instead of the boot-time "connecting" copy.
   const hadConnRef = useRef(false);
+  // ids of unread emergence (for one-click acknowledge)
+  const emergenceIdsRef = useRef<number[]>([]);
   const [running, setRunning] = useState(false);
   const [items, setItems] = useState<Item[]>([]);
   const [streaming, setStreamingState] = useState("");
@@ -229,6 +236,27 @@ export function App() {
   useEffect(() => {
     if (surface !== "scheduled") setScheduledOpenId(null);
   }, [surface]);
+  // HORNET emergence poll: every 60s ask the hive whether new knowledge
+  // surfaced; the banner (above) turns that into a human-visible reminder.
+  useEffect(() => {
+    let alive = true;
+    const poll = () => {
+      if (!connected) return;
+      hornetEmergence(20)
+        .then((r) => {
+          if (!alive) return;
+          setEmergenceUnread(r.unread ?? 0);
+          emergenceIdsRef.current = (r.items ?? []).map((i) => i.id);
+        })
+        .catch(() => {});
+    };
+    poll();
+    const t = window.setInterval(poll, 60_000);
+    return () => {
+      alive = false;
+      window.clearInterval(t);
+    };
+  }, [connected]);
   // The persona whose detail page is showing (surface === "persona"); empty falls back to the
   // active session's persona. Phase 5 wires the grouped-nav gear + "Manage personas…" entry points.
   const [personaViewId, setPersonaViewId] = useState<string>("");
@@ -1214,6 +1242,39 @@ export function App() {
       {simOverlay && (
         <div className="sim-traffic-lights" aria-hidden="true">
           <span /><span /><span />
+        </div>
+      )}
+      {/* HORNET emergence banner: the hive auto-surfaced new knowledge — a
+          human should see it (self-organization needs a human in the loop). */}
+      {emergenceUnread > 0 && !emergenceDismissed && (
+        <div
+          className="fixed top-0 inset-x-0 z-[44] bg-emerald-800/95 text-emerald-50 text-[11.5px] text-center py-1 px-4 flex items-center justify-center gap-3"
+          role="status"
+          aria-live="polite"
+          data-testid="emergence-banner"
+        >
+          <span>🧬 {t("HORNET hive surfaced {n} new knowledge {k}", { n: emergenceUnread, k: emergenceUnread === 1 ? t("finding") : t("findings") })}</span>
+          <button
+            className="underline hover:text-white shrink-0"
+            onClick={async () => {
+              setSurface("knowledge");
+              for (const id of emergenceIdsRef.current) await hornetMarkEmergence(id, "accepted");
+              setEmergenceUnread(0);
+              setEmergenceDismissed(true);
+            }}
+          >
+            {t("View")}
+          </button>
+          <button
+            className="shrink-0"
+            aria-label={t("Dismiss")}
+            onClick={async () => {
+              setEmergenceDismissed(true);
+              setEmergenceUnread(0);
+            }}
+          >
+            ✕
+          </button>
         </div>
       )}
       {/* Connection status: when the sidecar isn't reachable, say so plainly —

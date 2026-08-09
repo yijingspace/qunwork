@@ -717,4 +717,9 @@ export const zh: Messages = {
   "XY top": "XY 俯视",
   "Z- traceback": "Z- 溯源层",
   "Z+ projection": "Z+ 推演层",
+  "HORNET hive surfaced {n} new knowledge {k}": "HORNET 蜂巢涌现出 {n} 个新知识点{k}",
+  "finding": "",
+  "findings": "",
+  "View": "查看",
+  "new": "新",
 };

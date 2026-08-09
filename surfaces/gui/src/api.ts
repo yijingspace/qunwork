@@ -2370,3 +2370,23 @@ export async function hornetStats(): Promise<{
   const res = await fetch(`${httpBase()}/v1/hornet/stats`);
   return await res.json();
 }
+
+export async function hornetEmergence(limit = 20): Promise<{
+  unread: number;
+  items: { id: number; kind: string; title: string; detail: unknown; status: string }[];
+}> {
+  const res = await fetch(`${httpBase()}/v1/hornet/emergence?limit=${limit}`);
+  return await res.json();
+}
+
+export async function hornetMarkEmergence(
+  id: number,
+  status: "accepted" | "dismissed" = "accepted",
+): Promise<{ ok: boolean; unread: number }> {
+  const res = await fetch(`${httpBase()}/v1/hornet/emergence/${id}/mark`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ status }),
+  });
+  return await res.json();
+}

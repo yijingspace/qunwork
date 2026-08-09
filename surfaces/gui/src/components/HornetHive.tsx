@@ -175,6 +175,11 @@ export function HornetHive() {
         <span className="text-[13.5px] font-semibold text-ink">{t("HORNET hive")}</span>
         <span className="text-[11px] text-faint">
           {stats ? `${stats.nodes} ${t("cells")} · ${stats.edges} ${t("edges")} · ${stats.resonance_runs} ${t("resonances")} · ${stats.emergent} ${t("emergent")}` : t("Loading…")}
+          {stats && (stats as { emergent_unread?: number }).emergent_unread ? (
+            <span className="ml-1.5 px-1.5 py-px rounded-full bg-emerald-700 text-emerald-50 text-[10px]" data-testid="hornet-unread-badge">
+              🧬 {t("new")} {(stats as { emergent_unread?: number }).emergent_unread}
+            </span>
+          ) : null}
         </span>
         <span className="ml-auto flex gap-2">
           <button className="btn-secondary text-[11.5px]" onClick={handleBuild} disabled={busy !== null}>

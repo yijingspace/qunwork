@@ -286,15 +286,31 @@ class HornetStore:
         return out
 
     # -- emergence -----------------------------------------------------------
-    def add_emergent(self, kind: str, title: str, detail: dict[str, Any]) -> int:
+    def add_emergent(self, kind: str, title: str, detail: dict[str, Any]) -> tuple[int, bool]:
+        """Insert an emergent product, deduped by (kind, title) so repeated
+        auto-evolve runs don't re-notify the same finding. Returns (id, is_new)."""
         with self._lock:
+            exists = self._con.execute(
+                "SELECT id FROM hornet_emergent WHERE kind=? AND title=? LIMIT 1",
+                (kind, title),
+            ).fetchone()
+            if exists:
+                return int(exists[0]), False
             cur = self._con.execute(
                 "INSERT INTO hornet_emergent (kind, title, detail, status, created_at) "
                 "VALUES (?,?,?, 'new', ?)",
                 (kind, title, json.dumps(detail, ensure_ascii=False), _now()),
             )
             self._con.commit()
-            return int(cur.lastrowid)
+            return int(cur.lastrowid), True
+
+    def count_unread_emergent(self) -> int:
+        with self._lock:
+            return int(
+                self._con.execute(
+                    "SELECT COUNT(*) FROM hornet_emergent WHERE status='new'"
+                ).fetchone()[0]
+            )
 
     def list_emergent(self, limit: int = 50) -> list[dict[str, Any]]:
         with self._lock:

@@ -3949,8 +3949,27 @@ class SessionManager:
             "edges": self.hornet.edge_count(),
             "resonance_runs": len(self.hornet.recent_resonance(10000)),
             "emergent": self.hornet.emergent_count(),
+            "emergent_unread": self.hornet.count_unread_emergent(),
             "emergent_items": self.hornet.list_emergent(10),
         }
+
+    def hornet_emergence(self, limit: int = 20) -> dict:
+        """Unread emergence — the "new knowledge surfaced" feed for humans."""
+        items = self.hornet.list_emergent(limit)
+        unread = [i for i in items if i.get("status") == "new"]
+        return {"unread": len(unread), "items": unread}
+
+    def hornet_emergence_mark(self, eid: int, status: str = "accepted") -> bool:
+        if status not in ("accepted", "dismissed"):
+            return False
+        return self.hornet.set_emergent_status(eid, status)
+
+    def hornet_auto_evolve(self) -> dict:
+        """Incremental emergence pass — called on startup and after knowledge
+        changes. Deduped by (kind, title), so it only surfaces NEW findings."""
+        if self.hornet.node_count() == 0:
+            return {"emerged": 0, "note": "hive empty"}
+        return self.hornet_evolve(limit=10)
 
     def knowledge_delete(self, item_id: int) -> bool:        return self.knowledge.delete(item_id)
 
@@ -4007,6 +4026,13 @@ class SessionManager:
     def knowledge_scan(self, workspace: Optional[str] = None) -> dict[str, Any]:
         ws = self.resolve_workspace(workspace) or self.default_workspace
         summary = self.knowledge.scan_workspace(ws)
+        # HORNET: after a scan changed the store, run an emergence pass so new
+        # knowledge auto-surfaces (deduped — only genuinely new findings).
+        try:
+            if (summary.get("added") or 0) > 0 and self.hornet.node_count():
+                self.hornet_auto_evolve()
+        except Exception:
+            pass
         return {**summary, "workspace": ws}
 
     def knowledge_import_folder(self, folder: str) -> dict[str, Any]:
