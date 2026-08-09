@@ -39,7 +39,7 @@ class HornetResonator:
         amp_floor: float = 0.08,
         phase_gate: float = 0.30,
         dpnn: bool = True,
-        adaptive: bool = True,
+        adaptive: bool = False,  # review fix: hot-zone Euler refinement is experimental — off by default
         sync_threshold: float = 0.12,
     ) -> None:
         self.store = store
