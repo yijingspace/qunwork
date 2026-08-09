@@ -120,14 +120,15 @@ def run_hybrid_sim(
         mid = size // 2
         return 0.9 if z < mid - 1 else 0.55 if z > mid + 1 else 0.72
 
-    def rk4_step(block: np.ndarray, fgrid: np.ndarray, h: float = 0.25) -> np.ndarray:
-        """One RK4 step of dA/dt = -α(z)A + β·laplacian(A) on a small sub-block."""
+    def rk4_step(block: np.ndarray, alpha_block: np.ndarray, h: float = 0.25) -> np.ndarray:
+        """One RK4 step of dA/dt = -α(z)A + β·laplacian(A) on a small sub-block.
+        alpha_block carries the per-cell zone decay (Z+ diffuses, Z- converges)."""
         def rhs(A: np.ndarray) -> np.ndarray:
             lap = np.zeros_like(A)
             for dx, dy, dz in ((1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0), (0, 0, 1), (0, 0, -1)):
                 lap += np.roll(np.roll(np.roll(A, dx, 0), dy, 1), dz, 2)
             lap -= 6 * A
-            return -A * alpha_for(0, 0, 0) + 0.06 * lap
+            return -A * alpha_block + 0.06 * lap
 
         k1 = rhs(block)
         k2 = rhs(block + h / 2 * k1)
@@ -148,18 +149,27 @@ def run_hybrid_sim(
                     ]
                     if float(np.std(nbs)) < sync_threshold and abs(grid[x, y, z]) > 1e-3:
                         hot.add((x, y, z))
-        # 2) continuous RK4 on 3×3×3 blocks around hot cells; discrete elsewhere
+        # 2) continuous RK4 on 3×3×3 blocks around hot cells; discrete elsewhere.
+        # Cells already updated by an earlier block are NOT overwritten — this
+        # prevents overlapping sub-blocks from clobbering each other's results.
         updated_continuous: set[tuple[int, int, int]] = set()
         for (x, y, z) in hot:
-            sub = grid[max(0, x - 1):x + 2, max(0, y - 1):y + 2, max(0, z - 1):z + 2]
+            x0, y0, z0 = max(0, x - 1), max(0, y - 1), max(0, z - 1)
+            sub = grid[x0:x + 2, y0:y + 2, z0:z + 2]
             if sub.shape != (3, 3, 3):
                 continue
-            fg = freq_grid[max(0, x - 1):x + 2, max(0, y - 1):y + 2, max(0, z - 1):z + 2]
-            new[max(0, x - 1):x + 2, max(0, y - 1):y + 2, max(0, z - 1):z + 2] = rk4_step(sub, fg)
-            for i in range(-1, 2):
-                for j in range(-1, 2):
-                    for k in range(-1, 2):
-                        updated_continuous.add((max(0, x - 1) + i, max(0, y - 1) + j, max(0, z - 1) + k))
+            alpha_block = np.array(
+                [[[alpha_for(x0 + i, y0 + j, z0 + k) for k in range(3)] for j in range(3)] for i in range(3)],
+                dtype=np.float64,
+            )
+            rk_result = rk4_step(sub, alpha_block)
+            for i in range(3):
+                for j in range(3):
+                    for k in range(3):
+                        coord = (x0 + i, y0 + j, z0 + k)
+                        if coord not in updated_continuous:
+                            new[coord] = rk_result[i, j, k]
+                            updated_continuous.add(coord)
         # 3) discrete update for the rest
         for x in range(size):
             for y in range(size):

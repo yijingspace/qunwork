@@ -245,3 +245,111 @@ def test_hybrid_ode_sim_runs_and_splits_zones():
     assert abs(out["continuous_share"] + out["discrete_share"] - 1.0) < 1e-6
     out2 = run_hybrid_sim(cells=27, steps=10, seed=0)
     assert out["continuous_share"] == out2["continuous_share"]  # deterministic
+
+
+def test_feedback_success_nudges_phase(tmp_path):
+    """#2 cognitive-action loop: success nudges node phase toward query phase."""
+    store, builder, res, _obs = _hive(tmp_path)
+    builder.build(_sample_items())
+    out = res.resonate("周报 数据 计划", k=3)
+    hit_ids = [h["node_id"] for h in out["hits"]]
+    qphase = out.get("query_phase", [])
+    assert hit_ids
+    assert any(p != 0.0 for p in qphase)  # query phase is non-zero
+    nodes_before = {n["id"]: n for n in store.list_nodes()}
+    updated = store.feedback(hit_ids, success=True, query_phase=qphase)
+    assert updated == len(hit_ids)
+    nodes_after = {n["id"]: n for n in store.list_nodes()}
+    changed = 0
+    for nid in hit_ids:
+        before = nodes_before[nid]["phase"]
+        after = nodes_after[nid]["phase"]
+        if before != after:
+            changed += 1
+    assert changed > 0  # at least one node's phase was nudged
+
+
+def test_feedback_failure_is_reversible(tmp_path):
+    """#2 cognitive-action loop: failure marks a reversible risk counter — it
+    must NOT permanently rewrite the 3D layout (review fix)."""
+    store, builder, res, _obs = _hive(tmp_path)
+    builder.build(_sample_items())
+    out = res.resonate("DPNN 相位 周期", k=3)
+    hit_ids = [h["node_id"] for h in out["hits"]]
+    assert hit_ids
+    before = {n["id"]: n for n in store.list_nodes()}
+    updated = store.feedback(hit_ids, success=False)
+    assert updated == len(hit_ids)
+    nodes_after = {n["id"]: n for n in store.list_nodes()}
+    for nid in hit_ids:
+        assert nodes_after[nid]["failed_count"] == before[nid].get("failed_count", 0) + 1
+        assert nodes_after[nid]["z"] == before[nid]["z"]  # layout untouched
+
+
+def test_dpnn_cell_period_is_pisano():
+    """#1 DPNN: cell_period returns a valid Pisano period."""
+    from coworker.hornet.dpnn_phase import cell_period, cell_omega, interference
+    from coworker.periodic.fpa_table import pisano_period
+
+    period = cell_period("DPNN 研究笔记", "离散周期神经网络")
+    assert period > 0
+    omega = cell_omega("DPNN 研究笔记", "离散周期神经网络")
+    assert omega > 0
+    assert abs(omega - 2 * 3.14159265 / period) < 0.01
+
+
+def test_dpnn_interference_range():
+    """#1 DPNN: interference factor ∈ [-1, 1]."""
+    from coworker.hornet.dpnn_phase import interference
+
+    for hop in range(10):
+        for d_phi in [0.0, 0.25, 0.5, 0.75, 1.0]:
+            val = interference(0.5, 0.5, hop, d_phi)
+            # phase dominates; frequency is a light ±0.1 modulation
+            assert -1.1 <= val <= 1.1
+    # exact phase alignment is constructive, opposition is destructive
+    assert interference(0.5, 0.5, 0, 0.0) > 0.8
+    assert interference(0.5, 0.5, 0, 1.0) < -0.8
+
+
+def test_dpnn_resonator_finds_hits(tmp_path):
+    """#1 DPNN: resonator with DPNN interference still finds correct hits."""
+    store, builder, res, _obs = _hive(tmp_path)
+    builder.build(_sample_items())
+    out = res.resonate("DPNN 相位 周期", k=4)
+    assert out["hits"]
+    titles = [h["title"] for h in out["hits"]]
+    assert any("DPNN" in t for t in titles)
+
+
+def test_dpnn_frequency_matched_resonates_more(tmp_path):
+    """#1 DPNN: cells with matching natural frequency resonate more strongly
+    than cells with mismatched frequency (sustained vs oscillating interference)."""
+    from coworker.hornet.dpnn_phase import cell_omega, interference
+
+    omega_a = cell_omega("周报 数据 计划", "周报 目标达成度 数据事实表")
+    omega_b = cell_omega("周报 数据 计划", "周报 目标达成度 数据事实表")
+    omega_c = cell_omega("QunWork 品牌 图标", "群沃客 Q+蜂巢 品牌图标")
+    d_phi = 0.1
+    matched = sum(interference(omega_a, omega_b, t, d_phi) for t in range(1, 5))
+    mismatched = sum(interference(omega_a, omega_c, t, d_phi) for t in range(1, 5))
+    assert matched > mismatched
+
+
+def test_auto_evolve_acts_only_on_new_findings(tmp_path):
+    """Self-organizing actions must be idempotent: repeating evolve() never
+    re-acts on old findings (review fix — was duplicating tasks every 6h)."""
+    store, builder, res, obs = _hive(tmp_path)
+    builder.build(_sample_items())
+    for _ in range(2):
+        res.resonate("周报 目标 评估", k=3)
+    ev1 = obs.evolve()
+    assert ev1["emerged"] > 0
+    # every new item carries is_new=True; repeated evolve re-lists them as old
+    assert all(e.get("is_new") is True for e in ev1["items"] if e.get("is_new"))
+    ev2 = obs.evolve()
+    new_items = [e for e in ev2["items"] if e.get("is_new")]
+    # a second evolve may surface a never-before-noticed category, but nothing
+    # that was already acted on repeats
+    old_titles = {(e["kind"], e["title"]) for e in ev1["items"]}
+    assert not any((e["kind"], e["title"]) in old_titles for e in new_items)

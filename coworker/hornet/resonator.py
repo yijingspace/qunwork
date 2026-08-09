@@ -6,6 +6,13 @@ hive's edges: per-hop decay from the channel (transport layer), amplified when
 the neighbor's semantic phase is close to the query phase. Cells whose final
 amplitude clears the floor are returned ranked, with the propagation path that
 explains each hit (long-range association = resonance across the topology).
+
+DPNN enhancement (#1): the phase gate is replaced by wave interference —
+each cell has a natural frequency (Pisano period of its content fingerprint)
+and the query wave has its own frequency. The interference factor
+cos(Δω·t) × cos(π·d_phi) determines amplification (constructive) or
+suppression (destructive). Only frequency-matched cells sustain amplitude
+across multiple hops — physical resonance, not just graph decay.
 """
 from __future__ import annotations
 
@@ -13,6 +20,12 @@ import math
 from typing import Any, Optional
 
 from .store import HornetStore, ngram_vector, cosine, coverage_similarity, CHANNEL_DECAY_3D, similarity
+
+try:
+    from .dpnn_phase import cell_omega, query_frequency, interference
+    _DPNN = True
+except ImportError:
+    _DPNN = False
 
 
 class HornetResonator:
@@ -25,6 +38,9 @@ class HornetResonator:
         decay_floor: float = 0.05,
         amp_floor: float = 0.08,
         phase_gate: float = 0.30,
+        dpnn: bool = True,
+        adaptive: bool = True,
+        sync_threshold: float = 0.12,
     ) -> None:
         self.store = store
         self.seeds = seeds
@@ -32,6 +48,9 @@ class HornetResonator:
         self.decay_floor = decay_floor
         self.amp_floor = amp_floor
         self.phase_gate = phase_gate
+        self.dpnn = dpnn and _DPNN
+        self.adaptive = adaptive
+        self.sync_threshold = sync_threshold
 
     def resonate(self, query: str, *, k: int = 10, hops: Optional[int] = None) -> dict[str, Any]:
         nodes = self.store.list_nodes()
@@ -40,6 +59,13 @@ class HornetResonator:
         hops = hops or self.hops
         q_vec = ngram_vector(query)
         q_phase = _query_phase(query)
+
+        # DPNN: query probe wave frequency + precomputed cell natural frequencies.
+        q_omega = query_frequency(query) if self.dpnn else 0.0
+        cell_freq: dict[int, float] = {}
+        if self.dpnn:
+            for n in nodes:
+                cell_freq[n["id"]] = cell_omega(n["title"], n.get("content", ""))
 
         # adjacency: node_id -> list of (neighbor_id, relation, channel, weight)
         adj: dict[int, list[tuple[int, str, str, float]]] = {n["id"]: [] for n in nodes}
@@ -57,8 +83,8 @@ class HornetResonator:
             if s > 0:
                 amp[n["id"]] = s
 
-        # wave propagation (iterative diffusion with phase gating). Energy is
-        # split by out-degree each hop so a dense hive doesn't explode.
+        # wave propagation (iterative diffusion with DPNN interference). Energy
+        # is split by out-degree each hop so a dense hive doesn't explode.
         path: dict[int, list[str]] = {nid: [] for nid in amp}
         frontier = dict(amp)  # node_id -> wave energy this round
         for _hop in range(hops):
@@ -84,10 +110,18 @@ class HornetResonator:
                     contrib = share * w * decay
                     if contrib < self.decay_floor:
                         continue
-                    # phase gate: neighbor's phase close to query phase amplifies
+                    # DPNN wave interference (#1): cos(Δω·t) × cos(π·d_phi).
+                    # Frequency-matched + phase-aligned → constructive (up to 2×).
+                    # Frequency-mismatched or phase-opposed → destructive (→ 0).
+                    # Falls back to the hard phase_gate when dpnn is unavailable.
                     phi_n = node_by_id[nbr].get("phase") or [0.0] * 6
                     d_phi = _phase_dist(q_phase, phi_n)
-                    if d_phi < self.phase_gate:
+                    if self.dpnn:
+                        interf = interference(
+                            cell_freq.get(nbr, 0.0), q_omega, _hop + 1, d_phi,
+                        )
+                        contrib *= 1.0 + max(interf, -0.5)  # [-0.5, 1] → [0.5×, 2×]
+                    elif d_phi < self.phase_gate:
                         contrib *= 1.0 + (1.0 - d_phi / self.phase_gate)  # up to 2x
                     nxt[nbr] = nxt.get(nbr, 0.0) + contrib
             for nid, contrib in nxt.items():
@@ -96,6 +130,31 @@ class HornetResonator:
                     path[nid] = []
                 path[nid].append(f"{rel}@{ch}")
             frontier = nxt
+
+            # #4 adaptive precision: in hot zones (high amplitude, low neighbor
+            # variance = coherent wave pattern), upgrade to continuous Euler
+            # sub-steps of dA/dt = -α·A + β·L·A (graph Laplacian). This refines
+            # the amplitude where resonance is actually forming, while the bulk
+            # of the hive stays on the fast discrete pass.
+            if self.adaptive and frontier:
+                for nid in list(frontier.keys()):
+                    nbrs = adj.get(nid, [])
+                    if not nbrs:
+                        continue
+                    nbr_amps = [amp.get(nb, 0.0) for nb, _, _, _ in nbrs]
+                    if not nbr_amps:
+                        continue
+                    mean_a = sum(nbr_amps) / len(nbr_amps)
+                    var_a = sum((a - mean_a) ** 2 for a in nbr_amps) / len(nbr_amps)
+                    if var_a >= self.sync_threshold ** 2:
+                        continue  # not synchronized — skip continuous refinement
+                    alpha = 0.72  # zone-agnostic decay
+                    beta = 0.06   # diffusion coefficient
+                    dt = 0.25     # sub-step size
+                    for _sub in range(3):  # 3 Euler sub-steps
+                        lap = sum(amp.get(nb, 0.0) - amp.get(nid, 0.0) for nb, _, _, _ in nbrs)
+                        dA = -alpha * amp.get(nid, 0.0) + beta * lap
+                        amp[nid] = amp.get(nid, 0.0) + dt * dA
 
         # rank + trim (amplitude normalized to [0,1] so the UI scale is stable)
         ranked = sorted(amp.items(), key=lambda kv: -kv[1])

@@ -2466,6 +2466,7 @@ class SessionManager:
         await self.stop_gateway()
         await self.mcp.aclose()
         self.audit_store.close()
+        self.hornet.close()
 
     # -- automation (scheduled tasks) -------------------------------------------
     def approval_prompt_data(self, session_id: str, request) -> dict[str, Any]:
@@ -3966,10 +3967,152 @@ class SessionManager:
 
     def hornet_auto_evolve(self) -> dict:
         """Incremental emergence pass — called on startup and after knowledge
-        changes. Deduped by (kind, title), so it only surfaces NEW findings."""
+        changes. Deduped by (kind, title), so it only surfaces NEW findings.
+        After detecting emergence, auto-act on each finding (self-organizing)."""
         if self.hornet.node_count() == 0:
             return {"emerged": 0, "note": "hive empty"}
-        return self.hornet_evolve(limit=10)
+        result = self.hornet_evolve(limit=10)
+        if result.get("emerged", 0) > 0:
+            actions = self.hornet_act_on_emergence(result.get("items", []))
+            result["actions"] = actions
+        return result
+
+    def hornet_act_on_emergence(self, emerged: list[dict[str, Any]]) -> dict[str, Any]:
+        """Self-organizing actions: each emergence kind triggers an automatic
+        response that grows or repairs the knowledge topology.
+
+        - gap       → create a one-time task to investigate/fill the void
+        - conflict  → surface an inbox approval for human adjudication
+        - attractor → notify the user of a potential innovation seed
+        - cavity    → inject a定向探针波 to actively probe the void
+        - hypernode → persist the compressed pattern as a knowledge entry
+        - fission   → log the child cell to the knowledge store
+        """
+        actions: dict[str, list[str]] = {
+            "task": [], "inbox": [], "probe": [], "knowledge": [],
+        }
+        ws = self.default_workspace
+        for em in emerged:
+            # idempotency (review fix): only ACT on findings that were genuinely
+            # new this pass — repeating evolve() re-lists old findings, and
+            # acting on them would duplicate tasks/knowledge entries every 6h.
+            if not em.get("is_new"):
+                continue
+            kind = em.get("kind", "")
+            title = em.get("title", "")
+            detail = em.get("detail", {})
+            try:
+                if kind == "gap":
+                    self._hornet_act_gap(title, detail, ws, actions)
+                elif kind == "conflict":
+                    self._hornet_act_conflict(title, detail, actions)
+                elif kind == "attractor":
+                    self._hornet_act_attractor(title, detail, actions)
+                elif kind == "cavity":
+                    self._hornet_act_cavity(title, detail, actions)
+                elif kind == "hypernode":
+                    self._hornet_act_hypernode(title, detail, ws, actions)
+                elif kind == "fission":
+                    self._hornet_act_fission(title, detail, ws, actions)
+            except Exception:
+                pass
+        return actions
+
+    def _hornet_act_gap(
+        self, title: str, detail: dict, ws: str, actions: dict
+    ) -> None:
+        """Knowledge gap → one-time task to investigate and fill the void."""
+        import time as _time
+        from ..automation.models import ScheduledTask, Schedule
+
+        hint = detail.get("hint", "补充关联或合并")
+        task = ScheduledTask(
+            title=f"[HORNET] 补全知识: {title[:50]}",
+            instructions=(
+                f"知识库检测到空洞: {title}\n{hint}\n"
+                f"请搜索相关资料并补充该知识领域的关联内容。"
+            ),
+            schedule=Schedule(kind="once", fire_at=_time.time()),  # fire now (review fix: once+None never runs)
+            workspace=ws,
+            origin_surface="hornet",
+            agent="cowork",
+        )
+        self.task_store.save(task)
+        actions["task"].append(title)
+
+    def _hornet_act_conflict(
+        self, title: str, detail: dict, actions: dict
+    ) -> None:
+        """Layered conflict → inbox approval for human adjudication."""
+        zp = detail.get("z_plus", "?")
+        zm = detail.get("z_minus", "?")
+        self.inbox.add_approval(
+            session_id="__hornet__",
+            title=f"[HORNET] 分层冲突需裁决: {title[:60]}",
+            body=(
+                f"推演层(Z+)节点 {zp} 与溯源层(Z-)节点 {zm} 相位对冲。\n"
+                f"{detail.get('hint', '请人工介入判断哪一方正确。')}"
+            ),
+            inbox="default",
+            data={"source": "hornet", "kind": "conflict", "detail": detail},
+        )
+        actions["inbox"].append(title)
+
+    def _hornet_act_attractor(
+        self, title: str, detail: dict, actions: dict
+    ) -> None:
+        """Strange attractor → notify user of a potential innovation seed."""
+        self.inbox.add_notification(
+            session_id="__hornet__",
+            title=f"[HORNET] 创新种子: {title[:60]}",
+            body=(
+                f"检测到奇异吸引子——标题相似但内容分歧的知识对。\n"
+                f"体相似度: {detail.get('body_similarity', '?')}\n"
+                f"这可能指示矛盾或创新方向，建议头脑风暴。"
+            ),
+            inbox="default",
+        )
+        actions["inbox"].append(title)
+
+    def _hornet_act_cavity(
+        self, title: str, detail: dict, actions: dict
+    ) -> None:
+        """Topological cavity → inject a定向探针波 to actively probe the void."""
+        probe = detail.get("probe") or title.replace("拓扑腔体: ", "")
+        self._hornet_resonator.resonate(probe, k=5)
+        actions["probe"].append(probe)
+
+    def _hornet_act_hypernode(
+        self, title: str, detail: dict, ws: str, actions: dict
+    ) -> None:
+        """Hypernode (pattern compression) → persist as a knowledge entry."""
+        summary = detail.get("summary", "")
+        if summary:
+            self.knowledge.add_text(
+                title=f"[涌现] {title[:80]}",
+                content=summary,
+                kind="swarm_report",
+                workspace=ws,
+            )
+            actions["knowledge"].append(title)
+
+    def _hornet_act_fission(
+        self, title: str, detail: dict, ws: str, actions: dict
+    ) -> None:
+        """Cell fission → log the child cell to the knowledge store."""
+        mother = detail.get("mother", "?")
+        child = detail.get("child", "?")
+        load = detail.get("load_factor", 0.0)
+        self.knowledge.add_text(
+            title=f"[蜂胞分裂] {title[:80]}",
+            content=(
+                f"母胞 #{mother} (负载因子 {load:.2f}) 分裂出子胞 #{child}。\n"
+                f"子胞继承核心语义并在对侧区域生长(自相似扩展)。"
+            ),
+            kind="swarm_report",
+            workspace=ws,
+        )
+        actions["knowledge"].append(title)
 
     def knowledge_delete(self, item_id: int) -> bool:        return self.knowledge.delete(item_id)
 

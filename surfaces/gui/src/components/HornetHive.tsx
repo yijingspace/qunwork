@@ -30,6 +30,51 @@ const EDGE_REL_LABEL: Record<string, string> = {
   attribute: "属性",
 };
 
+// #5 Audible knowledge topology — pentatonic scale (C, D, E, G, A) for
+// consonant harmonics. Each hit maps to a scale degree; amplitude → volume;
+// hits play in sequence to trace the wave propagation path.
+const PENTATONIC = [261.63, 293.66, 329.63, 392.00, 440.00]; // C4, D4, E4, G4, A4
+
+function nodeToFreq(nodeId: number): number {
+  const degree = Math.abs(nodeId) % PENTATONIC.length;
+  const octave = Math.floor(Math.abs(nodeId) / PENTATONIC.length) % 3;
+  return PENTATONIC[degree] * Math.pow(2, octave);
+}
+
+function useHornetAudio() {
+  const ctxRef = useRef<AudioContext | null>(null);
+  const ensureCtx = useCallback(() => {
+    if (!ctxRef.current) {
+      const Ctor = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+      if (Ctor) ctxRef.current = new Ctor();
+    }
+    return ctxRef.current;
+  }, []);
+  const playResonance = useCallback((hitList: HornetHit[]) => {
+    const ctx = ensureCtx();
+    if (!ctx) return;
+    if (ctx.state === "suspended") void ctx.resume();
+    const now = ctx.currentTime;
+    hitList.forEach((h, i) => {
+      const freq = nodeToFreq(h.node_id);
+      const vol = Math.min(0.3, Math.max(0.05, h.amplitude / 300));
+      const start = now + i * 0.15;
+      const dur = 0.4;
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = i === 0 ? "sine" : "triangle";
+      osc.frequency.value = freq;
+      gain.gain.setValueAtTime(0, start);
+      gain.gain.linearRampToValueAtTime(vol, start + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.001, start + dur);
+      osc.connect(gain).connect(ctx.destination);
+      osc.start(start);
+      osc.stop(start + dur);
+    });
+  }, [ensureCtx]);
+  return { playResonance };
+}
+
 function axialToPixel(q: number, r: number, R = HEX_R): [number, number] {
   return [R * Math.sqrt(3) * (q + r / 2), R * 1.5 * r];
 }
@@ -71,7 +116,9 @@ export function HornetHive() {
   const [error, setError] = useState("");
   const [view, setView] = useState<ViewMode>("iso");
   const [useTopo, setUseTopo] = useState(false);
+  const [soundOn, setSoundOn] = useState(false);
   const svgRef = useRef<SVGSVGElement | null>(null);
+  const { playResonance } = useHornetAudio();
 
   const refresh = useCallback(async () => {
     try {
@@ -164,6 +211,9 @@ export function HornetHive() {
     try {
       const r = await hornetResonate(query.trim());
       setHits(r.hits ?? []);
+      if (soundOn && r.hits && r.hits.length > 0) {
+        playResonance(r.hits);
+      }
     } catch {
       setError(t("Resonance failed — check the engine connection."));
     }
@@ -233,6 +283,14 @@ export function HornetHive() {
         <button className="btn-primary text-[12px]" onClick={handleResonate} disabled={!query.trim()}>
           {t("Resonate")}
         </button>
+        <button
+          className={"text-[12px] px-3 py-1.5 rounded-lg border " + (soundOn ? "bg-accentSoft text-accent border-accent" : "text-faint border-line hover:text-ink")}
+          onClick={() => setSoundOn(!soundOn)}
+          title={t("Audible resonance — hear the wave propagation as harmonics")}
+          data-testid="hornet-sound-toggle"
+        >
+          {soundOn ? "🔊" : "🔈"}
+        </button>
       </div>
 
       {error && (
@@ -274,7 +332,7 @@ export function HornetHive() {
             const [cx, cy] = pos.get(n.id) ?? [0, 0];
             const amp = hitAmplitude.get(n.id);
             const isHit = amp !== undefined;
-            const scale = isHit ? Math.min(1.6, 1 + amp / 300) : 1;
+            const scale = isHit ? Math.min(1.6, 1 + amp) : 1;  // amplitude is already 0..1
             const fill = isHit ? "#f43f5e" : zColor(n.z);
             return (
               <g key={n.id} transform={`translate(${cx} ${cy}) scale(${scale})`}>

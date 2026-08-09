@@ -386,6 +386,7 @@ def create_app(manager: SessionManager) -> FastAPI:
                     if manager._data_base is not None
                     else None
                 ),
+                hornet_resonator=manager._hornet_resonator,
                 event_sink=lambda kind, payload: store.append_event(run_id, kind, payload),
                 # G2: command deck wiring (pause/resume/message/requeue approval).
                 controller=controller,

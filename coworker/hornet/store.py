@@ -123,6 +123,11 @@ class HornetStore:
         self._con.row_factory = sqlite3.Row
         self._init_schema()
 
+    def close(self) -> None:
+        """Explicitly close the SQLite connection (call on shutdown)."""
+        with self._lock:
+            self._con.close()
+
     def _init_schema(self) -> None:
         with self._lock:
             c = self._con
@@ -179,6 +184,13 @@ class HornetStore:
                 c.commit()
             except sqlite3.OperationalError:
                 pass
+            try:
+                c.execute(
+                    "ALTER TABLE hornet_nodes ADD COLUMN failed_count INTEGER NOT NULL DEFAULT 0"
+                )
+                c.commit()
+            except sqlite3.OperationalError:
+                pass
             c.commit()
 
     # -- nodes ---------------------------------------------------------------
@@ -226,7 +238,7 @@ class HornetStore:
     def list_nodes(self) -> list[dict[str, Any]]:
         with self._lock:
             rows = self._con.execute(
-                "SELECT id, kb_item_id, title, content, vec, phase, x, y, z, topo, created_at FROM hornet_nodes"
+                "SELECT id, kb_item_id, title, content, vec, phase, x, y, z, topo, COALESCE(failed_count, 0) AS failed_count, created_at FROM hornet_nodes"
             ).fetchall()
         out = []
         for r in rows:
@@ -368,6 +380,61 @@ class HornetStore:
     def emergent_count(self) -> int:
         with self._lock:
             return int(self._con.execute("SELECT COUNT(*) FROM hornet_emergent").fetchone()[0])
+
+    # -- cognitive-action loop feedback (#2) ---------------------------------
+    def feedback(
+        self,
+        node_ids: list[int],
+        success: bool,
+        query_phase: Optional[list[float]] = None,
+        *,
+        alpha: float = 0.15,
+    ) -> int:
+        """Action result modulates the knowledge topology.
+
+        success=True  → nudge each node's phase toward the query phase
+                         (crystallize the resonance attractor).
+        success=False → push each node to the Z- traceback layer
+                         (mark as risk/evidence zone for conflict detection).
+
+        Returns the number of nodes actually updated.
+        """
+        if not node_ids:
+            return 0
+        updated = 0
+        with self._lock:
+            for nid in node_ids:
+                row = self._con.execute(
+                    "SELECT phase, z FROM hornet_nodes WHERE id=?", (nid,)
+                ).fetchone()
+                if not row:
+                    continue
+                if success and query_phase:
+                    phase = json.loads(row["phase"] or "[0,0,0,0,0,0]")
+                    qp = query_phase
+                    n = max(len(phase), len(qp))
+                    pa = (phase + [0.0] * n)[:n]
+                    qa = (qp + [0.0] * n)[:n]
+                    new_phase = [round(pa[i] + alpha * (qa[i] - pa[i]), 4) for i in range(n)]
+                    norm = math.sqrt(sum(p * p for p in new_phase)) or 1.0
+                    new_phase = [round(p / norm, 4) for p in new_phase]
+                    self._con.execute(
+                        "UPDATE hornet_nodes SET phase=? WHERE id=?",
+                        (json.dumps(new_phase, ensure_ascii=False), nid),
+                    )
+                elif not success:
+                    # Reversible feedback (review fix): a failed run must NOT
+                    # permanently rewrite the 3D layout / cross-layer damping by
+                    # forcing z=-1 — a single model timeout would then reshape
+                    # the whole hive forever. Track a failure counter instead;
+                    # the observer's conflict/cavity logic can read it later.
+                    self._con.execute(
+                        "UPDATE hornet_nodes SET failed_count = failed_count + 1 WHERE id=?",
+                        (nid,),
+                    )
+                updated += 1
+            self._con.commit()
+        return updated
 
 
 def _now() -> float:

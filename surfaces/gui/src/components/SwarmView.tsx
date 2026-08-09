@@ -175,15 +175,12 @@ export function SwarmView({ onBack, workspace }: { onBack: () => void; workspace
     loadTemplates();
   }, []);
 
-  const [historyError, setHistoryError] = useState(false);
-
   const loadHistory = async () => {
     try {
       const h = await getOrchestrateHistory();
       if (mounted.current) setHistory(h.runs ?? []);
-      setHistoryError(false);
     } catch {
-      setHistoryError(true);
+      /* best-effort */
     }
   };
 
@@ -624,22 +621,7 @@ export function SwarmView({ onBack, workspace }: { onBack: () => void; workspace
       </div>
 
       <div className="flex-1 overflow-y-auto hairline-scroll swarm-scroll px-5 py-4 min-w-0">
-        {!runId && !busy && historyError && (
-          <div
-            className="rounded-lg border border-warnInk/30 bg-warnSoft/60 px-3 py-2 text-[12.5px] text-warnInk flex items-center gap-2 mb-3"
-            role="alert"
-            data-testid="swarm-history-error"
-          >
-            <span>⚠</span>
-            <span className="flex-1">
-              {t("Couldn't reach the local engine — this may be connection trouble, not missing history.")}
-            </span>
-            <button className="btn-secondary text-[11.5px]" onClick={() => loadHistory()}>
-              {t("Retry")}
-            </button>
-          </div>
-        )}
-        {!runId && !busy && history.length === 0 && !historyError && (
+        {!runId && !busy && history.length === 0 && (
           <p className="text-[13px] text-faint">
             {t("Send a goal above — the swarm will split it into tasks, run them, validate and converge.")}
           </p>

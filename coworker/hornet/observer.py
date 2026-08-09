@@ -44,6 +44,7 @@ class HornetObserver:
         stats = self.store.node_hit_stats(200)
         nodes = {n["id"]: n for n in self.store.list_nodes()}
         if stats:
+            known_titles = [n["title"] for n in nodes.values()]
             hot = sorted(stats.items(), key=lambda kv: -kv[1]["load_factor"])
             fissioned: set[int] = set()
             for nid, st in hot[:6]:
@@ -54,7 +55,7 @@ class HornetObserver:
                     continue
                 # skip if this mother cell already fissioned (same title child exists)
                 title = n["title"]
-                if any(e.startswith(f"{title} · ") for e in self._known_titles()):
+                if any(e.startswith(f"{title} · ") for e in known_titles):
                     continue
                 z_child = "推演延伸" if n["z"] <= 0 else "溯源锚点"  # grow opposite zone
                 child_title = f"{title[:40]} · {z_child}"
@@ -203,7 +204,9 @@ class HornetObserver:
 
         saved = 0
         for em in emerged:
-            _eid, is_new = self.store.add_emergent(em["kind"], em["title"], em["detail"])
+            eid, is_new = self.store.add_emergent(em["kind"], em["title"], em["detail"])
+            em["id"] = eid
+            em["is_new"] = is_new
             if is_new:
                 saved += 1
         return {"emerged": saved, "counts": counts, "items": emerged}

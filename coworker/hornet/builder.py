@@ -361,8 +361,10 @@ class HornetBuilder:
                     ch = RELATION_CHANNEL_3D.get(rel, "G3")
                     if E is not None and rel == "similar":
                         # topology-enhanced edge weight: blend 2-gram sim with
-                        # topological cosine so resonance follows the hive shape
-                        w_topo = float(np.dot(E[i], E[j]))
+                        # topological cosine so resonance follows the hive shape.
+                        # E rows are L2-normalized → dot ∈ [-1, 1]; map to [0, 1]
+                        # so the blended weight stays non-negative.
+                        w_topo = (float(np.dot(E[i], E[j])) + 1.0) / 2.0
                         weight = round(0.5 * weight + 0.5 * w_topo, 4)
                     if self.store.add_edge(node_ids[i], node_ids[j], rel, weight=weight, channel=ch):
                         edges += 1
