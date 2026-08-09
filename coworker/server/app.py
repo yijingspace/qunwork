@@ -187,7 +187,11 @@ def create_app(manager: SessionManager) -> FastAPI:
         async def _hornet_observer_loop() -> None:
             await asyncio.sleep(1.5)  # let manager finish wiring
             try:
-                manager.hornet_auto_evolve()
+                # to_thread: evolve+freshness_pass sweep 698+ cells (Pisano
+                # periods etc.) — running it synchronously here froze the event
+                # loop and every HTTP request (detail view!) hung until it
+                # finished (the "无法加载详情" report).
+                await asyncio.to_thread(manager.hornet_auto_evolve)
             except Exception:
                 pass
             while not _hornet_loop_stop.is_set():
@@ -195,7 +199,7 @@ def create_app(manager: SessionManager) -> FastAPI:
                     await asyncio.wait_for(_hornet_loop_stop.wait(), timeout=6 * 3600)
                 except asyncio.TimeoutError:
                     try:
-                        manager.hornet_auto_evolve()
+                        await asyncio.to_thread(manager.hornet_auto_evolve)
                     except Exception:
                         pass
 
