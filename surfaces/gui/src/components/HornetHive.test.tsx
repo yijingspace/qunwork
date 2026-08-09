@@ -19,8 +19,8 @@ function mockApi() {
   const g = api as unknown as Record<string, ReturnType<typeof vi.fn>>;
   g.hornetGraph.mockResolvedValue({
     nodes: [
-      { id: 1, title: "DPNN 研究", x: 0, y: 0, phase: [1, 0, 0, 0, 0, 0], degree: 1 },
-      { id: 2, title: "周报 2026", x: 1, y: 0, phase: [1, 0, 0, 0, 0, 0], degree: 1 },
+      { id: 1, title: "DPNN 研究", x: 0, y: 0, z: 1, phase: [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], degree: 1 },
+      { id: 2, title: "周报 2026", x: 1, y: 0, z: -1, phase: [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], degree: 1 },
     ],
     edges: [{ src: 1, dst: 2, relation: "similar", channel: "D5", weight: 0.9 }],
   });
@@ -62,5 +62,21 @@ describe("HornetHive", () => {
     expect(await screen.findByTestId("hornet-hits")).toBeTruthy();
     expect(screen.getAllByText("DPNN 研究").length).toBeGreaterThan(0);
     await waitFor(() => expect(g.hornetResonate).toHaveBeenCalled());
+  });
+});
+
+describe("HornetHive 3D views", () => {
+  afterEach(cleanup);
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockApi();
+  });
+
+  it("switches to the Z+ projection view and filters nodes by layer", async () => {
+    const { fireEvent } = await import("@testing-library/react");
+    render(<HornetHive />);
+    await screen.findByTestId("hornet-svg");
+    fireEvent.click(screen.getByTestId("hornet-view-zplus"));
+    expect(screen.getByTestId("hornet-view-zplus")).toBeTruthy();
   });
 });

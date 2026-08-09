@@ -34,6 +34,21 @@ function axialToPixel(q: number, r: number, R = HEX_R): [number, number] {
   return [R * Math.sqrt(3) * (q + r / 2), R * 1.5 * r];
 }
 
+/** Isometric 3D projection: XY hex plane + z height (Z+ up, Z- down). */
+function isoToPixel(x: number, y: number, z: number, R = HEX_R): [number, number] {
+  const sx = (x - z) * R * Math.sqrt(3) * 0.866;
+  const sy = (x + z) * R * 0.5 + y * R * -1.2;
+  return [sx, sy];
+}
+
+type ViewMode = "iso" | "top" | "zminus" | "zplus";
+
+function zColor(z: number): string {
+  if (z > 0) return "#1d4ed8"; // Z+ projection (blue)
+  if (z < 0) return "#7c3aed"; // Z- traceback (purple)
+  return "#1e293b"; // XY plane (slate)
+}
+
 function hexPoints(cx: number, cy: number, R = HEX_R): string {
   const pts: string[] = [];
   for (let i = 0; i < 6; i++) {
@@ -54,6 +69,7 @@ export function HornetHive() {
   const [query, setQuery] = useState("");
   const [hits, setHits] = useState<HornetHit[] | null>(null);
   const [error, setError] = useState("");
+  const [view, setView] = useState<ViewMode>("iso");
   const svgRef = useRef<SVGSVGElement | null>(null);
 
   const refresh = useCallback(async () => {
@@ -79,9 +95,19 @@ export function HornetHive() {
 
   const pos = useMemo(() => {
     const m = new Map<number, [number, number]>();
-    for (const n of nodes) m.set(n.id, axialToPixel(n.x, n.y));
+    for (const n of nodes) {
+      if (view === "top") m.set(n.id, axialToPixel(n.x, n.y));
+      else if (view === "zminus" && n.z >= 0) continue;
+      else if (view === "zplus" && n.z <= 0) continue;
+      else m.set(n.id, isoToPixel(n.x, n.y, n.z));
+    }
     return m;
-  }, [nodes]);
+  }, [nodes, view]);
+
+  const visibleNodes = useMemo(
+    () => (view === "top" || view === "iso" ? nodes : nodes.filter((n) => (view === "zminus" ? n.z < 0 : n.z > 0))),
+    [nodes, view],
+  );
 
   const viewBox = useMemo(() => {
     if (!nodes.length) return "0 0 600 400";
@@ -159,6 +185,28 @@ export function HornetHive() {
           </button>
         </span>
       </div>
+      <div className="flex flex-wrap gap-1.5 mb-2">
+        {(
+          [
+            ["iso", t("3D isometric")],
+            ["top", t("XY top")],
+            ["zminus", t("Z- traceback")],
+            ["zplus", t("Z+ projection")],
+          ] as [ViewMode, string][]
+        ).map(([mode, label]) => (
+          <button
+            key={mode}
+            className={
+              "text-[11px] px-2 py-0.5 rounded-full border " +
+              (view === mode ? "bg-accentSoft text-accent border-accent" : "text-faint border-line hover:text-ink")
+            }
+            onClick={() => setView(mode)}
+            data-testid={`hornet-view-${mode}`}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
       <p className="text-[11px] text-faint mb-3">
         {t("Six semantic edges (cause/similar/opposite/contains/temporal/attribute) over hexagonal cells — resonance retrieval spreads like a wave and amplifies on phase match.")}
       </p>
@@ -197,8 +245,7 @@ export function HornetHive() {
           {edges.map((e, i) => {
             const p1 = pos.get(e.src);
             const p2 = pos.get(e.dst);
-            if (!p1 || !p2) return null;
-            const color = RELATION_COLORS[e.relation] || "#64748b";
+            if (!p1 || !p2) return null;            const color = RELATION_COLORS[e.relation] || "#64748b";
             const active = (hitAmplitude.has(e.src) || hitAmplitude.has(e.dst)) && hits;
             return (
               <line
@@ -213,17 +260,18 @@ export function HornetHive() {
               </line>
             );
           })}
-          {nodes.map((n) => {
+          {visibleNodes.map((n) => {
             const [cx, cy] = pos.get(n.id) ?? [0, 0];
             const amp = hitAmplitude.get(n.id);
             const isHit = amp !== undefined;
             const scale = isHit ? Math.min(1.6, 1 + amp / 300) : 1;
+            const fill = isHit ? "#f43f5e" : zColor(n.z);
             return (
               <g key={n.id} transform={`translate(${cx} ${cy}) scale(${scale})`}>
                 <polygon
                   points={hexPoints(0, 0)}
-                  fill={isHit ? "#f43f5e" : n.degree > 0 ? "#1e293b" : "#0f172a"}
-                  stroke={isHit ? "#fda4af" : "#334155"}
+                  fill={fill}
+                  stroke={isHit ? "#fda4af" : n.z !== 0 ? "#475569" : "#334155"}
                   strokeWidth={isHit ? 2 : 1}
                 >
                   {isHit ? (

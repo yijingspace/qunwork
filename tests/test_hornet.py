@@ -28,8 +28,8 @@ def test_build_creates_nodes_edges_and_hex_coords(tmp_path):
     assert res["edges"] >= 6  # similar clusters inside each topic
     nodes = store.list_nodes()
     assert len(nodes) == 9
-    coords = {(n["x"], n["y"]) for n in nodes}
-    assert len(coords) == 9  # no two cells share a hex tile
+    coords = {(n["x"], n["y"], n["z"]) for n in nodes}
+    assert len(coords) == 9  # no two cells share a 3D lattice tile
     # topic clusters share similar edges
     rels = {e["relation"] for e in store.list_edges()}
     assert "similar" in rels
@@ -90,3 +90,38 @@ def test_resonance_spreads_across_similar_cluster(tmp_path):
     # DPNN seeds hit, and the similar chain reaches other DPNN cells
     assert any("DPNN" in t for t in titles)
     assert any(h["path"] for h in out["hits"])  # propagation paths explained
+
+
+def test_3d_channels_and_phase_dimensions(tmp_path):
+    """3D upgrade: 12-dim phases, G-channel edges, z layers present."""
+    store, builder, res, _obs = _hive(tmp_path)
+    builder.build(_sample_items())
+    nodes = store.list_nodes()
+    assert all(len(n["phase"]) == 12 for n in nodes)
+    assert len({n["z"] for n in nodes}) >= 1
+    edges = store.list_edges()
+    assert edges
+    # edge channels are 3D G-channels
+    assert all(e["channel"].startswith("G") for e in edges)
+
+
+def test_zone_decay_order():
+    """Z+ diffuses fast, Z- converges hard — per spec §三维 zone 衰减."""
+    from coworker.hornet.store import CHANNEL_DECAY_3D
+
+    assert CHANNEL_DECAY_3D["G4"] < CHANNEL_DECAY_3D["G0"] < CHANNEL_DECAY_3D["G8"]
+    # z- traceback is the strongest convergence
+    assert CHANNEL_DECAY_3D["G8"] > CHANNEL_DECAY_3D["G4"]
+
+
+def test_sim3d_runs_and_finds_period():
+    """Research module: deterministic, FFT yields a finite dominant period."""
+    from coworker.hornet.sim3d import run_simulation
+
+    out = run_simulation(cells=27, steps=30, seed=0, freq=0.25)
+    assert out["channels"] == 12
+    assert out["dominant_period"] > 0
+    assert set(out["energy_by_zone"]) == {"xy", "z+", "z-"}
+    # reproducibility
+    out2 = run_simulation(cells=27, steps=30, seed=0, freq=0.25)
+    assert out["dominant_period"] == out2["dominant_period"]

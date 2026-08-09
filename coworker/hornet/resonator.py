@@ -12,7 +12,7 @@ from __future__ import annotations
 import math
 from typing import Any, Optional
 
-from .store import HornetStore, ngram_vector, cosine, coverage_similarity, CHANNEL_DECAY, similarity
+from .store import HornetStore, ngram_vector, cosine, coverage_similarity, CHANNEL_DECAY_3D, similarity
 
 
 class HornetResonator:
@@ -71,7 +71,7 @@ class HornetResonator:
                 nbrs = adj.get(nid, [])
                 share = energy * (1.0 / max(1, len(nbrs)))
                 for nbr, rel, ch, w in nbrs:
-                    decay = CHANNEL_DECAY.get(ch, 0.7)
+                    decay = CHANNEL_DECAY_3D.get(ch, 0.72)
                     contrib = share * w * decay
                     if contrib < self.decay_floor:
                         continue
@@ -115,7 +115,7 @@ class HornetResonator:
 
 
 def _query_phase(query: str) -> list[float]:
-    """Coarse 6-dim semantic phase for a query (same cues as the builder)."""
+    """Coarse 12-dim semantic phase for a query (same cues as the builder)."""
     cues = {
         0: ("时间", "日期", "年", "月", "周报", "日报"),
         1: ("规则", "标准", "流程", "必须", "禁止"),
@@ -123,8 +123,14 @@ def _query_phase(query: str) -> list[float]:
         3: ("属性", "特征", "参数", "尺寸", "颜色"),
         4: ("关系", "依赖", "关联", "协作"),
         5: ("实体", "名称", "模型", "系统", "软件"),
+        6: ("假设", "推测", "预测", "未来", "展望"),
+        7: ("规划", "计划", "方案", "步骤", "落地"),
+        8: ("综合", "总结", "提炼", "范式", "框架"),
+        9: ("趋势", "演变", "演进", "发展", "方向"),
+        10: ("起源", "历史", "早期", "传统", "经典"),
+        11: ("修订", "更新", "版本", "基线", "变更"),
     }
-    phase = [0.0] * 6
+    phase = [0.0] * 12
     for k, kws in cues.items():
         if any(kw in query for kw in kws):
             phase[k] = 1.0

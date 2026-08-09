@@ -3936,7 +3936,7 @@ class SessionManager:
             degree[e["dst"]] = degree.get(e["dst"], 0) + 1
         return {
             "nodes": [
-                {"id": n["id"], "title": n["title"], "x": n["x"], "y": n["y"],
+                {"id": n["id"], "title": n["title"], "x": n["x"], "y": n["y"], "z": n["z"],
                  "phase": n["phase"], "degree": degree.get(n["id"], 0)}
                 for n in nodes
             ],

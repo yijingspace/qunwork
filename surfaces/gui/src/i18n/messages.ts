@@ -713,4 +713,8 @@ export const zh: Messages = {
   "Evolve failed — check the engine connection.": "涌现失败——请检查引擎连接。",
   "Resonance failed — check the engine connection.": "共振失败——请检查引擎连接。",
   "Couldn't reach the local engine — HORNET is unavailable.": "无法连接本地引擎——HORNET 不可用。",
+  "3D isometric": "3D 等距视图",
+  "XY top": "XY 俯视",
+  "Z- traceback": "Z- 溯源层",
+  "Z+ projection": "Z+ 推演层",
 };

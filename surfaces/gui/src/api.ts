@@ -2302,6 +2302,7 @@ export interface HornetNode {
   title: string;
   x: number;
   y: number;
+  z: number;
   phase: number[];
   degree: number;
 }

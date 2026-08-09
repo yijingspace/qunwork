@@ -25,8 +25,18 @@ from typing import Any, Optional
 
 # 6 direction channels (geometric layer, transport only)
 CHANNELS = ("D0", "D1", "D2", "D3", "D4", "D5")
-# Channel decay bias: D1/D4 causal converge faster, D0/D3 temporal wander more.
-CHANNEL_DECAY = {"D0": 0.72, "D1": 0.62, "D2": 0.78, "D3": 0.72, "D4": 0.62, "D5": 0.85}
+# 3D upgrade: 12 geometric channels G0..G11 (Kelvin-cell abstraction from the
+# HORNET spec) — XY plane (G0-G3), Z+ projection (G4-G7), Z- traceback (G8-G11).
+CHANNELS_3D = (
+    "G0", "G1", "G2", "G3", "G4", "G5", "G6", "G7", "G8", "G9", "G10", "G11",
+)
+# Zone decay: Z+ (forward/projection) diffuses fast; Z- (traceback/evidence)
+# converges hard; XY plane sits between. Per spec §三维 12 通道几何方位编码.
+CHANNEL_DECAY_3D = {
+    "G0": 0.72, "G1": 0.62, "G2": 0.78, "G3": 0.72,   # XY 平面
+    "G4": 0.55, "G5": 0.55, "G6": 0.55, "G7": 0.55,   # Z+ 推演(衰减小,易扩散)
+    "G8": 0.90, "G9": 0.90, "G10": 0.90, "G11": 0.90, # Z- 溯源(衰减大,收敛强)
+}
 
 # 6 semantic relation kinds (semantic layer)
 RELATIONS = ("cause", "similar", "opposite", "contains", "temporal", "attribute")
@@ -38,6 +48,16 @@ RELATION_CHANNEL = {
     "contains": "D2",   # attribute expansion (西南)
     "temporal": "D0",   # temporal forward (东)
     "attribute": "D2",  # attribute expansion (西南)
+}
+# 3D variant: semantic edges bind to a 12-channel direction (semantics stay
+# dynamically bindable; this is the 3D seed mapping).
+RELATION_CHANNEL_3D = {
+    "cause": "G1",      # causal output (XY 东南向)
+    "similar": "G3",    # entity association (XY 东北向)
+    "opposite": "G8",   # contrast sinks to Z- (溯源/证据层)
+    "contains": "G2",   # attribute expansion (XY 西南向)
+    "temporal": "G0",   # temporal forward (XY 东向)
+    "attribute": "G6",  # attribute expands upward (Z+ 外扩)
 }
 EMERGENT_KINDS = ("hypernode", "attractor", "gap")
 
@@ -147,6 +167,13 @@ class HornetStore:
                 );
                 """
             )
+            try:
+                c.execute(
+                    "ALTER TABLE hornet_nodes ADD COLUMN z INTEGER NOT NULL DEFAULT 0"
+                )
+                c.commit()
+            except sqlite3.OperationalError:
+                pass  # column already present (fresh table has it, or upgraded)
             c.commit()
 
     # -- nodes ---------------------------------------------------------------
@@ -168,11 +195,12 @@ class HornetStore:
         phase: Optional[list[float]] = None,
         x: int = 0,
         y: int = 0,
+        z: int = 0,
     ) -> int:
         with self._lock:
             cur = self._con.execute(
-                "INSERT INTO hornet_nodes (kb_item_id, title, content, vec, phase, x, y, created_at) "
-                "VALUES (?,?,?,?,?,?,?,?)",
+                "INSERT INTO hornet_nodes (kb_item_id, title, content, vec, phase, x, y, z, created_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?)",
                 (
                     kb_item_id,
                     title,
@@ -181,6 +209,7 @@ class HornetStore:
                     json.dumps(phase or [0, 0, 0, 0, 0, 0], ensure_ascii=False),
                     x,
                     y,
+                    z,
                     _now(),
                 ),
             )
@@ -190,7 +219,7 @@ class HornetStore:
     def list_nodes(self) -> list[dict[str, Any]]:
         with self._lock:
             rows = self._con.execute(
-                "SELECT id, kb_item_id, title, content, vec, phase, x, y, created_at FROM hornet_nodes"
+                "SELECT id, kb_item_id, title, content, vec, phase, x, y, z, created_at FROM hornet_nodes"
             ).fetchall()
         out = []
         for r in rows:

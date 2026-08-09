@@ -18,7 +18,7 @@ import math
 import re
 from typing import Any, Optional
 
-from .store import HornetStore, ngram_vector, cosine, similarity
+from .store import HornetStore, ngram_vector, cosine, similarity, RELATION_CHANNEL_3D
 
 SIM_THRESHOLD = 0.24          # similar edge
 ATTRIBUTE_THRESHOLD = 0.20    # shared-keyword attribute edge
@@ -170,6 +170,44 @@ def _pca2_pure(vectors: list[dict[str, float]]) -> list[tuple[float, float]]:
     return [(pc1[i], pc2[i]) for i in range(n)]
 
 
+def _pca3(vectors: list[dict[str, float]]) -> list[tuple[float, float, float]]:
+    """Project sparse n-gram vectors to 3D via numpy SVD (3 components). Falls
+    back to (z=0) when numpy is missing."""
+    if not vectors:
+        return []
+    try:
+        import numpy as np
+    except ImportError:
+        return [(a, b, 0.0) for a, b in _pca2(vectors)]
+    df: dict[str, int] = {}
+    for v in vectors:
+        for g in v:
+            df[g] = df.get(g, 0) + 1
+    basis = [g for g, _ in sorted(df.items(), key=lambda kv: -kv[1])[:256]]
+    if not basis:
+        return [(0.0, 0.0, 0.0)] * len(vectors)
+    idx = {g: i for i, g in enumerate(basis)}
+    n = len(vectors)
+    m = len(basis)
+    X = np.zeros((n, m), dtype=np.float32)
+    for i, v in enumerate(vectors):
+        for g, c in v.items():
+            j = idx.get(g)
+            if j is not None:
+                X[i, j] = c
+    X -= X.mean(axis=0, keepdims=True)
+    try:
+        u, s, _ = np.linalg.svd(X, full_matrices=False)
+        k = min(3, u.shape[1])
+        proj = u[:, :k] * s[:k]
+        while proj.shape[1] < 3:
+            proj = np.column_stack([proj, np.zeros(n, dtype=np.float32)])
+    except np.linalg.LinAlgError:  # pragma: no cover - degenerate
+        rng = np.random.default_rng(0)
+        proj = rng.normal(size=(n, 3))
+    return [(float(a), float(b), float(c)) for a, b, c in proj]
+
+
 def _axial_round(q: float, r: float) -> tuple[int, int]:
     """Round floating axial coords to the nearest hex (cube rounding)."""
     x, y, z = q, r, -q - r
@@ -182,6 +220,31 @@ def _axial_round(q: float, r: float) -> tuple[int, int]:
     else:
         rz = -rx - ry
     return int(rx), int(ry)
+
+
+def _layout3(vectors: list[dict[str, float]], occupied: set[tuple[int, int, int]]) -> list[tuple[int, int, int]]:
+    """Map each vector to a 3D lattice coordinate (no two cells share a tile).
+    Lattice: XY hex-ish axial plane + integer z layer (Z+ = projection/evolve,
+    Z- = traceback/evidence)."""
+    proj = _pca3(vectors)
+    if not proj:
+        return [(0, 0, 0)] * len(vectors)
+    maxabs = max((abs(a) + abs(b) + abs(c)) for a, b, c in proj) or 1.0
+    coords: list[tuple[int, int, int]] = []
+    for a, b, c in proj:
+        q = (a / maxabs) * 8.0
+        r = (b / maxabs) * 8.0
+        z = round((c / maxabs) * 3.0)
+        tile = (*_axial_round(q, r), z)
+        guard = 0
+        while tile in occupied and guard < 96:
+            q += 0.7
+            r += 0.35
+            tile = (*_axial_round(q, r), z)
+            guard += 1
+        occupied.add(tile)
+        coords.append(tile)
+    return coords
 
 
 def _layout(vectors: list[dict[str, float]], occupied: set[tuple[int, int]]) -> list[tuple[int, int]]:
@@ -226,16 +289,16 @@ class HornetBuilder:
         vectors: list[dict[str, float]] = []
         for _kid, title, content, _ts in items:
             vectors.append(ngram_vector(f"{title} {content}"))
-        occupied: set[tuple[int, int]] = set()
-        coords = _layout(vectors, occupied)
+        occupied: set[tuple[int, int, int]] = set()
+        coords = _layout3(vectors, occupied)
 
         node_ids: list[int] = []
-        for (kid, title, content, ts), (x, y) in zip(items, coords):
-            phase = _phase_from_content(f"{title} {content}")
+        for (kid, title, content, ts), (x, y, z) in zip(items, coords):
+            phase = _phase_from_content_3d(f"{title} {content}")
             nid = self.store.add_node(
                 title, content[:4000], kb_item_id=kid,
                 vec=ngram_vector(f"{title} {content}"),
-                phase=phase, x=x, y=y,
+                phase=phase, x=x, y=y, z=z,
             )
             node_ids.append(nid)
 
@@ -250,11 +313,37 @@ class HornetBuilder:
             for j in range(i + 1, n):
                 tj, cj = items[j][1], items[j][2]
                 share = bool(gi & title_grams[j])
-                rel, weight, channel = _classify(ti, ci, tj, cj, items[i][3], items[j][3], share)
+                rel, weight, _ch = _classify(
+                    ti, ci, tj, cj, items[i][3], items[j][3], share
+                )
                 if rel:
-                    if self.store.add_edge(node_ids[i], node_ids[j], rel, weight=weight, channel=channel):
+                    ch = RELATION_CHANNEL_3D.get(rel, "G3")
+                    if self.store.add_edge(node_ids[i], node_ids[j], rel, weight=weight, channel=ch):
                         edges += 1
         return {"nodes": len(node_ids), "edges": edges}
+
+
+def _phase_from_content_3d(text: str) -> list[float]:
+    """12-dim semantic phase: 6 base cues (event/rule/evidence/attribute/
+    relation/entity) + 6 3D-extension cues (Z+ projection: hypothesis/future/
+    plan/synthesis/trend/abstract; Z- traceback: origin/history/evidence anchor/
+    cause/revision/baseline). Phase difference gates resonance amplification."""
+    base = _phase_from_content(text)
+    ext_cues = {
+        6: ("假设", "推测", "预测", "未来", "展望"),
+        7: ("规划", "计划", "方案", "步骤", "落地"),
+        8: ("综合", "总结", "提炼", "范式", "框架"),
+        9: ("趋势", "演变", "演进", "发展", "方向"),
+        10: ("起源", "历史", "早期", "传统", "经典"),
+        11: ("修订", "更新", "版本", "基线", "变更"),
+    }
+    ext = [0.0] * 6
+    for k, kws in ext_cues.items():
+        if any(kw in text for kw in kws):
+            ext[k - 6] = 1.0
+    phase = base + ext
+    norm = math.sqrt(sum(p * p for p in phase)) or 1.0
+    return [round(p / norm, 4) for p in phase]
 
 
 def _phase_from_content(text: str) -> list[float]:
