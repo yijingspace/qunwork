@@ -60,10 +60,6 @@ export default function KnowledgeView({ onResume }: KnowledgeViewProps) {
     }
   };
 
-  const handleResume = (title: string, content: string, source?: string, id?: number) => {
-    onResume?.({ title, content, source, id });
-  };
-
   const handleResumeById = async (id: number) => {
     // One-click research pack: full body + source + resonance context, so the
     // agent never gets an empty knowledge pack or has to hunt for the file.
@@ -382,7 +378,7 @@ export default function KnowledgeView({ onResume }: KnowledgeViewProps) {
                       <div className="mt-1.5">
                         <button
                           className="btn-primary text-[11px]"
-                          onClick={() => handleResume(detail.title, detail.content, detail.source_path ?? undefined, item.id)}
+                          onClick={() => handleResumeById(item.id)}
                           data-testid={`knowledge-resume-detail-${item.id}`}
                         >
                           🧠 {t("Continue research / creation")}

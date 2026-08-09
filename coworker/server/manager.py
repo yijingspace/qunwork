@@ -4255,8 +4255,12 @@ class SessionManager:
             rt = r.get("title") or ""
             if rt == title:
                 return self.knowledge_resume_pack(r["id"])
-        # fuzzy: token overlap against full title
-        tokens = [t for t in title.split() if len(t) >= 3]
+        # fuzzy: token overlap against full title (Chinese has no spaces —
+        # reuse the same marker-stripped tokenization as originals resolution)
+        import re as _re2
+
+        cleaned = _re2.sub(r"\[(涌现|蜂胞分裂|HORNET|拓扑腔体|知识空洞)[^\]]*\]", "", title)
+        tokens = [x for x in _re2.split(r"[ \s·:：(（]", cleaned) if len(x.strip()) >= 3]
         for r in self.knowledge.list_items(limit=5000):
             rt = r.get("title") or ""
             score = sum(1 for t in tokens if t in rt)

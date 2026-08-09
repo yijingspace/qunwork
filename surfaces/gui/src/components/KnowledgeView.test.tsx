@@ -9,6 +9,10 @@ vi.mock("../api", async (importOriginal) => {
     ...actual,
     listKnowledge: vi.fn(),
     scanKnowledge: vi.fn().mockResolvedValue({ ok: true }),
+    knowledgeResumePack: vi.fn().mockResolvedValue({
+      ok: true,
+      pack: { title: "DPNN 白皮书", content: "核心内容", source: "E:/docs/dpnn.md", related: [] },
+    }),
   };
 });
 
@@ -46,6 +50,12 @@ describe("KnowledgeView resume/detail", () => {
       items: [{ id: 7, kind: "file", title: "DPNN 白皮书", source_path: "E:/docs/dpnn.md", updated_at: 0 }],
       total: 1,
     });
+    (api as unknown as { knowledgeResumePack: ReturnType<typeof vi.fn> }).knowledgeResumePack = vi
+      .fn()
+      .mockResolvedValue({
+        ok: true,
+        pack: { title: "DPNN 白皮书", content: "核心内容", source: "E:/docs/dpnn.md", related: [] },
+      });
   });
 
   it("expands a row to show detail and source, and resumes research into a session", async () => {
@@ -69,6 +79,7 @@ describe("KnowledgeView resume/detail", () => {
     expect(await screen.findByTestId("knowledge-detail-7")).toBeTruthy();
     expect(screen.getByText("核心内容")).toBeTruthy();
     fireEvent.click(screen.getByTestId("knowledge-resume-detail-7"));
+    await waitFor(() => expect(onResume).toHaveBeenCalled());
     expect(onResume).toHaveBeenCalledWith(
       expect.objectContaining({ title: "DPNN 白皮书", content: "核心内容" }),
     );
