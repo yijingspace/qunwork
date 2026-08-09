@@ -162,6 +162,21 @@ from ..providers import AssistantTurn
 from .manager import SessionManager
 
 
+def _extract_parent_id(intent: str) -> Optional[int]:
+    """Parse the research-relay marker `[知识来源ID:123]` out of a prompt/intent.
+    The UI's "continue research" action embeds it so the resulting report is
+    linked back to the knowledge entry it was derived from."""
+    import re as _re
+
+    m = _re.search(r"\[知识来源ID:(\d+)\]", intent or "")
+    if m:
+        try:
+            return int(m.group(1))
+        except ValueError:
+            return None
+    return None
+
+
 def create_app(manager: SessionManager) -> FastAPI:
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
@@ -322,6 +337,9 @@ def create_app(manager: SessionManager) -> FastAPI:
                         kind="swarm_report",
                         workspace=ws,
                         source_run_id=rid,
+                        # Research-relay: if the run was launched from a knowledge
+                        # entry ("continue research"), link the report back to it.
+                        parent_id=_extract_parent_id((body or {}).get("intent") or ""),
                     )
             except Exception:
                 pass  # ingestion must never fail the run
@@ -964,6 +982,16 @@ def create_app(manager: SessionManager) -> FastAPI:
         if item is None:
             return {"ok": False, "error": "not found"}
         return {"ok": True, "item": item}
+
+    @app.get("/v1/knowledge/{item_id}/resume-context")
+    def knowledge_resume_context(item_id: int) -> dict[str, Any]:
+        """Resonance context pack: related hive cells for a wider research start."""
+        return {"ok": True, "related": manager.knowledge_resume_context(item_id)}
+
+    @app.post("/v1/knowledge/reveal-source")
+    def knowledge_reveal_source(body: dict) -> dict[str, Any]:
+        """Open a knowledge source path in the OS (folder via explorer)."""
+        return manager.reveal_knowledge_source((body or {}).get("path", ""))
 
     # -- HORNET (蜂巢共振神经拓扑) 2D layer ---------------------------------
     @app.post("/v1/hornet/build")

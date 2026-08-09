@@ -945,14 +945,37 @@ export function App() {
   // Knowledge → conversation: continue research/creation from a knowledge entry.
   // Opens a fresh cowork session whose first prompt carries the knowledge body,
   // so the agent keeps working on it (self-questioning, expansion, creation).
-  const resumeKnowledge = (payload: { title: string; content: string; source?: string }) => {
+  const resumeKnowledge = async (payload: {
+    title: string;
+    content: string;
+    source?: string;
+    id?: number;
+  }) => {
     startNewSession("cowork");
     setShowGate(false);
     const body = (payload.content || "").slice(0, 6000);
     const src = payload.source ? `\n\n【来源】${payload.source}` : "";
+    // Resonance context pack: pull the top related hive cells so the research
+    // starts from a semantic neighborhood, not one isolated entry.
+    let related = "";
+    if (payload.id) {
+      try {
+        const { knowledgeResumeContext } = await import("./api");
+        const ctx = await knowledgeResumeContext(payload.id);
+        const hits = (ctx.related ?? []).slice(0, 3);
+        if (hits.length) {
+          related =
+            "\n\n【关联领域(蜂巢共振)】\n" +
+            hits.map((h, i) => `${i + 1}. ${h.title} — ${(h.snippet || "").slice(0, 120)}`).join("\n");
+        }
+      } catch {
+        /* best-effort */
+      }
+    }
+    const relay = payload.id ? `\n[知识来源ID:${payload.id}]` : "";
     pendingPromptRef.current =
       `请基于以下知识继续研究/创作。先理解核心内容,再在现有基础上深入扩展、提出新见解或创作相关成果。\n\n` +
-      `【标题】${payload.title}\n\n【内容】\n${body}${src}`;
+      `【标题】${payload.title}\n\n【内容】\n${body}${src}${related}${relay}`;
   };
   // Inbox → session: the item carries its session's workspace/agent, so open it directly.
   // UX-026: 5s top-right toast when a SCHEDULED automation run starts (never for

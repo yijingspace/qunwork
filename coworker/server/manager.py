@@ -4181,6 +4181,53 @@ class SessionManager:
                 }
         return None
 
+    def knowledge_resume_context(self, item_id: int, k: int = 3) -> list[dict]:
+        """Resonance context pack: the knowledge entry's HORNET cell plus the
+        top-k resonating neighbors, so "continue research" starts from a wider
+        semantic neighborhood, not a single isolated entry."""
+        item = self.knowledge_get(item_id)
+        if not item:
+            return []
+        # find the hive cell for this item (or build a probe from its title)
+        nodes = self.hornet.list_nodes()
+        cell = next((n for n in nodes if n.get("kb_item_id") == item_id), None)
+        probe = cell["title"] if cell else (item.get("title") or "")
+        if not probe:
+            return []
+        try:
+            out = self._hornet_resonator.resonate(probe, k=k)
+        except Exception:
+            return []
+        pack = []
+        for h in out.get("hits", []):
+            cell_node = next((n for n in nodes if n["id"] == h.get("node_id")), None)
+            if not cell_node:
+                continue
+            pack.append(
+                {
+                    "title": cell_node.get("title", ""),
+                    "snippet": (cell_node.get("content") or "")[:200],
+                    "amplitude": h.get("amplitude", 0),
+                }
+            )
+        return pack
+
+    def reveal_knowledge_source(self, path: str) -> dict:
+        """Open a knowledge source path in the OS (file's folder via explorer)."""
+        import os
+
+        p = str(path or "").strip()
+        if not p or not os.path.exists(p):
+            return {"ok": False, "error": "path not found"}
+        try:
+            if os.path.isdir(p):
+                os.startfile(p)  # type: ignore[attr-defined]
+            else:
+                os.startfile(os.path.dirname(p) or p)  # type: ignore[attr-defined]
+            return {"ok": True}
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)}
+
     def knowledge_delete(self, item_id: int) -> bool:        return self.knowledge.delete(item_id)
 
     def hornet_export_hive(self) -> dict:

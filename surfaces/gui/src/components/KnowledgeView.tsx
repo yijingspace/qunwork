@@ -13,7 +13,7 @@ import { HornetHive } from "./HornetHive";import {
 import { useT } from "../i18n";
 
 interface KnowledgeViewProps {
-  onResume?: (payload: { title: string; content: string; source?: string }) => void;
+  onResume?: (payload: { title: string; content: string; source?: string; id?: number }) => void;
 }
 
 export default function KnowledgeView({ onResume }: KnowledgeViewProps) {
@@ -59,8 +59,13 @@ export default function KnowledgeView({ onResume }: KnowledgeViewProps) {
     }
   };
 
-  const handleResume = (title: string, content: string, source?: string) => {
-    onResume?.({ title, content, source });
+  const handleResume = (title: string, content: string, source?: string, id?: number) => {
+    onResume?.({ title, content, source, id });
+  };
+
+  const handleReveal = async (path: string) => {
+    const { revealKnowledgeSource } = await import("../api");
+    await revealKnowledgeSource(path);
   };
 
   const flash = (msg: string) => {
@@ -309,7 +314,7 @@ export default function KnowledgeView({ onResume }: KnowledgeViewProps) {
                   className="text-[11.5px] text-accent hover:underline shrink-0"
                   onClick={() => {
                     if (!item.title) return;
-                    handleResume(item.title, "", item.source_path ?? undefined);
+                    handleResume(item.title, "", item.source_path ?? undefined, item.id);
                   }}
                   data-testid={`knowledge-resume-${item.id}`}
                 >
@@ -341,14 +346,23 @@ export default function KnowledgeView({ onResume }: KnowledgeViewProps) {
                               {detail.source_path}
                             </a>
                           ) : (
-                            <span className="break-all">{detail.source_path}</span>
+                            <>
+                              <span className="break-all">{detail.source_path}</span>
+                              <button
+                                className="ml-2 text-accent hover:underline shrink-0"
+                                onClick={() => handleReveal(detail.source_path as string)}
+                                title={t("Open in file explorer")}
+                              >
+                                📂 {t("Open")}
+                              </button>
+                            </>
                           )}
                         </div>
                       )}
                       <div className="mt-1.5">
                         <button
                           className="btn-primary text-[11px]"
-                          onClick={() => handleResume(detail.title, detail.content, detail.source_path ?? undefined)}
+                          onClick={() => handleResume(detail.title, detail.content, detail.source_path ?? undefined, item.id)}
                           data-testid={`knowledge-resume-detail-${item.id}`}
                         >
                           🧠 {t("Continue research / creation")}

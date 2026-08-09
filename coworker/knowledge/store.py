@@ -147,6 +147,13 @@ class KnowledgeStore:
             self._con.commit()
         except sqlite3.OperationalError:
             pass
+        try:
+            # Research-relay chain: derived entries point at the knowledge item
+            # they were researched from (knowledge → research → new knowledge).
+            self._con.execute("ALTER TABLE knowledge_items ADD COLUMN parent_id INTEGER")
+            self._con.commit()
+        except sqlite3.OperationalError:
+            pass
         self._con.execute(
             """CREATE TABLE IF NOT EXISTS knowledge_chunks (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -177,15 +184,19 @@ class KnowledgeStore:
         kind: str = "manual",
         workspace: Optional[str] = None,
         source_run_id: Optional[str] = None,
+        parent_id: Optional[int] = None,
     ) -> int:
-        """Index a free-text entry (manual knowledge). Returns the item id."""
+        """Index a free-text entry (manual knowledge). Returns the item id.
+        parent_id: the knowledge item this entry was researched/derived from
+        (research-relay chain: knowledge → research → new knowledge)."""
         if not title or not content:
             raise ValueError("title and content are required")
         ws = str(workspace) if workspace else (self._default_workspace or "")
         with self._lock:
             cur = self._con.execute(
-                "INSERT INTO knowledge_items (workspace, kind, source_run_id, title, created_at, updated_at) VALUES (?,?,?,?,?,?)",
-                (ws, kind, source_run_id, title, time.time(), time.time()),
+                "INSERT INTO knowledge_items (workspace, kind, source_run_id, parent_id, title, created_at, updated_at) "
+                "VALUES (?,?,?,?,?,?,?)",
+                (ws, kind, source_run_id, parent_id, title, time.time(), time.time()),
             )
             item_id = cur.lastrowid
             self._index_chunks(item_id, title, content)
@@ -395,13 +406,13 @@ class KnowledgeStore:
         with self._lock:
             if ws:
                 rows = self._con.execute(
-                    "SELECT id, kind, source_path, source_run_id, title, created_at, updated_at, use_count, retired FROM knowledge_items "
+                    "SELECT id, kind, source_path, source_run_id, parent_id, title, created_at, updated_at, use_count, retired FROM knowledge_items "
                     "WHERE workspace=? AND retired=0 ORDER BY updated_at DESC LIMIT ? OFFSET ?",
                     (ws, limit, offset),
                 ).fetchall()
             else:
                 rows = self._con.execute(
-                    "SELECT id, kind, source_path, source_run_id, title, created_at, updated_at, use_count, retired FROM knowledge_items "
+                    "SELECT id, kind, source_path, source_run_id, parent_id, title, created_at, updated_at, use_count, retired FROM knowledge_items "
                     "WHERE retired=0 ORDER BY updated_at DESC LIMIT ? OFFSET ?",
                     (limit, offset),
                 ).fetchall()
@@ -411,11 +422,12 @@ class KnowledgeStore:
                 "kind": r[1],
                 "source_path": r[2],
                 "source_run_id": r[3],
-                "title": r[4],
-                "created_at": r[5],
-                "updated_at": r[6],
-                "use_count": r[7],
-                "retired": r[8],
+                "parent_id": r[4],
+                "title": r[5],
+                "created_at": r[6],
+                "updated_at": r[7],
+                "use_count": r[8],
+                "retired": r[9],
             }
             for r in rows
         ]

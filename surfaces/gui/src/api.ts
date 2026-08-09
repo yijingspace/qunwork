@@ -2406,3 +2406,19 @@ export async function hornetHealthReport(): Promise<{ ok: boolean; path?: string
   const res = await fetch(`${httpBase()}/v1/hornet/health-report`, { method: "POST" });
   return await res.json();
 }
+
+export async function knowledgeResumeContext(
+  id: number,
+): Promise<{ ok: boolean; related: { title: string; snippet: string; amplitude: number }[] }> {
+  const res = await fetch(`${httpBase()}/v1/knowledge/${id}/resume-context`);
+  return await res.json();
+}
+
+export async function revealKnowledgeSource(path: string): Promise<{ ok: boolean; error?: string }> {
+  const res = await fetch(`${httpBase()}/v1/knowledge/reveal-source`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ path }),
+  });
+  return await res.json();
+}

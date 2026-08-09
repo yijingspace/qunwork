@@ -222,3 +222,17 @@ def test_grep_parse_windows_drive_path():
     # unix-style still works
     out2 = _parse_rg("/repo/a.py:3:x", Path("/repo"), 10)
     assert out2["matches"][0]["line"] == 3
+
+
+def test_parent_id_research_relay_chain(tmp_path):
+    """Research relay: derived entries link back to the knowledge they came from."""
+    from coworker.knowledge.store import KnowledgeStore
+
+    store = KnowledgeStore(tmp_path / "k.db")
+    parent = store.add_text("DPNN 白皮书", "内容 A", kind="file", workspace="w")
+    child = store.add_text(
+        "DPNN 研究报告", "基于 A 的研究", kind="swarm_report", workspace="w", parent_id=parent
+    )
+    items = {i["id"]: i for i in store.list_items(workspace="w")}
+    assert items[child]["parent_id"] == parent
+    assert items[parent]["parent_id"] is None
