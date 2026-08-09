@@ -12,7 +12,7 @@ from __future__ import annotations
 import math
 from typing import Any, Optional
 
-from .store import HornetStore, ngram_vector, cosine, CHANNEL_DECAY, similarity
+from .store import HornetStore, ngram_vector, cosine, coverage_similarity, CHANNEL_DECAY, similarity
 
 
 class HornetResonator:
@@ -47,15 +47,18 @@ class HornetResonator:
             adj.setdefault(e["src"], []).append((e["dst"], e["relation"], e["channel"], e["weight"]))
             adj.setdefault(e["dst"], []).append((e["src"], e["relation"], e["channel"], e["weight"]))
 
-        # seed amplitudes: similarity of each node to the query
+        # seed amplitudes: raw query-count x doc-vector coverage (doc length
+        # independent) — same retrieval spirit as the knowledge store, but on
+        # whole hive cells rather than short chunks.
         node_by_id = {n["id"]: n for n in nodes}
         amp: dict[int, float] = {}
         for n in nodes:
-            s = cosine(q_vec, n.get("vec") or {}) if q_vec else 0.0
+            s = coverage_similarity(query, n.get("vec") or {})
             if s > 0:
                 amp[n["id"]] = s
 
-        # wave propagation (iterative diffusion with phase gating)
+        # wave propagation (iterative diffusion with phase gating). Energy is
+        # split by out-degree each hop so a dense hive doesn't explode.
         path: dict[int, list[str]] = {nid: [] for nid in amp}
         frontier = dict(amp)  # node_id -> wave energy this round
         for _hop in range(hops):
@@ -65,9 +68,11 @@ class HornetResonator:
             for nid, energy in frontier.items():
                 if energy < self.decay_floor:
                     continue
-                for nbr, rel, ch, w in adj.get(nid, []):
+                nbrs = adj.get(nid, [])
+                share = energy * (1.0 / max(1, len(nbrs)))
+                for nbr, rel, ch, w in nbrs:
                     decay = CHANNEL_DECAY.get(ch, 0.7)
-                    contrib = energy * w * decay
+                    contrib = share * w * decay
                     if contrib < self.decay_floor:
                         continue
                     # phase gate: neighbor's phase close to query phase amplifies
@@ -83,8 +88,9 @@ class HornetResonator:
                 path[nid].append(f"{rel}@{ch}")
             frontier = nxt
 
-        # rank + trim
+        # rank + trim (amplitude normalized to [0,1] so the UI scale is stable)
         ranked = sorted(amp.items(), key=lambda kv: -kv[1])
+        amp_max = max((a for _, a in ranked), default=1.0) or 1.0
         hits: list[dict[str, Any]] = []
         for nid, a in ranked:
             if a < self.amp_floor:
@@ -94,11 +100,11 @@ class HornetResonator:
                 {
                     "node_id": nid,
                     "title": n["title"],
-                    "amplitude": round(a, 4),
+                    "amplitude": round(a / amp_max, 4),
                     "path": path.get(nid, [])[-6:],
                     "x": n["x"],
                     "y": n["y"],
-                    "similarity": round(amp.get(nid, 0.0), 4),
+                    "similarity": round(amp.get(nid, 0.0) / amp_max, 4),
                 }
             )
             if len(hits) >= k:

@@ -76,3 +76,17 @@ def test_similarity_helpers():
     b = "DPNN 相位记忆 皮萨诺周期"
     assert similarity(a, b) > similarity(a, "群沃客 品牌 图标 协作")
     assert 0.0 <= cosine(ngram_vector(a), ngram_vector(b)) <= 1.0
+
+
+def test_resonance_spreads_across_similar_cluster(tmp_path):
+    """Long-range resonance: a query seeding one topic also surfaces its similar
+    neighbors via the D5 similar channel (amplitude normalized 0..1)."""
+    store, builder, res, _obs = _hive(tmp_path)
+    builder.build(_sample_items())
+    out = res.resonate("DPNN 周期", k=6)
+    assert out["hits"]
+    assert 0.0 <= out["hits"][0]["amplitude"] <= 1.0
+    titles = [h["title"] for h in out["hits"]]
+    # DPNN seeds hit, and the similar chain reaches other DPNN cells
+    assert any("DPNN" in t for t in titles)
+    assert any(h["path"] for h in out["hits"])  # propagation paths explained

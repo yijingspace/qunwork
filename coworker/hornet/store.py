@@ -42,8 +42,10 @@ RELATION_CHANNEL = {
 EMERGENT_KINDS = ("hypernode", "attractor", "gap")
 
 
-def ngram_vector(text: str, n: int = 3) -> dict[str, float]:
-    """Char n-gram count vector (normalized) — decent Chinese similarity."""
+def ngram_vector(text: str, n: int = 2) -> dict[str, float]:
+    """Char n-gram count vector (normalized) — decent Chinese similarity.
+    Default n=2: Chinese 2-char words (周报/目标/达成) become grams; n=3 drops
+    them entirely and short queries stop matching."""
     text = re.sub(r"\s+", "", (text or "").lower())
     if len(text) < n:
         return {text: 1.0} if text else {}
@@ -71,6 +73,25 @@ def _similarity(text_a: str, text_b: str) -> float:
     q = ngram_vector(text_a)
     d = ngram_vector(text_b)
     return cosine(q, d)
+
+
+def coverage_similarity(query: str, doc_vec: dict[str, float], n: int = 2) -> float:
+    """Query raw n-gram counts x doc normalized coefficients — NOT diluted by
+    document length, so a short probe strongly seeds a long matching cell
+    (the knowledge store gets this for free because its chunks are short)."""
+    text = re.sub(r"\s+", "", (query or "").lower())
+    if len(text) < n:
+        return doc_vec.get(text, 0.0) if text else 0.0
+    qraw: dict[str, int] = {}
+    for i in range(len(text) - n + 1):
+        gram = text[i : i + n]
+        qraw[gram] = qraw.get(gram, 0) + 1
+    total = 0.0
+    for gram, cnt in qraw.items():
+        d = doc_vec.get(gram)
+        if d:
+            total += cnt * d
+    return total
 
 
 class HornetStore:

@@ -79,8 +79,44 @@ def _opposite_hint(a: str, b: str) -> bool:
 
 # -- hexagonal layout (axial coords via PCA of n-gram vectors) -----------------
 def _pca2(vectors: list[dict[str, float]]) -> list[tuple[float, float]]:
-    """Project sparse n-gram vectors to 2D via truncated PCA (power iteration on
-    the covariance of a shared-gram basis). Falls back to hash-based scatter."""
+    """Project sparse n-gram vectors to 2D via truncated PCA (numpy). Falls back
+    to hash-based scatter when numpy is unavailable."""
+    if not vectors:
+        return []
+    try:
+        import numpy as np
+    except ImportError:
+        return _pca2_pure(vectors)
+    df: dict[str, int] = {}
+    for v in vectors:
+        for g in v:
+            df[g] = df.get(g, 0) + 1
+    basis = [g for g, _ in sorted(df.items(), key=lambda kv: -kv[1])[:256]]
+    if not basis:
+        return []
+    idx = {g: i for i, g in enumerate(basis)}
+    n = len(vectors)
+    m = len(basis)
+    X = np.zeros((n, m), dtype=np.float32)
+    for i, v in enumerate(vectors):
+        for g, c in v.items():
+            j = idx.get(g)
+            if j is not None:
+                X[i, j] = c
+    X -= X.mean(axis=0, keepdims=True)
+    try:
+        u, s, _ = np.linalg.svd(X, full_matrices=False)
+        k = min(2, u.shape[1])
+        proj = (u[:, :k] * s[:k])
+        if k == 1:  # degenerate single component
+            proj = np.column_stack([proj[:, 0], np.zeros(n, dtype=np.float32)])
+    except np.linalg.LinAlgError:  # pragma: no cover - degenerate
+        proj = np.random.default_rng(0).normal(size=(n, 2))
+    return [(float(a), float(b)) for a, b in proj]
+
+
+def _pca2_pure(vectors: list[dict[str, float]]) -> list[tuple[float, float]]:
+    """Pure-Python fallback (no numpy) — power iteration on the covariance."""
     if not vectors:
         return []
     # shared gram basis (top by document frequency)
@@ -203,14 +239,18 @@ class HornetBuilder:
             )
             node_ids.append(nid)
 
-        # auto edges
+        # auto edges (title-gram prefilter keeps the O(n²) pass cheap: full-text
+        # similarity only runs when two titles share a 2-gram)
         edges = 0
         n = len(items)
+        title_grams = [set(ngram_vector(t, 2).keys()) for _k, t, _c, _ts in items]
         for i in range(n):
             ti, ci = items[i][1], items[i][2]
+            gi = title_grams[i]
             for j in range(i + 1, n):
                 tj, cj = items[j][1], items[j][2]
-                rel, weight, channel = _classify(ti, ci, tj, cj, items[i][3], items[j][3])
+                share = bool(gi & title_grams[j])
+                rel, weight, channel = _classify(ti, ci, tj, cj, items[i][3], items[j][3], share)
                 if rel:
                     if self.store.add_edge(node_ids[i], node_ids[j], rel, weight=weight, channel=channel):
                         edges += 1
@@ -238,35 +278,32 @@ def _phase_from_content(text: str) -> list[float]:
 
 def _classify(
     title_a: str, content_a: str, title_b: str, content_b: str,
-    ts_a: float, ts_b: float,
+    ts_a: float, ts_b: float, share_title_grams: bool = True,
 ) -> tuple[Optional[str], float, Optional[str]]:
-    """Decide relation/weight/channel between two cells (deterministic rules)."""
+    """Decide relation/weight/channel between two cells (deterministic rules).
+    `share_title_grams`: false skips the full-text similar/attribute checks (the
+    O(n²) hot path stays cheap — no n-gram rebuild for unrelated pairs)."""
     ta = f"{title_a} {content_a}"[:600]
     tb = f"{title_b} {content_b}"[:600]
-    sim = similarity(ta, tb)
 
-    # similar (strongest signal)
-    if sim >= SIM_THRESHOLD:
-        return "similar", round(sim, 4), "D5"
-
-    # cause
+    # cause / opposite / contains / temporal are keyword-ish — cheap, always run
     if _cause_hint(title_a, title_b):
         return "cause", 0.8, "D1"
-
-    # opposite
     if _opposite_hint(title_a, title_b):
         return "opposite", 0.7, "D4"
-
-    # contains (path-ish)
     if _contains_hint(title_a, title_b) and len(title_a) != len(title_b):
         return "contains", 0.9, "D2"
-
-    # temporal (date-ish titles, close creation)
     if _has_date(title_a) and _has_date(title_b) and abs(ts_a - ts_b) < TEMPORAL_DAYS * 86400:
         return "temporal", 0.75, "D0"
 
-    # attribute (shared distinctive keywords)
+    # similar / attribute need full-text n-grams — skip when titles don't share
+    # any 2-gram (they can't be meaningfully similar anyway)
+    if not share_title_grams:
+        return None, 0.0, None
+
+    sim = similarity(ta, tb)
+    if sim >= SIM_THRESHOLD:
+        return "similar", round(sim, 4), "D5"
     if sim >= ATTRIBUTE_THRESHOLD and _keyword_attribute(title_a, title_b):
         return "attribute", round(sim, 4), "D2"
-
     return None, 0.0, None
