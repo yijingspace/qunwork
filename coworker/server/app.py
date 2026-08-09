@@ -957,6 +957,14 @@ def create_app(manager: SessionManager) -> FastAPI:
     def knowledge_delete(item_id: int) -> dict[str, Any]:
         return {"ok": manager.knowledge_delete(item_id), "id": item_id}
 
+    @app.get("/v1/knowledge/{item_id}/detail")
+    def knowledge_detail(item_id: int) -> dict[str, Any]:
+        """Full knowledge detail (content + source) for the view/resume actions."""
+        item = manager.knowledge_get(item_id)
+        if item is None:
+            return {"ok": False, "error": "not found"}
+        return {"ok": True, "item": item}
+
     # -- HORNET (蜂巢共振神经拓扑) 2D layer ---------------------------------
     @app.post("/v1/hornet/build")
     def hornet_build(body: dict) -> dict[str, Any]:

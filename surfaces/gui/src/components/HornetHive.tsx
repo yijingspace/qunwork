@@ -120,7 +120,11 @@ function hexPoints(cx: number, cy: number, R = HEX_R): string {
 }
 
 /** HORNET 2D hive: hexagonal cell grid + resonance wave highlighting. */
-export function HornetHive() {
+interface HornetHiveProps {
+  onResume?: (payload: { title: string; content: string; source?: string }) => void;
+}
+
+export function HornetHive({ onResume }: HornetHiveProps) {
   const t = useT();
   const [nodes, setNodes] = useState<HornetNode[]>([]);
   const [edges, setEdges] = useState<HornetEdge[]>([]);
@@ -427,7 +431,21 @@ export function HornetHive() {
                 <span className="text-[11px]">
                   {e.kind === "hypernode" ? "🧬" : e.kind === "attractor" ? "⚠️" : e.kind === "fission" ? "🌱" : e.kind === "cavity" ? "🌀" : e.kind === "conflict" ? "⚡" : "🕳"}
                 </span>
-                <span className="truncate text-ink">{e.title}</span>
+                <button
+                  className="truncate text-ink hover:text-accent text-left min-w-0 flex-1"
+                  title={t("Click to view / research this emergent finding")}
+                  onClick={() =>
+                    onResume?.({
+                      title: e.title,
+                      content: `${t("Emergent kind")}: ${e.kind}
+${t("Auto-surfaced by the hive")}`,
+                      source: `${t("HORNET")} ${e.kind}`,
+                    })
+                  }
+                  data-testid={`emergent-resume-${e.id}`}
+                >
+                  {e.title}
+                </button>
                 <span className="text-[10px] text-faint shrink-0">{e.kind}</span>
               </div>
             ))}

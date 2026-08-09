@@ -919,8 +919,7 @@ export function App() {
     sessionRef.current?.setModel(m);
   };
 
-  const startNewSession = (forAgent?: string) => {
-    const target = forAgent || agent;
+  const startNewSession = (forAgent?: string) => {    const target = forAgent || agent;
     setSurface("session"); // return to the conversation view if we were on a sub-view
     setItems([]);
     setStreaming("");
@@ -942,6 +941,18 @@ export function App() {
     // server provisions a NEW scratch dir for the new session id. Code keeps its repo.
     if (!gatesWorkspace(target)) setWorkspace(null);
     setSessionId(newId());
+  };
+  // Knowledge → conversation: continue research/creation from a knowledge entry.
+  // Opens a fresh cowork session whose first prompt carries the knowledge body,
+  // so the agent keeps working on it (self-questioning, expansion, creation).
+  const resumeKnowledge = (payload: { title: string; content: string; source?: string }) => {
+    startNewSession("cowork");
+    setShowGate(false);
+    const body = (payload.content || "").slice(0, 6000);
+    const src = payload.source ? `\n\n【来源】${payload.source}` : "";
+    pendingPromptRef.current =
+      `请基于以下知识继续研究/创作。先理解核心内容,再在现有基础上深入扩展、提出新见解或创作相关成果。\n\n` +
+      `【标题】${payload.title}\n\n【内容】\n${body}${src}`;
   };
   // Inbox → session: the item carries its session's workspace/agent, so open it directly.
   // UX-026: 5s top-right toast when a SCHEDULED automation run starts (never for
@@ -1350,7 +1361,7 @@ export function App() {
       ) : surface === "skills" ? (
         <SkillsView />
       ) : surface === "knowledge" ? (
-        <KnowledgeView />
+        <KnowledgeView onResume={resumeKnowledge} />
       ) : surface === "integrations" ? (
         <IntegrationsView />
       ) : surface === "settings" ? (

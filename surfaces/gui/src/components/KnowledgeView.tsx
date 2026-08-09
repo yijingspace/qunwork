@@ -12,7 +12,11 @@ import { HornetHive } from "./HornetHive";import {
 } from "../api";
 import { useT } from "../i18n";
 
-export default function KnowledgeView() {
+interface KnowledgeViewProps {
+  onResume?: (payload: { title: string; content: string; source?: string }) => void;
+}
+
+export default function KnowledgeView({ onResume }: KnowledgeViewProps) {
   const t = useT();
   const [items, setItems] = useState<KnowledgeItem[]>([]);
   const [total, setTotal] = useState(0);
@@ -26,6 +30,38 @@ export default function KnowledgeView() {
   const [scanning, setScanning] = useState(false);
   const [importingFolder, setImportingFolder] = useState(false);
   const [view, setView] = useState<"list" | "hive">("list");
+  const [expanded, setExpanded] = useState<number | null>(null);
+  const [detail, setDetail] = useState<{ title: string; content: string; source_path?: string | null } | null>(null);
+  const [detailBusy, setDetailBusy] = useState(false);
+
+  const handleExpand = async (id: number) => {
+    if (expanded === id) {
+      setExpanded(null);
+      setDetail(null);
+      return;
+    }
+    setExpanded(id);
+    setDetailBusy(true);
+    try {
+      const res = await fetch(`${(globalThis as any).__COWORKER_HTTP__ || "http://127.0.0.1:8765"}/v1/knowledge/${id}/detail`);
+      const data = await res.json();
+      if (data.ok) {
+        setDetail({
+          title: data.item.title,
+          content: data.item.content || "",
+          source_path: data.item.source_path,
+        });
+      }
+    } catch {
+      setDetail(null);
+    } finally {
+      setDetailBusy(false);
+    }
+  };
+
+  const handleResume = (title: string, content: string, source?: string) => {
+    onResume?.({ title, content, source });
+  };
 
   const flash = (msg: string) => {
     setNotice(msg);
@@ -166,7 +202,7 @@ export default function KnowledgeView() {
       {notice && <div className="mb-3 px-3 py-2 rounded-lg bg-surface border border-line text-[12.5px]">{notice}</div>}
 
       {view === "hive" ? (
-        <HornetHive />
+        <HornetHive onResume={onResume} />
       ) : (
         <>
       {/* search */}
@@ -253,24 +289,77 @@ export default function KnowledgeView() {
       ) : (
         <div className="flex flex-col gap-1.5">
           {items.map((item) => (
-            <div key={item.id} className="flex items-center gap-2 rounded-lg border border-line bg-surface px-3 py-2">
-              <span className="text-[11px] px-1.5 py-0.5 rounded bg-surface-2 text-faint shrink-0">
-                {item.kind === "file" ? "📄" : "✍️"}
-              </span>
-              <div className="min-w-0 flex-1">
-                <div className="text-[13px] font-medium truncate">{item.title}</div>
-                <div className="text-[11px] text-faint truncate">
-                  {item.kind === "file" ? item.source_path : t("Manual entry")}
-                </div>
+            <div key={item.id}>
+              <div className="flex items-center gap-2 rounded-lg border border-line bg-surface px-3 py-2">
+                <span className="text-[11px] px-1.5 py-0.5 rounded bg-surface-2 text-faint shrink-0">
+                  {item.kind === "file" ? "📄" : "✍️"}
+                </span>
+                <button
+                  className="min-w-0 flex-1 text-left"
+                  onClick={() => handleExpand(item.id)}
+                  title={t("Click to view content")}
+                  data-testid={`knowledge-item-${item.id}`}
+                >
+                  <div className="text-[13px] font-medium truncate hover:text-accent">{item.title}</div>
+                  <div className="text-[11px] text-faint truncate">
+                    {item.kind === "file" ? item.source_path : t("Manual entry")}
+                  </div>
+                </button>
+                <button
+                  className="text-[11.5px] text-accent hover:underline shrink-0"
+                  onClick={() => {
+                    if (!item.title) return;
+                    handleResume(item.title, "", item.source_path ?? undefined);
+                  }}
+                  data-testid={`knowledge-resume-${item.id}`}
+                >
+                  🧠 {t("Research")}
+                </button>
+                <button
+                  className="text-[11.5px] text-muted hover:text-red-500 shrink-0"
+                  onClick={() => {
+                    if (window.confirm(`${t("Delete entry")} “${item.title}”?`)) handleDelete(item.id);
+                  }}
+                >
+                  {t("Delete")}
+                </button>
               </div>
-              <button
-                className="text-[11.5px] text-muted hover:text-red-500 shrink-0"
-                onClick={() => {
-                  if (window.confirm(`${t("Delete entry")} “${item.title}”?`)) handleDelete(item.id);
-                }}
-              >
-                {t("Delete")}
-              </button>
+              {expanded === item.id && (
+                <div className="mt-1 rounded-lg border border-line bg-surface-2 px-3 py-2 text-[12px]" data-testid={`knowledge-detail-${item.id}`}>
+                  {detailBusy ? (
+                    <span className="text-muted">{t("Loading…")}</span>
+                  ) : detail ? (
+                    <>
+                      <div className="whitespace-pre-wrap max-h-48 overflow-y-auto hairline-scroll text-ink">
+                        {detail.content || t("No content")}
+                      </div>
+                      {detail.source_path && (
+                        <div className="mt-1.5 flex items-center gap-2 text-[11px] text-faint">
+                          <span>🔗</span>
+                          {/^https?:\/\//i.test(detail.source_path) ? (
+                            <a href={detail.source_path} target="_blank" rel="noreferrer" className="text-accent hover:underline break-all">
+                              {detail.source_path}
+                            </a>
+                          ) : (
+                            <span className="break-all">{detail.source_path}</span>
+                          )}
+                        </div>
+                      )}
+                      <div className="mt-1.5">
+                        <button
+                          className="btn-primary text-[11px]"
+                          onClick={() => handleResume(detail.title, detail.content, detail.source_path ?? undefined)}
+                          data-testid={`knowledge-resume-detail-${item.id}`}
+                        >
+                          🧠 {t("Continue research / creation")}
+                        </button>
+                      </div>
+                    </>
+                  ) : (
+                    <span className="text-muted">{t("Couldn't load detail")}</span>
+                  )}
+                </div>
+              )}
             </div>
           ))}
         </div>

@@ -4170,8 +4170,18 @@ class SessionManager:
         )
         actions["knowledge"].append(title)
 
-    def knowledge_delete(self, item_id: int) -> bool:
-        return self.knowledge.delete(item_id)
+    def knowledge_get(self, item_id: int) -> Optional[dict]:
+        """Full knowledge detail: content + source link, for the detail view
+        and the "continue research/creation" action."""
+        for r in self.knowledge.list_items(limit=5000):
+            if r.get("id") == item_id:
+                return {
+                    **r,
+                    "content": self.knowledge.item_content(item_id),
+                }
+        return None
+
+    def knowledge_delete(self, item_id: int) -> bool:        return self.knowledge.delete(item_id)
 
     def hornet_export_hive(self) -> dict:
         """C: 跨组织蜂巢共振对齐 — export hive topology."""
