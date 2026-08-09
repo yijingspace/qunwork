@@ -373,7 +373,8 @@ class KnowledgeStore:
             ).fetchall()
         return "\n".join(r[0] for r in rows)
 
-    def count_items(self, workspace: Optional[str] = None) -> int:        """Total number of knowledge items for the workspace (or all workspaces)."""
+    def count_items(self, workspace: Optional[str] = None) -> int:
+        """Total number of knowledge items for the workspace (or all workspaces)."""
         ws = str(workspace) if workspace else self._default_workspace
         with self._lock:
             if ws:
