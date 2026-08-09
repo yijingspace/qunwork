@@ -285,6 +285,29 @@ class HornetStore:
             out.append(d)
         return out
 
+    def node_hit_stats(self, limit: int = 200) -> dict[int, dict[str, float]]:
+        """Aggregate per-node resonance stats (resonance_stat in the spec):
+        hit_count, total amplitude, avg amplitude, and a load_factor = share of
+        resonance runs in which this node resonated. Feeds cell fission, cavity
+        detection and oscillation flags."""
+        recs = self.recent_resonance(limit)
+        if not recs:
+            return {}
+        hits: dict[int, dict[str, float]] = {}
+        for rec in recs:
+            for h in rec.get("hits", []):
+                nid = h.get("node_id")
+                if nid is None:
+                    continue
+                s = hits.setdefault(int(nid), {"hit_count": 0.0, "amp_sum": 0.0})
+                s["hit_count"] += 1
+                s["amp_sum"] += float(h.get("amplitude") or 0.0)
+        runs = float(len(recs))
+        for nid, s in hits.items():
+            s["avg_amp"] = round(s["amp_sum"] / s["hit_count"], 4)
+            s["load_factor"] = round(s["hit_count"] / runs, 4)
+        return hits
+
     # -- emergence -----------------------------------------------------------
     def add_emergent(self, kind: str, title: str, detail: dict[str, Any]) -> tuple[int, bool]:
         """Insert an emergent product, deduped by (kind, title) so repeated

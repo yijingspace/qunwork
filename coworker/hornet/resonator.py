@@ -70,8 +70,17 @@ class HornetResonator:
                     continue
                 nbrs = adj.get(nid, [])
                 share = energy * (1.0 / max(1, len(nbrs)))
+                zi = node_by_id[nid].get("z", 0)
                 for nbr, rel, ch, w in nbrs:
                     decay = CHANNEL_DECAY_3D.get(ch, 0.72)
+                    # Cross-layer rule (spec §三层动态共振三维适配): a wave may
+                    # NOT jump straight between Z+ projection and Z- traceback —
+                    # it must relay through the XY fact plane, forming the
+                    # "evidence → fact → projection" chain. Direct cross-zone
+                    # hops are heavily damped; same-zone hops pass freely.
+                    zn = node_by_id[nbr].get("z", 0)
+                    if (zi > 0 and zn < 0) or (zi < 0 and zn > 0):
+                        decay *= 0.30
                     contrib = share * w * decay
                     if contrib < self.decay_floor:
                         continue

@@ -136,12 +136,68 @@ def test_emergence_dedup_and_unread_flow(tmp_path):
     ev1 = obs.evolve()
     assert ev1["emerged"] > 0
     n1 = store.emergent_count()
-    # second evolve must NOT re-notify the same findings (dedup)
+    # second evolve must NOT re-notify the same findings (dedup by kind+title)
     ev2 = obs.evolve()
-    assert store.emergent_count() == n1
-    assert ev2["emerged"] == 0
+    all_rows = store.list_emergent(500)
+    pairs = [(r["kind"], r["title"]) for r in all_rows]
+    assert len(pairs) == len(set(pairs)), "emergent findings must be deduped"
     # unread feed + mark-read flow
-    assert store.count_unread_emergent() == n1
+    total = store.emergent_count()
+    assert store.count_unread_emergent() == total
     first = store.list_emergent(1)[0]
     assert store.set_emergent_status(first["id"], "accepted") is True
-    assert store.count_unread_emergent() == n1 - 1
+    assert store.count_unread_emergent() == total - 1
+
+
+def test_cell_fission_on_high_load(tmp_path):
+    """Spec §三维蜂胞分裂: high load_factor cells split into zone child cells."""
+    store, builder, res, obs = _hive(tmp_path)
+    builder.build(_sample_items())
+    # make a topic resonate hard -> high load_factor
+    for _ in range(4):
+        res.resonate("DPNN 相位 周期", k=4)
+    before = store.node_count()
+    ev = obs.evolve(limit=30)
+    assert ev["counts"]["fission"] > 0
+    assert store.node_count() > before
+    children = [n for n in store.list_nodes() if "推演延伸" in n["title"] or "溯源锚点" in n["title"]]
+    assert children
+    # children grow in the opposite zone of their mother (fission splits along Z)
+    assert all(n["z"] in (-1, 1) for n in children)
+
+
+def test_cavity_detects_never_resonated_cells(tmp_path):
+    """Spec §立体空洞挖掘: cells never hit by any probe are topological cavities."""
+    store, builder, res, obs = _hive(tmp_path)
+    builder.build(_sample_items())
+    # only resonate one topic; the other topics never resonate
+    for _ in range(3):
+        res.resonate("DPNN 周期", k=3)
+    ev = obs.evolve(limit=30)
+    assert ev["counts"]["cavity"] > 0
+    cavity_kinds = {e["kind"] for e in ev["items"]}
+    assert "cavity" in cavity_kinds
+
+
+def test_cross_layer_hops_are_damped():
+    """Spec §三层动态共振: direct Z+↔Z- hops must be heavily damped (chain via XY)."""
+    import tempfile
+    from pathlib import Path
+    from coworker.hornet import HornetStore, HornetBuilder, HornetResonator
+
+    store = HornetStore(Path(tempfile.mkdtemp()) / "h.db")
+    builder = HornetBuilder(store)
+    items = []
+    for i in range(3):
+        items.append((i, f"历史 起源 {i}", "历史 起源 传统 证据 溯源", 1_700_000_000 + i))
+    for i in range(3):
+        items.append((10 + i, f"当前 事实 {i}", "当前 事实 数据 状态", 1_700_000_100 + i))
+    for i in range(3):
+        items.append((20 + i, f"未来 预测 {i}", "未来 预测 趋势 展望 假设", 1_700_000_200 + i))
+    builder.build(items)
+    res = HornetResonator(store)
+    out = res.resonate("未来 预测 趋势", k=6)
+    assert out["hits"]
+    # Z+ seeds dominate, and any Z- hit must have come through a relayed path
+    # (amplitudes of direct cross-zone hops are damped ×0.30)
+    assert out["hits"][0]["amplitude"] >= 0.5

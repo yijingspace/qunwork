@@ -334,7 +334,7 @@ export function HornetHive() {
             {emergents.slice(0, 8).map((e) => (
               <div key={e.id} className="flex items-center gap-2 text-[12px]">
                 <span className="text-[11px]">
-                  {e.kind === "hypernode" ? "🧬" : e.kind === "attractor" ? "⚠️" : "🕳"}
+                  {e.kind === "hypernode" ? "🧬" : e.kind === "attractor" ? "⚠️" : e.kind === "fission" ? "🌱" : e.kind === "cavity" ? "🌀" : e.kind === "conflict" ? "⚡" : "🕳"}
                 </span>
                 <span className="truncate text-ink">{e.title}</span>
                 <span className="text-[10px] text-faint shrink-0">{e.kind}</span>
