@@ -4183,18 +4183,88 @@ class SessionManager:
 
     def knowledge_resume_pack(self, item_id: int, k: int = 3) -> Optional[dict]:
         """One-click research pack: full body + source link + resonance context.
+
         The UI sends this whole pack as the session's first prompt, so the agent
         never has to hunt for the original material (its scratch workspace is
-        empty by design)."""
+        empty by design). For emergent/summary entries (kind=swarm_report,
+        title prefixed [涌现]/[蜂胞分裂]) the stored body is a compressed
+        digest — we resolve the ORIGINAL source entries (same-topic files with a
+        source path) and ship their full bodies + links instead."""
         item = self.knowledge_get(item_id)
         if not item:
             return None
+        title = item.get("title") or ""
+        content = item.get("content") or ""
+        source = item.get("source_path")
+        # Emergent digest → resolve original same-topic sources
+        if title.startswith(("[涌现]", "[蜂胞分裂]")) or (not source and len(content) < 300):
+            originals = self._resolve_knowledge_originals(title, exclude_id=item_id)
+            if originals:
+                content = "\n\n---\n\n".join(o["content"][:4000] for o in originals[:2]) or content
+                source = source or originals[0].get("source_path")
         return {
-            "title": item.get("title") or "",
-            "content": (item.get("content") or ""),
-            "source": item.get("source_path"),
+            "title": title,
+            "content": content,
+            "source": source,
             "related": self.knowledge_resume_context(item_id, k=k),
         }
+
+    def _resolve_knowledge_originals(self, title: str, exclude_id: int, limit: int = 3) -> list[dict]:
+        """Find the ORIGINAL source entries behind an emergent/summary title:
+        strip markers (⊕, [涌现], [蜂胞分裂], 问答), then match file entries
+        whose title shares a meaningful token. Returns entries with content."""
+        import re as _re
+
+        cleaned = _re.sub(r"\[(涌现|蜂胞分裂|HORNET)[^\]]*\]", "", title)
+        cleaned = cleaned.replace("⊕", " ").replace("问答", " ")
+        tokens = [t.strip() for t in _re.split(r"[ \s·(（]", cleaned) if len(t.strip()) >= 3]
+        if not tokens:
+            return []
+        out: list[dict] = []
+        for r in self.knowledge.list_items(limit=5000):
+            if r.get("id") == exclude_id or r.get("kind") != "file":
+                continue
+            rt = r.get("title") or ""
+            hits = sum(1 for tok in tokens if tok in rt)
+            if hits >= 1 and len(out) < limit:
+                out.append(
+                    {
+                        "id": r["id"],
+                        "title": rt,
+                        "source_path": r.get("source_path"),
+                        "content": self.knowledge.item_content(r["id"]),
+                    }
+                )
+        # prefer the entries with the most token hits
+        return sorted(
+            out,
+            key=lambda o: sum(1 for tok in tokens if tok in (o["title"] or "")),
+            reverse=True,
+        )[:limit]
+
+    def knowledge_resume_by_title(self, title: str) -> Optional[dict]:
+        """Resume from a title alone (emergent findings that are not persisted
+        as knowledge entries): find the best knowledge entry and build its pack."""
+        if not title:
+            return None
+        best = None
+        best_score = -1
+        for r in self.knowledge.list_items(limit=5000):
+            if r.get("kind") == "file":
+                continue  # prefer non-file summaries? No — prefer exact title matches first
+            rt = r.get("title") or ""
+            if rt == title:
+                return self.knowledge_resume_pack(r["id"])
+        # fuzzy: token overlap against full title
+        tokens = [t for t in title.split() if len(t) >= 3]
+        for r in self.knowledge.list_items(limit=5000):
+            rt = r.get("title") or ""
+            score = sum(1 for t in tokens if t in rt)
+            if score > best_score:
+                best_score, best = score, r
+        if best and best_score > 0:
+            return self.knowledge_resume_pack(best["id"])
+        return None
 
     def knowledge_resume_context(self, item_id: int, k: int = 3) -> list[dict]:
         """Resonance context pack: the knowledge entry's HORNET cell plus the
@@ -4214,17 +4284,25 @@ class SessionManager:
         except Exception:
             return []
         pack = []
+        seen: set[str] = set()
         for h in out.get("hits", []):
             cell_node = next((n for n in nodes if n["id"] == h.get("node_id")), None)
             if not cell_node:
                 continue
+            ctitle = cell_node.get("title", "")
+            # de-dup + drop the entry itself (its own cell always resonates first)
+            if not ctitle or ctitle in seen or ctitle == (item.get("title") or ""):
+                continue
+            seen.add(ctitle)
             pack.append(
                 {
-                    "title": cell_node.get("title", ""),
+                    "title": ctitle,
                     "snippet": (cell_node.get("content") or "")[:200],
                     "amplitude": h.get("amplitude", 0),
                 }
             )
+            if len(pack) >= k:
+                break
         return pack
 
     def reveal_knowledge_source(self, path: str) -> dict:

@@ -509,6 +509,21 @@ ${t("Auto-surfaced by the hive")}`;
                     } catch {
                       /* fall through */
                     }
+                  } else {
+                    // Not persisted as a knowledge entry (cavity/gap/conflict):
+                    // resolve the ORIGINAL source by title so the agent still
+                    // gets the real body + link, not just the finding title.
+                    const { knowledgeResumeByTitle } = await import("../api");
+                    try {
+                      const pk = await knowledgeResumeByTitle(selEmergent.title);
+                      if (pk.ok && pk.pack) {
+                        onResume?.({ title: pk.pack.title, content: pk.pack.content, source: pk.pack.source ?? undefined });
+                        setSelEmergent(null);
+                        return;
+                      }
+                    } catch {
+                      /* fall through to summary */
+                    }
                   }
                   onResume?.({ title: selEmergent.title, content: selEmergent.detail ?? "", source: `${t("HORNET")} ${selEmergent.kind}` });
                   setSelEmergent(null);

@@ -2434,3 +2434,14 @@ export async function knowledgeResumePack(
   const res = await fetch(`${httpBase()}/v1/knowledge/${id}/resume-pack`);
   return await res.json();
 }
+
+export async function knowledgeResumeByTitle(
+  title: string,
+): Promise<{ ok: boolean; pack?: { title: string; content: string; source?: string | null; related: { title: string; snippet: string; amplitude: number }[] } }> {
+  const res = await fetch(`${httpBase()}/v1/knowledge/resume-by-title`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ title }),
+  });
+  return await res.json();
+}

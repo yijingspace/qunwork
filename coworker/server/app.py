@@ -1000,6 +1000,14 @@ def create_app(manager: SessionManager) -> FastAPI:
             return {"ok": False, "error": "not found"}
         return {"ok": True, "pack": pack}
 
+    @app.post("/v1/knowledge/resume-by-title")
+    def knowledge_resume_by_title(body: dict) -> dict[str, Any]:
+        """Resume from a title alone (emergent findings without a persisted entry)."""
+        pack = manager.knowledge_resume_by_title((body or {}).get("title", ""))
+        if pack is None:
+            return {"ok": False, "error": "no matching knowledge entry"}
+        return {"ok": True, "pack": pack}
+
     @app.post("/v1/knowledge/reveal-source")
     def knowledge_reveal_source(body: dict) -> dict[str, Any]:
         """Open a knowledge source path in the OS (folder via explorer)."""
