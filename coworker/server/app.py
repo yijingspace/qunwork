@@ -986,6 +986,16 @@ def create_app(manager: SessionManager) -> FastAPI:
     def hornet_stats() -> dict[str, Any]:
         return manager.hornet_stats()
 
+    @app.get("/v1/hornet/health")
+    def hornet_health() -> dict[str, Any]:
+        """E: knowledge-field health assessment (structure/dynamics/evolution)."""
+        return manager.hornet_health()
+
+    @app.post("/v1/hornet/health-report")
+    def hornet_health_report() -> dict[str, Any]:
+        """E: render + persist the weekly hive health report."""
+        return manager.hornet_health_report()
+
     @app.get("/v1/hornet/emergence")
     def hornet_emergence(limit: int = 20) -> dict[str, Any]:
         """Unread emergence feed — new knowledge surfaced by the hive."""

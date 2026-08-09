@@ -3979,7 +3979,34 @@ class SessionManager:
         if result.get("emerged", 0) > 0:
             actions = self.hornet_act_on_emergence(result.get("items", []))
             result["actions"] = actions
+        # E: weekly health report — emit at most once per 7 days
+        import time
+
+        last = getattr(self, "_hornet_last_health_report", 0.0)
+        if time.time() - last > 7 * 86400:
+            try:
+                self.hornet_health_report()
+                self._hornet_last_health_report = time.time()
+            except Exception:
+                pass
         return result
+
+    def hornet_health(self) -> dict:
+        from ..hornet.health import assess_health
+
+        return assess_health(self.hornet)
+
+    def hornet_health_report(self) -> dict:
+        """E: render the hive health weekly report and persist it next to the
+        coordination reports in the workspace."""
+        from ..hornet.health import assess_health, render_hive_health_report
+
+        health = assess_health(self.hornet)
+        md = render_hive_health_report(health)
+        ws = self.default_workspace or str(Path(".").resolve())
+        out = Path(ws) / f"hive-health-report-{health['score']:.0f}.md"
+        out.write_text(md, encoding="utf-8")
+        return {"ok": True, "path": str(out), "score": health["score"], "rating": health["rating"]}
 
     def hornet_act_on_emergence(self, emerged: list[dict[str, Any]]) -> dict[str, Any]:
         """Self-organizing actions: each emergence kind triggers an automatic

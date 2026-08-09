@@ -516,3 +516,24 @@ def test_freshness_downgrade_is_reversible(tmp_path):
     r2 = obs.freshness_pass(stale_threshold=0.1)
     restored = [n for n in store.list_nodes() if n["freshness"] > 0.95]
     assert any(n["title"].startswith("DPNN") for n in restored)
+
+
+def test_health_assessment_and_report(tmp_path):
+    """E: health assessment scores all three dimensions; report renders + persists."""
+    from coworker.hornet.health import assess_health, render_hive_health_report
+
+    store, builder, _res, _obs = _hive(tmp_path)
+    builder.build(_sample_items())
+    for _ in range(2):
+        _res.resonate("DPNN 周期", k=3)
+    h = assess_health(store)
+    assert 0.0 <= h["score"] <= 100.0
+    assert h["rating"] in ("healthy", "sub-healthy", "warning")
+    assert set(h["dimensions"]) == {"structure", "dynamics", "evolution"}
+    assert h["metrics"]["nodes"] == 9
+    md = render_hive_health_report(h)
+    assert "知识场健康度周报" in md and "总评分" in md
+    # empty hive → score 0 + empty rating, never crash
+    empty = HornetStore(tmp_path / "empty.db")
+    he = assess_health(empty)
+    assert he["score"] == 0 and he["rating"] == "empty"

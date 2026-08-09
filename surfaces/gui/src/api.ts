@@ -2391,3 +2391,18 @@ export async function hornetMarkEmergence(
   });
   return await res.json();
 }
+
+export async function hornetHealth(): Promise<{
+  score: number;
+  rating: string;
+  dimensions: { structure: number; dynamics: number; evolution: number };
+  metrics: Record<string, unknown>;
+}> {
+  const res = await fetch(`${httpBase()}/v1/hornet/health`);
+  return await res.json();
+}
+
+export async function hornetHealthReport(): Promise<{ ok: boolean; path?: string; score?: number }> {
+  const res = await fetch(`${httpBase()}/v1/hornet/health-report`, { method: "POST" });
+  return await res.json();
+}

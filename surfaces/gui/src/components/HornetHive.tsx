@@ -4,6 +4,7 @@ import {
   hornetBuild,
   hornetEvolve,
   hornetGraph,
+  hornetHealth,
   hornetResonate,
   hornetStats,
   type HornetEdge,
@@ -131,13 +132,15 @@ export function HornetHive() {
   const [error, setError] = useState("");
   const [view, setView] = useState<ViewMode>("iso");
   const [useTopo, setUseTopo] = useState(false);
+  const [health, setHealth] = useState<{ score: number; rating: string; dimensions: { structure: number; dynamics: number; evolution: number } } | null>(null);
   const [soundOn, setSoundOn] = useState(false);
   const svgRef = useRef<SVGSVGElement | null>(null);
   const { playResonance } = useHornetAudio();
 
   const refresh = useCallback(async () => {
     try {
-      const [g, s] = await Promise.all([hornetGraph(), hornetStats()]);
+      const [g, s, h] = await Promise.all([hornetGraph(), hornetStats(), hornetHealth().catch(() => null)]);
+      setHealth(h);
       setNodes(g.nodes ?? []);
       setEdges(g.edges ?? []);
       setStats({
@@ -247,6 +250,16 @@ export function HornetHive() {
             </span>
           ) : null}
         </span>
+        {health && (
+          <span
+            className="inline-flex items-center gap-1.5 text-[11px] px-2 py-0.5 rounded-full border border-line"
+            title={`${t("Structure")} ${health.dimensions.structure} · ${t("Dynamics")} ${health.dimensions.dynamics} · ${t("Evolution")} ${health.dimensions.evolution}`}
+            data-testid="hornet-health"
+          >
+            <span className={"w-2 h-2 rounded-full " + (health.rating === "healthy" ? "bg-emerald-500" : health.rating === "sub-healthy" ? "bg-amber-400" : "bg-rose-500")} />
+            {t("Health")} {health.score}/100 · {health.rating}
+          </span>
+        )}
         <span className="ml-auto flex gap-2">
           <button className="btn-secondary text-[11.5px]" onClick={handleBuild} disabled={busy !== null}>
             {busy === "build" ? t("Building…") : t("Build hive")}
