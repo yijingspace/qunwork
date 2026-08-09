@@ -2305,6 +2305,7 @@ export interface HornetNode {
   z: number;
   phase: number[];
   degree: number;
+  freshness?: number;
 }
 
 export interface HornetEdge {

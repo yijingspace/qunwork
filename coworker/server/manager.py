@@ -206,7 +206,8 @@ class SessionManager:
         # The scheduler also resumes self-wake'd sessions each tick (extra_tick).
         self.task_store = TaskStore(base / "automation.db")
         self.scheduler = Scheduler(
-            self.task_store, self._run_scheduled_task, extra_tick=self.resume_due_wakes
+            self.task_store, self._run_scheduled_task, extra_tick=self.resume_due_wakes,
+            rhythm_gate=self.rhythm_is_valley,
         )
         # Multi-agent orchestration: run store for real-time progress + history.
         from ..orchestrator.run_store import OrchestrationRunStore
@@ -3938,7 +3939,8 @@ class SessionManager:
         return {
             "nodes": [
                 {"id": n["id"], "title": n["title"], "x": n["x"], "y": n["y"], "z": n["z"],
-                 "phase": n["phase"], "degree": degree.get(n["id"], 0)}
+                 "phase": n["phase"], "degree": degree.get(n["id"], 0),
+                 "freshness": n.get("freshness", 1.0)}
                 for n in nodes
             ],
             "edges": edges,
@@ -3972,6 +3974,8 @@ class SessionManager:
         if self.hornet.node_count() == 0:
             return {"emerged": 0, "note": "hive empty"}
         result = self.hornet_evolve(limit=10)
+        freshness = self._hornet_observer.freshness_pass()
+        result["freshness"] = freshness
         if result.get("emerged", 0) > 0:
             actions = self.hornet_act_on_emergence(result.get("items", []))
             result["actions"] = actions
@@ -4077,10 +4081,35 @@ class SessionManager:
     def _hornet_act_cavity(
         self, title: str, detail: dict, actions: dict
     ) -> None:
-        """Topological cavity → inject a定向探针波 to actively probe the void."""
+        """F: 自我提问式探索 — cavity triggers hypothetical questions → search tasks.
+
+        Instead of just injecting a probe wave, the system generates hypothetical
+        questions about the cavity topic (what is it? what relates to it? where
+        does it come from?) and creates tasks to search and fill the void,
+        deepening the self-organizing knowledge growth."""
+        import time as _time
+        from ..automation.models import ScheduledTask, Schedule
+
         probe = detail.get("probe") or title.replace("拓扑腔体: ", "")
         self._hornet_resonator.resonate(probe, k=5)
         actions["probe"].append(probe)
+        ws = self.default_workspace
+        questions = _generate_hypothetical_questions(probe)
+        for q in questions:
+            task = ScheduledTask(
+                title=f"[HORNET] 探索: {q[:50]}",
+                instructions=(
+                    f"知识库检测到拓扑腔体: {title}\n"
+                    f"自我提问: {q}\n"
+                    f"请搜索相关资料并尝试回答该问题,以补全知识空洞。"
+                ),
+                schedule=Schedule(kind="once", fire_at=_time.time()),
+                workspace=ws,
+                origin_surface="hornet",
+                agent="cowork",
+            )
+            self.task_store.save(task)
+            actions["task"].append(q)
 
     def _hornet_act_hypernode(
         self, title: str, detail: dict, ws: str, actions: dict
@@ -4114,7 +4143,16 @@ class SessionManager:
         )
         actions["knowledge"].append(title)
 
-    def knowledge_delete(self, item_id: int) -> bool:        return self.knowledge.delete(item_id)
+    def knowledge_delete(self, item_id: int) -> bool:
+        return self.knowledge.delete(item_id)
+
+    def hornet_export_hive(self) -> dict:
+        """C: 跨组织蜂巢共振对齐 — export hive topology."""
+        return self.hornet.export_hive()
+
+    def hornet_import_hive(self, payload: dict) -> dict:
+        """C: 跨组织蜂巢共振对齐 — import & align with local hive."""
+        return self.hornet.import_hive(payload)
 
     def knowledge_set_retired(self, item_id: int, retired: bool) -> bool:
         """Asset lifecycle (Phase 3): retire/restore a knowledge entry."""
@@ -4165,6 +4203,35 @@ class SessionManager:
             "upcoming": upcoming[:20],
             "generated_at": _time.time(),
         }
+
+    def rhythm_is_valley(self) -> bool:
+        """D: DPNN 周期×自动化调度 — predict whether now is a rhythm valley
+        (good time for heavy tasks). Uses PeriodicForecaster on daily run counts;
+        if the predicted next value is below the series mean, we're in a valley."""
+        from datetime import date, timedelta
+
+        from coworker.periodic.forecaster import PeriodicForecaster
+
+        counts: dict[str, int] = {}
+        for t in self.task_store.list():
+            for r in self.task_store.runs(t.id, limit=200):
+                d = date.fromtimestamp(r.started_at).isoformat()
+                counts[d] = counts.get(d, 0) + 1
+        today = date.today()
+        series = [
+            counts.get((today - timedelta(days=i)).isoformat(), 0)
+            for i in range(29, -1, -1)
+        ]
+        if len(series) < 4 or sum(series) == 0:
+            return True  # not enough data — allow all tasks
+        fc = PeriodicForecaster().fit(series)
+        if not fc.fitted:
+            return True
+        pred = fc.predict(1)
+        if not pred:
+            return True
+        mean = sum(series) / len(series)
+        return pred[0] < mean  # valley if predicted below average
 
     def knowledge_scan(self, workspace: Optional[str] = None) -> dict[str, Any]:
         ws = self.resolve_workspace(workspace) or self.default_workspace
@@ -4473,3 +4540,9 @@ def _git_branch(path: Path) -> Optional[str]:
         return branch or None
     except (OSError, subprocess.SubprocessError):
         return None
+
+
+def _generate_hypothetical_questions(topic: str) -> list[str]:
+    """F: delegate to coworker.hornet.observer (kept here for backward compat)."""
+    from coworker.hornet.observer import generate_hypothetical_questions
+    return generate_hypothetical_questions(topic)

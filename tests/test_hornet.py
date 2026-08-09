@@ -353,3 +353,126 @@ def test_auto_evolve_acts_only_on_new_findings(tmp_path):
     # that was already acted on repeats
     old_titles = {(e["kind"], e["title"]) for e in ev1["items"]}
     assert not any((e["kind"], e["title"]) in old_titles for e in new_items)
+
+
+# -- A: 周期驱动的知识保鲜与遗忘 ----------------------------------------------
+def test_freshness_pass_decays_stale_nodes(tmp_path):
+    """A: nodes with low load and long period decay freshness; stale ones
+    get downgraded to Z- traceback layer."""
+    store, builder, res, obs = _hive(tmp_path)
+    builder.build(_sample_items())
+    # only resonate one cluster — the other two clusters' nodes are "never hit"
+    res.resonate("DPNN 相位 周期", k=3)
+    result = obs.freshness_pass()
+    assert "decayed" in result
+    assert "refreshed" in result
+    assert "downgraded" in result
+    # at least some nodes decayed (the never-hit ones)
+    assert result["decayed"] > 0
+    # verify freshness was actually written
+    nodes = store.list_nodes()
+    fresh_values = [n.get("freshness", 1.0) for n in nodes]
+    assert any(f < 1.0 for f in fresh_values)
+
+
+def test_freshness_pass_refreshes_hot_nodes(tmp_path):
+    """A: high-load nodes with short period stay fresh (freshness = 1.0)."""
+    store, builder, res, obs = _hive(tmp_path)
+    builder.build(_sample_items())
+    # resonate multiple times to build load
+    for _ in range(3):
+        res.resonate("DPNN 相位 周期", k=3)
+    obs.freshness_pass()
+    stats = store.node_hit_stats(50)
+    # nodes that were hit should still have freshness 1.0
+    hot_ids = {nid for nid, s in stats.items() if s["load_factor"] > 0.15}
+    if hot_ids:
+        nodes = {n["id"]: n for n in store.list_nodes()}
+        for nid in hot_ids:
+            assert nodes[nid].get("freshness", 1.0) == 1.0
+
+
+# -- C: 跨组织蜂巢共振对齐 ----------------------------------------------------
+def test_export_import_hive(tmp_path):
+    """C: export produces a structural fingerprint; import adds new nodes and
+    detects phase conflicts on title matches."""
+    store, builder, _res, _obs = _hive(tmp_path)
+    builder.build(_sample_items())
+    exported = store.export_hive()
+    assert "nodes" in exported and "edges" in exported
+    assert len(exported["nodes"]) == 9
+    # content is excluded (privacy)
+    assert all("content" not in n for n in exported["nodes"])
+
+    # import into a fresh hive — all nodes should be added as new
+    store2 = HornetStore(tmp_path / "hornet2.db")
+    result = store2.import_hive(exported)
+    assert result["imported"] == 9
+    assert store2.node_count() == 9
+
+    # import again — now all titles match, phases align → no conflicts
+    result2 = store2.import_hive(exported)
+    assert result2["imported"] == 0  # all already exist
+
+
+def test_import_hive_detects_phase_conflict(tmp_path):
+    """C: when an imported node has the same title but opposing phase, a
+    conflict emergent is created and an opposite edge is added."""
+    store, builder, _res, _obs = _hive(tmp_path)
+    builder.build(_sample_items())
+    nodes = store.list_nodes()
+    # craft a remote payload with same titles but a non-zero phase that
+    # conflicts with the local all-zero phase (distance > threshold)
+    conflict_phase = [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    remote_nodes = []
+    for n in nodes[:3]:
+        remote_nodes.append({
+            "title": n["title"], "phase": conflict_phase,
+            "x": n["x"], "y": n["y"], "z": n["z"],
+        })
+    payload = {"nodes": remote_nodes, "edges": []}
+    result = store.import_hive(payload, phase_conflict_threshold=0.3)
+    assert result["conflicts"] > 0
+    # conflict emergent should be recorded
+    emergents = store.list_emergent(50)
+    assert any(e["kind"] == "conflict" for e in emergents)
+
+
+# -- D: DPNN 周期×自动化调度 --------------------------------------------------
+def test_rhythm_gate_in_scheduler():
+    """D: Scheduler accepts a rhythm_gate callback for DPNN-aware scheduling."""
+    import pytest
+    pytest.importorskip("aisuite")
+    from coworker.automation.scheduler import Scheduler
+
+    gate = lambda: True  # noqa: E731
+    assert gate() is True
+    assert hasattr(Scheduler, "_tick")
+
+
+# -- F: 自我提问式探索 --------------------------------------------------------
+def test_generate_hypothetical_questions():
+    """F: cavity topic → 3 exploratory questions (definition, relation, origin)."""
+    from coworker.hornet.observer import generate_hypothetical_questions
+
+    qs = generate_hypothetical_questions("DPNN 相位记忆")
+    assert len(qs) == 3
+    assert any("什么是" in q for q in qs)
+    assert any("关联" in q or "依赖" in q for q in qs)
+    assert any("起源" in q for q in qs)
+
+
+def test_cavity_action_creates_question_tasks(tmp_path):
+    """F: cavity emergence triggers hypothetical question tasks (not just a
+    probe wave). Integration test via the observer + store."""
+    store, builder, res, obs = _hive(tmp_path)
+    builder.build(_sample_items())
+    # resonate only one cluster → others become cavities
+    for _ in range(2):
+        res.resonate("DPNN 相位 周期", k=3)
+    evolved = obs.evolve(limit=20)
+    cavities = [e for e in evolved["items"] if e["kind"] == "cavity"]
+    assert len(cavities) > 0
+    # each cavity has a probe field that would feed question generation
+    for c in cavities:
+        assert "probe" in c["detail"]

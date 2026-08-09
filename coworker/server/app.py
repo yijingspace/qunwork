@@ -996,6 +996,16 @@ def create_app(manager: SessionManager) -> FastAPI:
         ok = manager.hornet_emergence_mark(eid, (body or {}).get("status", "accepted"))
         return {"ok": ok, "unread": manager.hornet.count_unread_emergent()}
 
+    @app.get("/v1/hornet/export")
+    def hornet_export() -> dict[str, Any]:
+        """C: 跨组织蜂巢共振对齐 — export hive topology."""
+        return manager.hornet_export_hive()
+
+    @app.post("/v1/hornet/import")
+    def hornet_import(body: dict) -> dict[str, Any]:
+        """C: 跨组织蜂巢共振对齐 — import & align remote hive."""
+        return manager.hornet_import_hive(body or {})
+
     @app.post("/v1/knowledge/{item_id}/retire")
     def knowledge_retire(item_id: int, body: dict) -> dict[str, Any]:
         """Asset lifecycle (Phase 3): retire (hide from search) or restore."""

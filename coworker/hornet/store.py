@@ -191,6 +191,13 @@ class HornetStore:
                 c.commit()
             except sqlite3.OperationalError:
                 pass
+            try:
+                c.execute(
+                    "ALTER TABLE hornet_nodes ADD COLUMN freshness REAL NOT NULL DEFAULT 1.0"
+                )
+                c.commit()
+            except sqlite3.OperationalError:
+                pass
             c.commit()
 
     # -- nodes ---------------------------------------------------------------
@@ -238,7 +245,9 @@ class HornetStore:
     def list_nodes(self) -> list[dict[str, Any]]:
         with self._lock:
             rows = self._con.execute(
-                "SELECT id, kb_item_id, title, content, vec, phase, x, y, z, topo, COALESCE(failed_count, 0) AS failed_count, created_at FROM hornet_nodes"
+                "SELECT id, kb_item_id, title, content, vec, phase, x, y, z, topo, "
+                "COALESCE(failed_count, 0) AS failed_count, COALESCE(freshness, 1.0) AS freshness, created_at "
+                "FROM hornet_nodes"
             ).fetchall()
         out = []
         for r in rows:
@@ -252,6 +261,25 @@ class HornetStore:
     def node_count(self) -> int:
         with self._lock:
             return int(self._con.execute("SELECT COUNT(*) FROM hornet_nodes").fetchone()[0])
+
+    def set_freshness(self, node_id: int, freshness: float) -> bool:
+        """Update a node's freshness score (A: 周期驱动的知识保鲜与遗忘)."""
+        with self._lock:
+            cur = self._con.execute(
+                "UPDATE hornet_nodes SET freshness=? WHERE id=?",
+                (round(max(0.0, min(1.0, freshness)), 4), node_id),
+            )
+            self._con.commit()
+            return cur.rowcount > 0
+
+    def set_z(self, node_id: int, z: int) -> bool:
+        """Move a node to a different zone layer (A: stale → Z- traceback downgrade)."""
+        with self._lock:
+            cur = self._con.execute(
+                "UPDATE hornet_nodes SET z=? WHERE id=?", (z, node_id)
+            )
+            self._con.commit()
+            return cur.rowcount > 0
 
     # -- edges ---------------------------------------------------------------
     def add_edge(
@@ -436,11 +464,96 @@ class HornetStore:
             self._con.commit()
         return updated
 
+    # -- C: 跨组织蜂巢共振对齐 (export/import) -------------------------------
+    def export_hive(self) -> dict[str, Any]:
+        """Export the hive topology (nodes with phase + edges) for cross-org
+        resonance alignment. Content is excluded (IP/privacy); only the
+        structural fingerprint travels."""
+        nodes = self.list_nodes()
+        edges = self.list_edges()
+        return {
+            "nodes": [
+                {
+                    "title": n["title"],
+                    "phase": n["phase"],
+                    "x": n["x"], "y": n["y"], "z": n["z"],
+                    "freshness": n.get("freshness", 1.0),
+                }
+                for n in nodes
+            ],
+            "edges": [
+                {"src": e["src"], "dst": e["dst"], "relation": e["relation"],
+                 "channel": e["channel"], "weight": e["weight"]}
+                for e in edges
+            ],
+        }
+
+    def import_hive(self, payload: dict[str, Any], *, phase_conflict_threshold: float = 0.7) -> dict[str, Any]:
+        """Import a remote hive and align with the local one.
+
+        For each imported node:
+        - If a local node with the same title exists, compare phases. If they
+          conflict (phase distance > threshold), add an `opposite` edge and
+          record a `conflict` emergent.
+        - If no local match, add the node as a new cell (cross-org knowledge).
+
+        Edge IDs are remapped to the local node IDs. Returns a summary.
+        """
+        remote_nodes = payload.get("nodes", [])
+        remote_edges = payload.get("edges", [])
+        local_nodes = self.list_nodes()
+        local_by_title = {n["title"]: n for n in local_nodes}
+        id_map: dict[int, int] = {}
+        imported = conflicts = 0
+        for i, rn in enumerate(remote_nodes):
+            title = rn.get("title", f"remote_{i}")
+            phase = rn.get("phase", [0.0] * 6)
+            local = local_by_title.get(title)
+            if local:
+                id_map[i + 1] = local["id"]
+                d = _phase_distance(local["phase"], phase)
+                if d > phase_conflict_threshold:
+                    self.add_edge(local["id"], local["id"], "opposite", weight=0.5, channel="G8")
+                    self.add_emergent(
+                        "conflict",
+                        f"跨组织冲突: {title[:40]}",
+                        {"local": local["id"], "remote_phase": phase, "phase_dist": round(d, 4),
+                         "hint": "导入蜂巢与本地相位对冲,已标记对立边"},
+                    )
+                    conflicts += 1
+            else:
+                nid = self.add_node(
+                    title, content="", vec=ngram_vector(title),
+                    phase=phase, x=rn.get("x", 0), y=rn.get("y", 0), z=rn.get("z", 0),
+                )
+                id_map[i + 1] = nid
+                imported += 1
+        edges_added = 0
+        for re in remote_edges:
+            src = id_map.get(re.get("src"))
+            dst = id_map.get(re.get("dst"))
+            if src and dst and src != dst:
+                if self.add_edge(src, dst, re.get("relation", "similar"),
+                                 weight=re.get("weight", 1.0), channel=re.get("channel")):
+                    edges_added += 1
+        return {"imported": imported, "conflicts": conflicts, "edges_added": edges_added}
+
 
 def _now() -> float:
     import time
 
     return time.time()
+
+
+def _phase_distance(a: list[float], b: list[float]) -> float:
+    """Normalized phase distance in [0, ~1] for cross-org conflict detection."""
+    if not a or not b:
+        return 1.0
+    n = max(len(a), len(b))
+    pa = (a + [0.0] * n)[:n]
+    pb = (b + [0.0] * n)[:n]
+    d = math.sqrt(sum((x - y) ** 2 for x, y in zip(pa, pb)))
+    return d / 2.0
 
 
 # re-export for builder/resonator

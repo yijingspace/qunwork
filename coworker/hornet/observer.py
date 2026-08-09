@@ -21,6 +21,12 @@ from typing import Any, Optional
 from .store import HornetStore, ngram_vector, similarity
 from .builder import _phase_from_content_3d, _opposite_hint
 
+try:
+    from .dpnn_phase import cell_period
+    _DPNN = True
+except ImportError:
+    _DPNN = False
+
 
 class HornetObserver:
     def __init__(
@@ -211,6 +217,52 @@ class HornetObserver:
                 saved += 1
         return {"emerged": saved, "counts": counts, "items": emerged}
 
+    def freshness_pass(self, *, stale_threshold: float = 0.30) -> dict[str, Any]:
+        """A: 周期驱动的知识保鲜与遗忘.
+
+        Each cell has a natural period (DPNN Pisano period of its content fingerprint).
+        High-load cells with short periods are "fresh" (actively resonating knowledge).
+        Low-load cells with long periods decay — their freshness drops each pass.
+        When freshness falls below stale_threshold, the cell is downgraded to the
+        Z- traceback layer (evidence/archive zone), making room for active knowledge
+        in the XY/Z+ layers.
+
+        Returns a summary of decayed/refreshed/downgraded counts.
+        """
+        if not _DPNN:
+            return {"decayed": 0, "refreshed": 0, "downgraded": 0, "note": "dpnn unavailable"}
+        stats = self.store.node_hit_stats(200)
+        nodes = self.store.list_nodes()
+        if not nodes:
+            return {"decayed": 0, "refreshed": 0, "downgraded": 0}
+        decayed = refreshed = downgraded = 0
+        for n in nodes:
+            nid = n["id"]
+            period = cell_period(n["title"], n.get("content", ""))
+            load = stats.get(nid, {}).get("load_factor", 0.0)
+            current = n.get("freshness", 1.0)
+            # short period + high load → fresh (actively resonating)
+            if load > 0.15 and period <= 60:
+                if current < 1.0:
+                    self.store.set_freshness(nid, 1.0)
+                    refreshed += 1
+                continue
+            # long period + low load → decay
+            decay_rate = 0.12 if period > 60 else 0.06
+            if load < 0.05:
+                decay_rate *= 1.5  # never hit → faster decay
+            new_fresh = current - decay_rate
+            if new_fresh <= 0:
+                new_fresh = 0.0
+            if new_fresh < current:
+                self.store.set_freshness(nid, new_fresh)
+                decayed += 1
+            # downgrade to Z- when stale enough and not already there
+            if new_fresh < stale_threshold and n.get("z", 0) >= 0:
+                self.store.set_z(nid, -1)
+                downgraded += 1
+        return {"decayed": decayed, "refreshed": refreshed, "downgraded": downgraded}
+
 
 def _derive_child(content: str, kind: str) -> str:
     """Self-similar growth: a child cell inherits the core text plus a zone
@@ -237,3 +289,19 @@ def _merge_summary(ca: str, cb: str) -> str:
     a = (ca or "").strip()
     b = (cb or "").strip()
     return (a[:160] + " … | … " + b[:160]).replace("\n", " ")
+
+
+def generate_hypothetical_questions(topic: str) -> list[str]:
+    """F: 自我提问式探索 — generate hypothetical questions about a cavity topic.
+
+    From a single topic string, produce 3 exploratory questions that probe
+    different epistemic directions: definition, relation, and origin. These
+    become search tasks that fill the knowledge void."""
+    t = (topic or "").strip()[:60]
+    if not t:
+        return []
+    return [
+        f"什么是{t}？请解释其核心定义与关键特征。",
+        f"{t}与哪些概念存在关联或依赖关系？请梳理其知识图谱。",
+        f"{t}的起源与演变历程是什么？请追溯其发展脉络。",
+    ]

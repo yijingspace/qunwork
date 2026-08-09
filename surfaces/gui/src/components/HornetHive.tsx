@@ -88,10 +88,25 @@ function isoToPixel(x: number, y: number, z: number, R = HEX_R): [number, number
 
 type ViewMode = "iso" | "top" | "zminus" | "zplus";
 
-function zColor(z: number): string {
-  if (z > 0) return "#1d4ed8"; // Z+ projection (blue)
-  if (z < 0) return "#7c3aed"; // Z- traceback (purple)
-  return "#1e293b"; // XY plane (slate)
+
+/** B: 知识场热力图 — color by resonance temperature.
+ *  Cold (cavity/never hit/low freshness) → blue/purple
+ *  Warm (moderate amplitude) → amber
+ *  Hot (high amplitude/fission source) → red
+ *  When no active query, freshness drives the gradient instead. */
+function tempColor(z: number, freshness: number, amplitude: number | undefined): string {
+  if (amplitude !== undefined && amplitude > 0) {
+    const t = Math.min(1, amplitude);
+    if (t > 0.66) return "#ef4444"; // hot — red
+    if (t > 0.33) return "#f59e0b"; // warm — amber
+    return "#3b82f6"; // cool — blue
+  }
+  const f = freshness ?? 1.0;
+  if (f < 0.3) return "#4c1d95"; // stale — deep purple (cavity)
+  if (f < 0.6) return "#1e3a5f"; // cooling — dark blue
+  if (z > 0) return "#1d4ed8"; // Z+ fresh — blue
+  if (z < 0) return "#7c3aed"; // Z- — purple
+  return "#1e293b"; // XY — slate
 }
 
 function hexPoints(cx: number, cy: number, R = HEX_R): string {
@@ -333,7 +348,7 @@ export function HornetHive() {
             const amp = hitAmplitude.get(n.id);
             const isHit = amp !== undefined;
             const scale = isHit ? Math.min(1.6, 1 + amp) : 1;  // amplitude is already 0..1
-            const fill = isHit ? "#f43f5e" : zColor(n.z);
+            const fill = isHit ? "#f43f5e" : tempColor(n.z, n.freshness ?? 1.0, undefined);
             return (
               <g key={n.id} transform={`translate(${cx} ${cy}) scale(${scale})`}>
                 <polygon
