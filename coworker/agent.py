@@ -168,6 +168,7 @@ def build_engine(
     # the SessionManager's store or UI-added entries never surface for the agent.
     # Defaults to the single source of truth (workspace `.coworker/knowledge.db`).
     knowledge_db_path: Optional[str | Path] = None,
+    usage_sink: Optional[Callable[[dict, None]]] = None,
 ) -> TurnEngine:
     ws = Path(workspace).expanduser().resolve() if workspace else None
     if agent.needs_workspace and ws is None:
@@ -287,6 +288,7 @@ def build_engine(
                 provider=provider,
                 model=model,
                 model_settings=model_settings,
+                usage_sink=usage_sink,
             )
         )
         # UTF-8-safe Chinese text stats — replaces workers' fragile PowerShell

@@ -1038,6 +1038,10 @@ def create_app(manager: SessionManager) -> FastAPI:
     def hornet_graph() -> dict[str, Any]:
         return manager.hornet_graph()
 
+    @app.get("/v1/usage")
+    def usage_summary(days: int = 14) -> dict[str, Any]:
+        return manager.usage_summary(days=days)
+
     @app.get("/v1/hornet/stats")
     def hornet_stats() -> dict[str, Any]:
         return manager.hornet_stats()

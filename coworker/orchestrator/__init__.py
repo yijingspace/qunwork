@@ -62,6 +62,7 @@ def run_orchestration(
     event_sink: Optional[Callable[[str, dict], None]] = None,
     timeout_seconds: Optional[int] = None,
     max_parallel: int = 1,
+    usage_sink: Optional[Callable[[dict, None]]] = None,
 ) -> OrchestrationResult:
     """Run one orchestrated goal synchronously (worker-thread context)."""
     orch = Orchestrator(
@@ -76,6 +77,7 @@ def run_orchestration(
         event_sink=event_sink,
         timeout_seconds=timeout_seconds,
         max_parallel=max_parallel,
+        usage_sink=usage_sink,
     )
     import asyncio
 
@@ -90,6 +92,7 @@ def orchestration_tools(
     model_settings: Optional[dict[str, Any]] = None,
     approver: Optional[Any] = None,
     executor_agent: str = "cowork",
+    usage_sink: Optional[Callable[[dict, None]]] = None,
 ) -> list:
     """Tool-set entry: exposes `orchestrate` to a parent engine (like `explore`)."""
 
@@ -127,6 +130,7 @@ def orchestration_tools(
                 approver=approver,
                 event_sink=lambda kind, payload: store.append_event(run_id, kind, payload),
                 executor_agent=executor_agent,
+                usage_sink=usage_sink,
             )
             store.update_status(run_id, result.status, final=result.final_report())
             out: dict[str, Any] = {

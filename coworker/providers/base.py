@@ -38,6 +38,10 @@ class AssistantTurn:
     # owning provider consumes its own key when converting history; every other
     # provider must strip or ignore foreign underscore keys before its wire call.
     extras: dict[str, Any] = field(default_factory=dict)
+    # Token accounting from the final streamed chunk (OpenAI-compatible `usage`):
+    # {"prompt_tokens": int, "completion_tokens": int, "cached_tokens": int, ...}
+    # Populated by providers that read it; consumed by the engine for the usage ledger.
+    usage: Optional[dict[str, Any]] = field(default=None, repr=False, compare=False)
 
     @property
     def has_tool_calls(self) -> bool:

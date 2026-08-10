@@ -131,6 +131,11 @@ class SessionManager:
 
         self.memory_store: MemoryStore = SQLiteMemoryStore(base / "coworker.db")
         self.audit_store = AuditStore(base / "coworker.db")
+        # Token usage ledger (per-turn usage from the provider, for the UI's
+        # token monitor + cache-hit-rate view).
+        from ..usage import UsageStore
+
+        self.usage_store = UsageStore(base / "usage.db")
         self.session_store = ConversationStore(base)
         self.session_store.canonicalize_workspaces()  # collapse /tmp vs /private/tmp etc.
         from ..skills.base import SkillLoader
@@ -513,6 +518,9 @@ class SessionManager:
             wake_store=self.wakes,
             session_id=session_id,
             audit_sink=self.audit_store.append,
+            usage_sink=lambda p, _sid=session_id: self.usage_store.record(
+                {**p, "session_id": p.get("session_id") or _sid, "surface": str(mode.value)}
+            ),
             roots=roots,
             # WS sessions pass mode-aware callbacks (attended → live prompt, unattended → Inbox).
             # Background / self-wake / durable-resume runs have no live socket → default to the
@@ -2621,6 +2629,9 @@ class SessionManager:
             task_store=None,
             session_id=session_id,
             audit_sink=self.audit_store.append,
+            usage_sink=lambda p, _sid=session_id: self.usage_store.record(
+                {**p, "session_id": p.get("session_id") or _sid, "surface": "automation"}
+            ),
             # Scheduled runs respect the same per-session connection hierarchy as live sessions:
             # expose only the persona's effective-enabled connectors' tools (§4.3).
             connector_filter=self.effective_connectors(session_id, task.agent),
@@ -3962,6 +3973,15 @@ class SessionManager:
                 for n in nodes
             ],
             "edges": edges,
+        }
+
+    def usage_summary(self, days: int = 14) -> dict:
+        """Token monitor: totals, per-day trend and per-session breakdown, plus
+        the context-cache hit rate (cached_tokens / prompt_tokens)."""
+        return {
+            "totals": self.usage_store.totals(),
+            "by_day": self.usage_store.by_day(days),
+            "by_session": self.usage_store.by_session(),
         }
 
     def hornet_stats(self) -> dict:

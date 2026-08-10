@@ -94,6 +94,7 @@ def _readonly_engine(
     instructions: str,
     max_iterations: int,
     model_settings: Optional[dict[str, Any]] = None,
+    usage_sink: Optional[Callable[[dict, None]]] = None,
 ) -> TurnEngine:
     """A child engine with read-only tools (plan mode) and a fresh context."""
     ws = str(Path(workspace).resolve())
@@ -119,6 +120,7 @@ def _readonly_engine(
         instructions=instructions,
         max_iterations=max_iterations,
         model_settings=model_settings,
+        usage_sink=usage_sink,
     )
 
 
@@ -128,6 +130,7 @@ def build_planner_engine(
     provider: Any,
     model: str,
     model_settings: Optional[dict[str, Any]] = None,
+    usage_sink: Optional[Callable[[dict, None]]] = None,
 ) -> TurnEngine:
     return _readonly_engine(
         workspace=workspace,
@@ -136,6 +139,7 @@ def build_planner_engine(
         instructions=PLANNER_INSTRUCTIONS,
         max_iterations=_PLANNER_MAX_ITERATIONS,
         model_settings=model_settings,
+        usage_sink=usage_sink,
     )
 
 
@@ -145,6 +149,7 @@ def build_reviewer_engine(
     provider: Any,
     model: str,
     model_settings: Optional[dict[str, Any]] = None,
+    usage_sink: Optional[Callable[[dict, None]]] = None,
 ) -> TurnEngine:
     return _readonly_engine(
         workspace=workspace,
@@ -153,6 +158,7 @@ def build_reviewer_engine(
         instructions=REVIEWER_INSTRUCTIONS,
         max_iterations=_REVIEWER_MAX_ITERATIONS,
         model_settings=model_settings,
+        usage_sink=usage_sink,
     )
 
 
@@ -166,6 +172,7 @@ def build_executor_engine(
     model_settings: Optional[dict[str, Any]] = None,
     memory_store: Optional[Any] = None,
     knowledge_db_path: Optional[str] = None,
+    usage_sink: Optional[Callable[[dict, None]]] = None,
 ) -> TurnEngine:
     """Executor with the full toolset + the caller's approval gate."""
     from ..agent import build_engine  # lazy: avoids circular import (agent ↔ orchestrator)
@@ -184,6 +191,7 @@ def build_executor_engine(
         # Interconnect: team memory + unified knowledge DB.
         memory_store=memory_store,
         knowledge_db_path=knowledge_db_path,
+        usage_sink=usage_sink,
     )
     # Reinforce the single-task execution contract on top of the persona prompt.
     engine.messages.insert(0, {"role": "system", "content": EXECUTOR_INSTRUCTIONS})

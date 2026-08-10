@@ -28,6 +28,7 @@ export type IconName =
   | "panelOpen"
   | "plug"
   | "audit"
+  | "chart"
   | "chevronRight"
   | "chevronDown"
   | "moreHorizontal"
@@ -306,6 +307,14 @@ export function Icon({
         <svg {...s}>
           <path d="M7 4h10a2 2 0 0 1 2 2v14H7a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z" />
           <path d="M8.5 9h7M8.5 13h7M8.5 17H13" />
+        </svg>
+      );
+    case "chart":
+      // Token-usage bar chart: three ascending bars on a baseline.
+      return (
+        <svg {...s}>
+          <path d="M5 20V11M12 20V6M19 20V14" />
+          <path d="M3.5 20h18" />
         </svg>
       );
     case "chevronRight":

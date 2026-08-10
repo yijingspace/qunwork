@@ -76,6 +76,35 @@ def _strip_foreign_sidecars(messages: list[dict[str, Any]]) -> list[dict[str, An
 _MAX_TOKENS_ERROR = "'max_tokens' is not supported"
 
 
+def _normalize_usage(usage: Any) -> Optional[dict[str, Any]]:
+    """Flatten a provider usage object into the ledger shape the engine records:
+    prompt/completion totals plus the cache split (OpenAI-compatible
+    prompt_tokens_details.cached_tokens; DeepSeek's prompt_cache_hit_tokens).
+    Returns None when there is nothing usable (non-reporting servers)."""
+    if not usage:
+        return None
+    if isinstance(usage, dict):
+        u: dict[str, Any] = usage
+    else:
+        u = dict(usage) if hasattr(usage, "__iter__") else {}
+    prompt = u.get("prompt_tokens") or 0
+    completion = u.get("completion_tokens") or 0
+    if not prompt and not completion:
+        return None
+    details = u.get("prompt_tokens_details") or {}
+    cached = 0
+    if isinstance(details, dict):
+        cached = details.get("cached_tokens") or 0
+    if not cached:
+        cached = u.get("prompt_cache_hit_tokens") or 0
+    return {
+        "prompt_tokens": int(prompt),
+        "completion_tokens": int(completion),
+        "cached_tokens": int(cached),
+        "cache_miss_tokens": int(u.get("prompt_cache_miss_tokens") or max(0, int(prompt) - int(cached))),
+    }
+
+
 def _param_fix_retry(kwargs: dict[str, Any], exc: Exception) -> dict[str, Any]:
     """Kwargs for the one retry an unsupported-parameter error earns, or re-raise.
 
@@ -193,6 +222,11 @@ class OpenAIProvider(ProviderClient):
             "stream": True,
             **settings,
         }
+        # Ask for the usage trailer on the final chunk (DeepSeek returns it by
+        # default; this pins it for OpenAI/others). Servers that reject the extra
+        # field are retried below without it.
+        stream_options = kwargs.setdefault("stream_options", {})
+        stream_options.setdefault("include_usage", True)
         if tools:
             kwargs["tools"] = tools
         _pin_reasoning_effort(kwargs)
@@ -210,11 +244,26 @@ class OpenAIProvider(ProviderClient):
                 break
             except Exception as exc:
                 kwargs = _param_fix_retry(kwargs, exc)
+                if "stream_options" in kwargs and "stream_options" not in str(exc):
+                    # leave it — retry preserves the option
+                    pass
+                else:
+                    # A compat server that rejects stream_options entirely: drop
+                    # the option and retry once, then let usage default off.
+                    kwargs.pop("stream_options", None)
         else:
             chunks = client.chat.completions.create(**kwargs)
+        usage: Optional[dict[str, Any]] = None
         for chunk in chunks:
+            raw_usage = getattr(chunk, "usage", None)
+            if raw_usage:
+                u = getattr(raw_usage, "model_dump", None)
+                usage = u() if u else raw_usage
             choices = getattr(chunk, "choices", None)
             if not choices:
+                # A pure usage trailer chunk has no choices — but still captures usage above
+                if usage:
+                    continue
                 continue
             choice = choices[0]
             delta = getattr(choice, "delta", None)
@@ -262,6 +311,7 @@ class OpenAIProvider(ProviderClient):
                 tool_calls=tool_calls,
                 finish_reason=finish_reason,
                 reasoning="".join(reasoning_parts) or None,
+                usage=_normalize_usage(usage),
             )
         )
 

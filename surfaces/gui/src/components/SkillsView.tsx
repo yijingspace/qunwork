@@ -101,6 +101,14 @@ export default function SkillsView() {
           <h1 className="text-[15px] font-semibold">{t("Skill marketplace")}</h1>
           <p className="text-[12px] text-muted mt-0.5">
             {t("Create, import, export and install reusable skills")}
+            {skills.length > 0 && (
+              <>
+                {" · "}
+                <span className="tabular-nums">
+                  {t("{count} skills", { count: skills.length })}
+                </span>
+              </>
+            )}
           </p>
         </div>
         <div className="flex items-center gap-2">

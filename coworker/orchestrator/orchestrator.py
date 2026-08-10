@@ -210,10 +210,15 @@ class Orchestrator:
     # library the /v1/knowledge API writes (no path split).
     memory_store: Optional[Any] = None
     knowledge_db_path: Optional[str] = None
+    # #2 cognitive-action loop: HORNET resonator injects knowledge topology
+    # context into planning and receives execution feedback to modulate phases.
+    hornet_resonator: Optional[Any] = None
     max_parallel: int = 4  # how many independent tasks run concurrently
     timeout_seconds: Optional[int] = 600  # whole-run timeout (None = no limit)
     task_timeout_seconds: Optional[int] = 240  # per-task timeout; timeout degrades to a partial result
     event_sink: Optional[Callable[[str, dict], None]] = None  # (kind, payload) progress feed
+    # Per-turn token ledger sink forwarded to every worker engine (see TurnEngine.usage_sink).
+    usage_sink: Optional[Callable[[dict, None]]] = None  # noqa: E501
     # G2 command deck: external control (pause/resume/operator message/requeue
     # approval). None = headless run with auto-requeue (legacy behaviour).
     controller: Optional[Any] = None
@@ -225,6 +230,8 @@ class Orchestrator:
     _runs: int = field(default=0, init=False)
     _run_seq: int = field(default=0, init=False)
     _last_plan: Optional[Plan] = field(default=None, init=False)
+    _hornet_last_hits: list = field(default_factory=list, init=False)
+    _hornet_last_phase: list = field(default_factory=list, init=False)
 
     def _emit(self, kind: str, payload: dict[str, Any]) -> None:
         if self.event_sink is not None:
@@ -253,6 +260,30 @@ class Orchestrator:
 
     # -- planning -----------------------------------------------------------
     async def _plan(self, intent: str) -> Plan:
+        # #2 cognitive-action loop (forward): inject HORNET resonance context.
+        # The planner sees which knowledge nodes resonate with the intent —
+        # long-range associations from the hive topology seed the plan.
+        resonance_ctx = ""
+        if self.hornet_resonator is not None:
+            try:
+                res = self.hornet_resonator.resonate(intent, k=5)
+                hits = res.get("hits", [])
+                if hits:
+                    lines = [f"  - {h['title']} (共振振幅: {h.get('amplitude', 0):.2f})" for h in hits]
+                    resonance_ctx = "[HORNET 共振上下文 — 以下知识节点与任务意图产生共振]\n" + "\n".join(lines) + "\n\n"
+                    self._hornet_last_hits = [h.get("node_id") for h in hits if h.get("node_id")]
+                    self._hornet_last_phase = res.get("query_phase", [])
+                else:
+                    self._hornet_last_hits = []
+                    self._hornet_last_phase = []
+            except Exception:
+                self._hornet_last_hits = []
+                self._hornet_last_phase = []
+        else:
+            self._hornet_last_hits = []
+            self._hornet_last_phase = []
+
+        planner_input = resonance_ctx + intent if resonance_ctx else intent
         last_err: Exception | None = None
         for attempt in range(3):  # planner JSON can be flaky — retry before giving up
             try:
@@ -261,8 +292,9 @@ class Orchestrator:
                     provider=self.provider,
                     model=self.model,
                     model_settings=self.model_settings,
+                    usage_sink=self.usage_sink,
                 )
-                text, status = await _run_engine_async(engine, intent, on_event=self._worker_feed("planner"))
+                text, status = await _run_engine_async(engine, planner_input, on_event=self._worker_feed("planner"))
                 if not text:
                     last_err = RuntimeError(f"planner produced no plan (status: {status})")
                     continue
@@ -295,6 +327,7 @@ class Orchestrator:
             # Interconnect: team memory tools + unified knowledge DB in every worker.
             memory_store=self.memory_store,
             knowledge_db_path=self.knowledge_db_path,
+            usage_sink=self.usage_sink,
         )
         parts = [f"Task [{task.id}]: {task.description}\nExecute it now and report the result."]
         if deps:
@@ -347,6 +380,7 @@ class Orchestrator:
                     provider=self.provider,
                     model=self.model,
                     model_settings=self.model_settings,
+                    usage_sink=self.usage_sink,
                 )
                 prompt = (
                     f"Task [{task.id}]: {task.description}\n\n"
@@ -688,6 +722,19 @@ class Orchestrator:
                     close()
                 except Exception:
                     pass
+        # #2 cognitive-action loop (reverse): feed execution result back to
+        # HORNET — success crystallizes the resonance attractor (phase nudge
+        # toward query phase), failure pushes activated cells to Z- traceback.
+        if self.hornet_resonator is not None and self._hornet_last_hits:
+            try:
+                success = status == "completed"
+                self.hornet_resonator.store.feedback(
+                    self._hornet_last_hits,
+                    success=success,
+                    query_phase=self._hornet_last_phase or None,
+                )
+            except Exception:
+                pass
         return result
 
     def _persist_report(self, result: OrchestrationResult) -> None:

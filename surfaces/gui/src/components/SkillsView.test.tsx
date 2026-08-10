@@ -56,6 +56,7 @@ describe("SkillsView", () => {
     expect(screen.getByText("Installs 3")).toBeTruthy();
     expect(screen.getByText("★ 4.5 (2)")).toBeTruthy();
     expect(screen.getByText("pdf")).toBeTruthy();
+    expect(screen.getByText("1 skills")).toBeTruthy(); // total skill count shown
   });
 
   it("POSTs a rating when a star is clicked", async () => {

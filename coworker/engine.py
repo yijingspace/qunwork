@@ -79,6 +79,8 @@ class TurnEngine:
         # The session's skill-catalog loader (progressive disclosure). Held so surfaces can
         # refresh it when skills change mid-session (e.g. an API import); optional.
         skill_loader: Optional[Any] = None,
+        # Per-turn token ledger sink (see usage_sink below). Optional.
+        usage_sink: Optional[Callable[[dict[str, Any]], None]] = None,
     ) -> None:
         self.provider = provider
         self.registry = registry
@@ -89,6 +91,10 @@ class TurnEngine:
         self.model_settings = dict(model_settings or {})
         self.messages: list[dict[str, Any]] = list(messages or [])
         self.audit_sink = audit_sink
+        # Per-turn token ledger callback: called once per model turn with
+        # {"session_id", "model", "prompt_tokens", "completion_tokens",
+        # "cached_tokens", "cache_miss_tokens"} when the provider reports usage.
+        self.usage_sink = usage_sink
         # Returns an ephemeral `<system-context>` block appended to the LAST user message at
         # send-time only (never persisted). We can't reliably inject system messages mid-thread
         # across providers, so dynamic per-turn context (e.g. the live directory list) rides on
@@ -358,6 +364,7 @@ class TurnEngine:
                 turn = AssistantTurn()
 
             self.messages.append(_assistant_message(turn))
+            self._record_usage(turn)
             payload: dict[str, Any] = {
                 "text": turn.text,
                 "tool_calls": [tc.name for tc in turn.tool_calls],
@@ -715,6 +722,23 @@ class TurnEngine:
                 **({"standing_rule": rule} if rule else {}),
             },
         )
+
+    def _record_usage(self, turn: AssistantTurn) -> None:
+        """Push the turn's token usage to the ledger sink (if the provider
+        reported it and a sink is wired). Cache hit rate is derived by the
+        consumer from cached_tokens / prompt_tokens."""
+        if not turn.usage or self.usage_sink is None:
+            return
+        try:
+            self.usage_sink(
+                {
+                    **self.audit_context,
+                    "model": self.model,
+                    **turn.usage,
+                }
+            )
+        except Exception:
+            pass
 
     def _audit(self, tool_call: ToolCall, **event: Any) -> None:
         if self.audit_sink is None:

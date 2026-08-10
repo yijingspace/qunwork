@@ -8,6 +8,16 @@ end-to-end with no network, tokens, or the Slack app console. See
 
 from __future__ import annotations
 
+import ast
+# Python 3.14+ compatibility: ast.NameConstant/Num/Str were removed (merged into ast.Constant).
+# docstring_parser (used by aisuite) still references them at import time.
+if not hasattr(ast, "NameConstant"):
+    ast.NameConstant = ast.Constant
+if not hasattr(ast, "Num"):
+    ast.Num = ast.Constant
+if not hasattr(ast, "Str"):
+    ast.Str = ast.Constant
+
 import pytest
 import pytest_asyncio
 

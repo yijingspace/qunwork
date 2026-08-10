@@ -2445,3 +2445,36 @@ export async function knowledgeResumeByTitle(
   });
   return await res.json();
 }
+
+export interface UsageTotals {
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  cached_tokens: number;
+  cache_hit_rate: number;
+  turns: number;
+}
+
+export async function getUsage(days = 14): Promise<{
+  totals: UsageTotals;
+  by_day: Array<{
+    day: string;
+    prompt_tokens: number;
+    completion_tokens: number;
+    cached_tokens: number;
+    cache_hit_rate: number;
+  }>;
+  by_session: Array<{
+    session_id: string;
+    model: string;
+    turns: number;
+    prompt_tokens: number;
+    completion_tokens: number;
+    cached_tokens: number;
+    cache_hit_rate: number;
+  }>;
+}> {
+  const res = await fetch(`${httpBase()}/v1/usage?days=${days}`);
+  if (!res.ok) throw new Error(`usage ${res.status}`);
+  return await res.json();
+}
