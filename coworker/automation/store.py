@@ -171,6 +171,35 @@ class TaskStore:
             ).fetchall()
         return [TaskRun.from_dict(json.loads(r["data"])) for r in rows]
 
+    def reap_stale_runs(self, *, older_than: float = 300.0) -> int:
+        """Mark runs left 'running' by a crash/restart as error — a wedged turn
+        that never reached run_task's finally would otherwise read as still
+        running forever (and block 'Run now' UX). Only touches runs started
+        longer ago than `older_than` seconds (a live long run stays untouched)."""
+        now = _epoch_now()
+        n = 0
+        with self._lock:
+            rows = self._conn.execute("SELECT data FROM task_runs").fetchall()
+            for r in rows:
+                try:
+                    d = json.loads(r["data"])
+                except Exception:
+                    continue
+                if d.get("status") != "running":
+                    continue
+                if now - float(d.get("started_at", 0)) < older_than:
+                    continue
+                d["status"] = "error"
+                d["error"] = (d.get("error") or "") + " interrupted by restart (run left running)"
+                d["finished_at"] = d.get("finished_at") or now
+                self._conn.execute(
+                    "INSERT OR REPLACE INTO task_runs (run_id, task_id, started_at, data) VALUES (?, ?, ?, ?)",
+                    (d["run_id"], d["task_id"], d.get("started_at"), json.dumps(d, ensure_ascii=False)),
+                )
+                n += 1
+            self._conn.commit()
+        return n
+
     def close(self) -> None:
         with self._lock:
             self._conn.close()

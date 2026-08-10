@@ -432,3 +432,32 @@ async def test_scheduled_run_broadcasts_run_started_event(tmp_path, monkeypatch)
     assert event["data"]["session_id"] == run.session_id
     assert event["data"]["trigger"] == "schedule"
     assert dead not in manager._event_clients  # dropped, not fatal
+
+
+def test_reap_stale_runs_marks_crashed_running_as_error(tmp_path):
+    from coworker.automation import TaskStore
+    from coworker.automation.models import TaskRun
+
+    store = TaskStore(tmp_path / "auto.db")
+    run = TaskRun(task_id="t", trigger="schedule")
+    store.add_run(run)
+    # simulate a wedged run: backdate it beyond the reap window
+    import json
+
+    d = json.loads(store.find_run(run.run_id).to_json() if hasattr(store.find_run(run.run_id), "to_json") else json.dumps(store.find_run(run.run_id).to_dict()))
+    d["status"] = "running"
+    d["started_at"] = d["started_at"] - 10000
+    store._conn.execute(
+        "INSERT OR REPLACE INTO task_runs (run_id, task_id, started_at, data) VALUES (?, ?, ?, ?)",
+        (run.run_id, run.task_id, d["started_at"], json.dumps(d)),
+    )
+    store._conn.commit()
+    assert store.reap_stale_runs(older_than=60) == 1
+    reaped = store.find_run(run.run_id)
+    assert reaped.status == "error"
+    assert "interrupted by restart" in (reaped.error or "")
+    # a fresh running run is untouched
+    run2 = TaskRun(task_id="t2", trigger="schedule")
+    store.add_run(run2)
+    assert store.reap_stale_runs(older_than=60) == 0
+    assert store.find_run(run2.run_id).status == "running"

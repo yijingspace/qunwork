@@ -2285,6 +2285,14 @@ class SessionManager:
         """Build the messaging gateway and start enabled listeners. Inbound messages route to
         durable sessions: a channel message to its subscribers, a DM to the designated DM session
         (else parked). Returns the platforms whose listeners came up."""
+        # A turn wedged on a dead provider can leave a run 'running' forever across a
+        # restart — reap it so the task's history stays truthful and 'Run now' works.
+        try:
+            reaped = self.task_store.reap_stale_runs()
+            if reaped:
+                logger.info("reaped %d stale automation run(s) left running by restart", reaped)
+        except Exception:
+            logger.exception("reap_stale_runs failed")
         self.scheduler.start()  # tick scheduler for automations (independent of connectors)
         return await self._build_and_start_gateway()
 
