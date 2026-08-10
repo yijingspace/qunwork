@@ -2960,6 +2960,13 @@ class SessionManager:
             task_id=task.id, trigger=trigger
         )  # __post_init__ sets run.session_id
         self.task_store.add_run(run)  # mark "running"
+        # Session-level running claim: while this run is live (including while it
+        # parks on an approval prompt), the session counts as running so Inbox
+        # resolution does NOT durable-resume it. Without this, approving a tool
+        # call replayed the still-suspended tool_calls via engine.resume() AND
+        # released the original engine.run() — the same calls executed twice and
+        # the provider rejected the duplicate tool_call_id (HTTP 400).
+        self.mark_running(run.session_id)
         # UX-026: tell every open app window a SCHEDULED run just started (the 5s
         # top-right toast). Manual runs never come through here — the user is
         # already watching those live.
@@ -3048,6 +3055,9 @@ class SessionManager:
             run.status, run.error = "error", str(exc)
         finally:
             run.finished_at = _epoch()
+            # Release the session-level claim (durable-resume for a restart still
+            # works: a fresh process sees is_running False and replays correctly).
+            self.mark_idle(run.session_id)
             # Persist the run as a continuable session + keep the live engine for an immediate
             # follow-up; record the run (now carrying its session_id).
             try:
