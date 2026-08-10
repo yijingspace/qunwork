@@ -401,6 +401,13 @@ class TurnEngine:
             self.model_settings,
         )
         provider = self.provider
+        # Stall guards for ONE model call (owner-hit 2026-08-10 — a scheduled run
+        # parked 16+ minutes with zero chunks: a wedged gateway held the turn
+        # forever because the SDK's default timeout does not apply to streaming
+        # iteration). DeepSeek reasoning streams still emit `reasoning` chunks,
+        # so 90s of absolute silence means the connection is dead, not thinking.
+        # The 600s ceiling is the backstop for a slow-but-alive stream.
+        deadline = loop.time() + _STREAM_TOTAL_TIMEOUT
 
         def produce():
             try:
@@ -418,20 +425,38 @@ class TurnEngine:
                 loop.call_soon_threadsafe(queue.put_nowait, ("done", None))
 
         loop.run_in_executor(None, produce)
+        got_any = False
         while True:
             # Race the queue against Stop so a stalled stream (no chunks arriving —
             # the pre-first-token wait, a wedged connection) can't hold the turn.
             get_task = asyncio.ensure_future(queue.get())
             cancel_task = asyncio.ensure_future(self._cancel.wait())
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                get_task.cancel()
+                cancel_task.cancel()
+                raise TimeoutError(f"model call exceeded {_STREAM_TOTAL_TIMEOUT:.0f}s")
+            # No output yet: a stall deadline. After the first chunk the total
+            # deadline alone applies (long-thinking models can pause between chunks).
+            stall = _STREAM_STALL_TIMEOUT if not got_any else remaining
             done, _ = await asyncio.wait(
-                {get_task, cancel_task}, return_when=asyncio.FIRST_COMPLETED
+                {get_task, cancel_task},
+                timeout=min(remaining, stall),
+                return_when=asyncio.FIRST_COMPLETED,
             )
             cancel_task.cancel()
             if get_task not in done:
                 get_task.cancel()
-                return  # interrupted — the producer exits on its own next chunk
+                if self._cancel.is_set():
+                    return  # user pressed Stop — the producer exits on its own
+                if not got_any:
+                    raise TimeoutError(
+                        f"no response from model within {_STREAM_STALL_TIMEOUT:.0f}s"
+                    )
+                raise TimeoutError("model stream stalled (no chunks)")
             kind, payload = get_task.result()
             if kind == "chunk":
+                got_any = True
                 yield payload
             elif kind == "error":
                 raise payload
@@ -1030,6 +1055,15 @@ def _tool_error_message(tool_call: ToolCall, reason: str) -> dict[str, Any]:
         "content": json.dumps({"error": "tool call not executed", "reason": reason}),
         "ts": time.time(),
     }
+
+
+# One model call must not hold the turn forever: a wedged gateway can stream
+# nothing indefinitely (the SDK default timeout does not apply to streaming
+# iteration). DeepSeek reasoning streams still emit `reasoning` chunks, so 90s
+# of absolute silence means the connection is dead, not thinking. Tests shrink
+# these via monkeypatch.
+_STREAM_STALL_TIMEOUT = 90.0
+_STREAM_TOTAL_TIMEOUT = 600.0
 
 
 def _heal_tool_pairing(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:

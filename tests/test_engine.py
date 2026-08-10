@@ -439,3 +439,44 @@ def test_outbound_replaces_images_for_non_vision_models(tmp_path):
     assert all(p["type"] != "image_url" for p in parts)
     assert "not viewable" in parts[-1]["text"]
     assert engine.messages[-1]["content"][1]["type"] == "image_url"  # history untouched
+
+
+class StallProvider(ProviderClient):
+    """Streams NOTHING (wedged gateway) — the stall guard must abort the turn."""
+
+    def complete(self, **kwargs):  # pragma: no cover
+        raise NotImplementedError
+
+    def capabilities(self, model):
+        return ModelCapabilities()
+
+    def stream(self, *, model, messages, tools=None, **settings):
+        import time
+
+        time.sleep(30)  # never yields — simulates a hung gateway
+        yield StreamChunk(turn=AssistantTurn(text="late", finish_reason="stop"))
+        return
+
+
+def test_stalled_stream_aborts_turn_with_error(tmp_path, monkeypatch):
+    """A provider that streams nothing must not hold the turn forever (owner-hit
+    2026-08-10: a scheduled run parked 16+ minutes on a wedged gateway). The
+    stall guard raises → ERROR event + retriable error notice."""
+    import coworker.engine as engine_mod
+
+    monkeypatch.setattr(engine_mod, "_STREAM_STALL_TIMEOUT", 0.5)
+    monkeypatch.setattr(engine_mod, "_STREAM_TOTAL_TIMEOUT", 2.0)
+    registry = ToolRegistry()
+    permissions = PermissionEngine(workspace_root=tmp_path)
+    engine = TurnEngine(
+        provider=StallProvider(),
+        registry=registry,
+        permissions=permissions,
+        model="gpt-5.5",
+    )
+    events = _collect(engine, "please respond")
+    errs = [e for e in events if e.type == EventType.ERROR]
+    assert errs, "expected an ERROR event after the stall"
+    assert "no response" in str(errs[0].data["error"])
+    # the error notice tail makes the turn retriable, not stuck
+    assert engine._tail_is_retriable_error()
