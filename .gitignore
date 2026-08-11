@@ -53,3 +53,6 @@ W*_数据事实表_*.md
 .vscode/
 *.swp
 *.swo
+
+# Rust 研究基线(bee_colony_core)构建产物
+bee_colony_core/target/

@@ -1,0 +1,13 @@
+[package]
+name = "bee_colony_core"
+version = "0.1.0"
+edition = "2021"
+description = "研究基线: Rust 最小蜂群通信总线 + Agent 调度核心(《企业AI蜂群Agent组织架构全案》原型, 不接生产)"
+
+[dependencies]
+tokio = { version = "1.0", features = ["full"] }
+uuid = { version = "1.6", features = ["v4", "serde"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+dashmap = "5.5"
+chrono = { version = "0.4", features = ["serde"] }
