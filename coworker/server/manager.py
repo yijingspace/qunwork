@@ -98,10 +98,18 @@ def _grants_of(engine) -> dict[str, Any]:
 def _approval_body(request) -> str:
     """Approval card body: the tool's reason (if any) plus a compact preview of its args, so a
     mirrored 'Run `write_file`?' shows the path/content rather than just the tool name.
-    """
+    P0 增量3: when the call carries a monetary amount, the required org approval tier
+    is annotated on the card (组织级资金分级, 方案权限矩阵)."""
     reason = (getattr(request, "reason", "") or "").strip()
     preview = args_preview(getattr(request, "arguments", None))
-    return "\n".join(p for p in (reason, preview) if p)
+    parts = [p for p in (reason, preview) if p]
+    from ..permission_matrix import detect_amount, fund_tier
+
+    amount = detect_amount(getattr(request, "arguments", None))
+    if amount is not None:
+        tier = fund_tier(amount)
+        parts.append(f"⚠️ 金额 ¥{amount:,.0f} — 需 {tier['label']} 审批 (fund tier: {tier['role']})")
+    return "\n".join(parts)
 
 
 class SessionManager:
@@ -4098,6 +4106,23 @@ class SessionManager:
         return {
             "levels": self.pheromone.levels(),
             "total_load": round(self.pheromone.total_load(), 3),
+        }
+
+    # -- P0 增量3: 组织级权限矩阵 ---------------------------------------------
+    def permission_matrix_view(self) -> dict[str, Any]:
+        """The org permission matrix (角色×能力) + fund tiers — read-only view
+        for the human console. Capabilities are sets, sorted for stable JSON."""
+        from ..permission_matrix import FUND_TIERS, HUMAN_ESCALATION, MATRIX
+
+        return {
+            "matrix": {
+                role: sorted(caps) for role, caps in sorted(MATRIX.items())
+            },
+            "fund_tiers": [
+                {"limit": limit, "role": role, "label": label}
+                for limit, role, label in FUND_TIERS
+            ],
+            "human_escalation": dict(sorted(HUMAN_ESCALATION.items())),
         }
 
     def hornet_stats(self) -> dict:

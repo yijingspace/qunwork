@@ -1262,6 +1262,12 @@ def create_app(manager: SessionManager) -> FastAPI:
         """Stigmergic load field: busy signals per executor role + total load."""
         return manager.pheromone_status()
 
+    # -- P0 增量3: 组织级权限矩阵 ---------------------------------------------
+    @app.get("/v1/permission-matrix")
+    def permission_matrix() -> dict[str, Any]:
+        """Org permission matrix (角色×能力) + fund tiers + human escalation."""
+        return manager.permission_matrix_view()
+
     @app.get("/v1/hornet/stats")
     def hornet_stats() -> dict[str, Any]:
         return manager.hornet_stats()
