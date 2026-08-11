@@ -480,3 +480,40 @@ def test_stalled_stream_aborts_turn_with_error(tmp_path, monkeypatch):
     assert "no response" in str(errs[0].data["error"])
     # the error notice tail makes the turn retriable, not stuck
     assert engine._tail_is_retriable_error()
+
+
+# -- prefix-continuity persistence (P0 命中率优化) ------------------------------
+
+def test_persist_callback_fires_per_iteration(tmp_path):
+    """A mid-run transcript sync: the persist callback is invoked after every
+    model round (tool iterations), so a rebuilt engine loads full history and
+    the provider prefix cache stays warm across a WS reconnect/restart."""
+    calls = {"n": 0}
+
+    def _persist():
+        calls["n"] += 1
+
+    provider = ScriptedProvider(
+        [
+            _tool_turn("write_file", {"path": "a.txt", "content": "x"}),
+            _text_turn("done"),
+        ]
+    )
+    registry = ToolRegistry()
+    registry.register_all(ai.toolkits.files(root=str(tmp_path), allow_write=True))
+    permissions = PermissionEngine(workspace_root=tmp_path)
+    engine = TurnEngine(
+        provider=provider,
+        registry=registry,
+        permissions=permissions,
+        model="gpt-5.5",
+        persist_callback=_persist,
+        max_iterations=8,
+    )
+    events = _collect(engine, "do it")
+    assert any(ev.type.value == "turn_end" for ev in events)
+    # one persist after the tool round + one after the final answer round
+    assert calls["n"] >= 2
+    # the transcript is complete (user + assistant tool-call + tool result + final)
+    roles = [m.get("role") for m in engine.messages if m.get("role") != "notice"]
+    assert "user" in roles and "tool" in roles

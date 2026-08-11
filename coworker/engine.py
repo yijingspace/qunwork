@@ -81,6 +81,12 @@ class TurnEngine:
         skill_loader: Optional[Any] = None,
         # Per-turn token ledger sink (see usage_sink below). Optional.
         usage_sink: Optional[Callable[[dict[str, Any]], None]] = None,
+        # Prefix-continuity persistence hook (P0 建议4 命中率优化): called after
+        # every model iteration so the session history is durably synced mid-run.
+        # A rebuilt engine (WS reconnect / durable resume / restart) then loads the
+        # FULL transcript, the provider's prefix cache stays warm, and the next
+        # round hits instead of rebuilding. Optional.
+        persist_callback: Optional[Callable[[], None]] = None,
     ) -> None:
         self.provider = provider
         self.registry = registry
@@ -95,6 +101,7 @@ class TurnEngine:
         # {"session_id", "model", "prompt_tokens", "completion_tokens",
         # "cached_tokens", "cache_miss_tokens"} when the provider reports usage.
         self.usage_sink = usage_sink
+        self.persist_callback = persist_callback
         # Returns an ephemeral `<system-context>` block appended to the LAST user message at
         # send-time only (never persisted). We can't reliably inject system messages mid-thread
         # across providers, so dynamic per-turn context (e.g. the live directory list) rides on
@@ -235,6 +242,15 @@ class TurnEngine:
             return message.get("kind") == "error"
         return False
 
+    def _persist(self) -> None:
+        """Durably sync the transcript after a model round (best-effort). A rebuilt
+        engine then loads the full history and the provider prefix cache stays warm."""
+        if self.persist_callback is not None:
+            try:
+                self.persist_callback()
+            except Exception:
+                pass  # persistence must never break the turn
+
     def _append_notice(self, kind: str, text: Optional[str] = None) -> None:
         """Persist a turn-ending marker (error/interrupted) as a display-only `notice`
         message: it survives reload like the transcript does, but `_outbound_messages`
@@ -271,6 +287,7 @@ class TurnEngine:
         async for event in self._handle_tool_calls(pending):
             yield event
         yield Event(EventType.ITERATION_END, {"iteration": 0})
+        self._persist()
         if not self._cancel.is_set():
             async for event in self._loop():
                 yield event
@@ -377,6 +394,7 @@ class TurnEngine:
                 if self._steering:
                     self._inject_steering()
                     continue
+                self._persist()  # final round: sync before TURN_END
                 yield Event(
                     EventType.TURN_END,
                     {"status": "completed", "iterations": iterations},
@@ -387,6 +405,10 @@ class TurnEngine:
                 yield event
 
             yield Event(EventType.ITERATION_END, {"iteration": iterations})
+            # Prefix-continuity: sync the full transcript after every model round so
+            # a mid-run engine rebuild loads the complete history (provider prefix
+            # cache stays warm — no 100% miss round after a WS reconnect/restart).
+            self._persist()
 
             if self._cancel.is_set():
                 self._append_notice("interrupted")

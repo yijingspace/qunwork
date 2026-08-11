@@ -169,6 +169,7 @@ def build_engine(
     # Defaults to the single source of truth (workspace `.coworker/knowledge.db`).
     knowledge_db_path: Optional[str | Path] = None,
     usage_sink: Optional[Callable[[dict, None]]] = None,
+    persist_callback: Optional[Callable[[], None]] = None,
 ) -> TurnEngine:
     ws = Path(workspace).expanduser().resolve() if workspace else None
     if agent.needs_workspace and ws is None:
@@ -410,6 +411,7 @@ def build_engine(
         plan_approver=plan_approver,
         question_asker=question_asker,
         skill_loader=skill_loader,
+        persist_callback=persist_callback,
     )
     engine.executor = executor  # type: ignore[attr-defined]
     engine.todo = todo  # type: ignore[attr-defined]

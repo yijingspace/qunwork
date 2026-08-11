@@ -536,6 +536,13 @@ class SessionManager:
             usage_sink=lambda p, _sid=session_id: self.usage_store.record(
                 {**p, "session_id": p.get("session_id") or _sid, "surface": str(mode.value)}
             ),
+            # Prefix-continuity (P0 命中率): sync the transcript after every model
+            # round so a mid-run rebuild loads full history (cache stays warm).
+            persist_callback=(
+                (lambda _sid=session_id: self._persist_engine(_sid))
+                if session_id
+                else None
+            ),
             roots=roots,
             # WS sessions pass mode-aware callbacks (attended → live prompt, unattended → Inbox).
             # Background / self-wake / durable-resume runs have no live socket → default to the
@@ -2647,6 +2654,9 @@ class SessionManager:
             usage_sink=lambda p, _sid=session_id: self.usage_store.record(
                 {**p, "session_id": p.get("session_id") or _sid, "surface": "automation"}
             ),
+            # Prefix-continuity: same per-round sync as live sessions — a long
+            # scheduled run's history is always durably recoverable mid-run.
+            persist_callback=(lambda _sid=session_id: self._persist_engine(_sid)),
             # Scheduled runs respect the same per-session connection hierarchy as live sessions:
             # expose only the persona's effective-enabled connectors' tools (§4.3).
             connector_filter=self.effective_connectors(session_id, task.agent),
@@ -3349,6 +3359,16 @@ class SessionManager:
             task.run_count += 1
             self.task_store.save(task)
         return {"ok": True, "run": run.to_dict()}
+
+    def _persist_engine(self, session_id: str) -> None:
+        """Per-round transcript sync (prefix-continuity). Called from the engine's
+        event loop after each model iteration; append-only save, cheap, guarded."""
+        engine = self._engines.get(session_id)
+        if engine is not None:
+            try:
+                self.save(session_id, engine)
+            except Exception:
+                pass  # persistence must never break the turn
 
     def save(self, session_id: str, engine: TurnEngine) -> None:
         executor = getattr(engine, "executor", None)
