@@ -233,6 +233,11 @@ class SessionManager:
         from ..telegram_webapp import WebAppTickets
 
         self.webapp_tickets = WebAppTickets()
+        # P0 增量1 (信息素负载均衡): one shared stigmergic load field — every
+        # orchestrated run deposits/withdraws here, and /v1/pheromone exposes it.
+        from ..pheromone import PheromoneField
+
+        self.pheromone = PheromoneField()
         # G2 command deck: run_id → live control channel while a swarm run is active
         # (paused flag, operator messages, pending requeue approvals).
         self.active_orchestration_controls: dict[str, Any] = {}
@@ -4073,7 +4078,6 @@ class SessionManager:
     # -- P0 建议1: cache warm-up (HORNET coldness × usage hit-rate) ------------
     def cache_warm_status(self) -> dict[str, Any]:
         return self.cache_warmer.status()
-
     def cache_warm_toggle(self, enabled: bool) -> dict[str, Any]:
         self.cache_warmer.enabled = bool(enabled)
         return {"ok": True, "enabled": self.cache_warmer.enabled}
@@ -4086,6 +4090,15 @@ class SessionManager:
         result = await self.cache_warmer.warm_once(max_items=max_items)
         result["status"] = self.cache_warmer.status()
         return result
+
+    # -- P0 增量1: 信息素负载信号 ---------------------------------------------
+    def pheromone_status(self) -> dict[str, Any]:
+        """The stigmergic load field: live busy signals per executor role +
+        total colony load (≈ active task count). Read-only."""
+        return {
+            "levels": self.pheromone.levels(),
+            "total_load": round(self.pheromone.total_load(), 3),
+        }
 
     def hornet_stats(self) -> dict:
         return {

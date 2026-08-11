@@ -494,6 +494,8 @@ def create_app(manager: SessionManager) -> FastAPI:
                     if body.get("executor_agent") in ("cowork", "code")
                     else "cowork"
                 ),
+                # P0 增量1: shared stigmergic load field — batch sizes adapt to it.
+                pheromone=manager.pheromone,
             )
 
         async def _finalize(orch: "Orchestrator") -> dict[str, Any]:
@@ -1232,6 +1234,12 @@ def create_app(manager: SessionManager) -> FastAPI:
     @app.post("/v1/cache/warm/toggle")
     def cache_warm_toggle(body: dict) -> dict[str, Any]:
         return manager.cache_warm_toggle(bool((body or {}).get("enabled")))
+
+    # -- P0 增量1: 信息素负载信号 ---------------------------------------------
+    @app.get("/v1/pheromone")
+    def pheromone_status() -> dict[str, Any]:
+        """Stigmergic load field: busy signals per executor role + total load."""
+        return manager.pheromone_status()
 
     @app.get("/v1/hornet/stats")
     def hornet_stats() -> dict[str, Any]:

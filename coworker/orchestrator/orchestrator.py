@@ -226,6 +226,10 @@ class Orchestrator:
     # P0 建议3: an already-built plan to execute instead of calling the planner
     # (the swarm deck's fork action copies the parent run's plan_ready + injects).
     initial_plan: Optional[Plan] = None
+    # P0 增量1 (信息素负载均衡): shared stigmergic load field. Tasks deposit a
+    # busy signal on start and withdraw on completion; the scheduler reads it to
+    # shrink the parallel batch when the field is loaded. None = legacy behaviour.
+    pheromone: Optional[Any] = None
     # T4 convergence guard (LoopCoop fixed-point): how many consecutive rounds
     # without real progress (no new done task, no changed result, no accepted
     # requeue) before the run is declared stalled instead of spinning forever.
@@ -242,6 +246,23 @@ class Orchestrator:
                 self.event_sink(kind, payload)
             except Exception:
                 logger.exception("event_sink %s failed", kind)
+
+    def _select_batch(self, ready: list) -> list:
+        """P0 增量1 (信息素负载均衡): choose this round's parallel batch. Without a
+        pheromone field this is the legacy `ready[:max_parallel]`. With one, the
+        scheduler reads the stigmergic load signal: when the field is loaded
+        (sum of live busy signals ≥ max_parallel), the batch shrinks proportionally
+        so the colony never over-parallelizes against its own load."""
+        n = max(1, self.max_parallel)
+        if self.pheromone is not None and len(ready) > 1:
+            try:
+                load = self.pheromone.total_load()
+            except Exception:
+                load = 0.0
+            if load >= self.max_parallel:
+                shrink = self.max_parallel / max(1.0, load)
+                n = max(1, int(self.max_parallel * shrink))
+        return ready[:n]
 
     def _worker_feed(self, worker: str, task_id: str = "") -> Callable[[str, dict], None]:
         """Wrap a worker engine's on_event into sink events (chain-of-thought feed),
@@ -469,6 +490,18 @@ class Orchestrator:
         budget_exhausted = False  # set when the soft deadline passes; stops new batches
 
         async def process(task: Task) -> bool:
+            """Pheromone-wrapped task runner: deposit a busy signal on start,
+            withdraw on completion (finally) — even on executor crashes."""
+            pher_key = task.agent or self.executor_agent
+            if self.pheromone is not None:
+                self.pheromone.deposit(pher_key, 1.0)
+            try:
+                return await _process_impl(task)
+            finally:
+                if self.pheromone is not None:
+                    self.pheromone.deposit(pher_key, -1.0)
+
+        async def _process_impl(task: Task) -> bool:
             """Run one task (execute + validate + update). Returns True if progress."""
             self._runs += 1
             task.status = "running"
@@ -699,7 +732,7 @@ class Orchestrator:
                     "run_timed_out",
                     {"seconds": self.timeout_seconds, "final_batch": [t.id for t in ready[: max(1, self.max_parallel)]]},
                 )
-            batch = ready[: max(1, self.max_parallel)]
+            batch = self._select_batch(ready)
             done_before = {t.id for t in plan.tasks if t.done}
             results_before = {
                 t.id: (t.result or "")[:200] for t in plan.tasks if t.result
