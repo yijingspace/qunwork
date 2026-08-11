@@ -26,6 +26,37 @@ async function defaultWorkspaceHint(): Promise<string | undefined> {
   }
 }
 
+// P0 建议3 保留分支 A/B: flatten a run snapshot's plan + outcomes into a
+// per-task table, so two branches of the same parent can be compared side by side.
+interface TaskOutcome {
+  id: string;
+  status: string;
+  confidence: number;
+  result: string;
+}
+
+function extractTaskOutcomes(snap: OrchestrationRunSnapshot): TaskOutcome[] {
+  const byId = new Map<string, TaskOutcome>();
+  for (const ev of snap.events) {
+    const p = ev.payload as Record<string, unknown>;
+    if (ev.kind === "plan_ready") {
+      for (const raw of (p.tasks as Record<string, unknown>[]) ?? []) {
+        byId.set(String(raw.id), { id: String(raw.id), status: "pending", confidence: 0, result: "" });
+      }
+    } else if (ev.kind === "task_done") {
+      const t = byId.get(String(p.id));
+      if (t) {
+        t.status = String(p.status ?? "");
+        t.confidence = Number(p.confidence ?? 0);
+      }
+    } else if (ev.kind === "task_result") {
+      const t = byId.get(String(p.id));
+      if (t && typeof p.result === "string") t.result = p.result;
+    }
+  }
+  return Array.from(byId.values());
+}
+
 interface TaskView {
   id: string;
   description: string;
@@ -153,6 +184,8 @@ export function SwarmView({ onBack, workspace }: { onBack: () => void; workspace
   const [forkDesc, setForkDesc] = useState("");
   const [forkDeps, setForkDeps] = useState("");
   const [forkAgent, setForkAgent] = useState("cowork");
+  // P0 建议3 保留分支 A/B: side-by-side outcome comparison parent vs fork.
+  const [compare, setCompare] = useState<{ parent: OrchestrationRunSnapshot; fork: OrchestrationRunSnapshot } | null>(null);
   const [requeues, setRequeues] = useState<
     Array<{ task_id: string; attempt?: number; reason?: string }>
   >([]);
@@ -320,6 +353,21 @@ export function SwarmView({ onBack, workspace }: { onBack: () => void; workspace
       setForkDesc("");
       setForkDeps("");
       setForkAgent("cowork");
+    }
+  };
+
+  // P0 建议3 保留分支 A/B: fetch the parent run and compare outcomes side by side.
+  const runCompare = async (parentId: string) => {
+    if (!runId) return;
+    setDeckError(null);
+    try {
+      const [parent, fork] = await Promise.all([
+        getOrchestrateRun(parentId),
+        getOrchestrateRun(runId),
+      ]);
+      setCompare({ parent, fork });
+    } catch {
+      setDeckError("compare failed");
     }
   };
 
@@ -897,6 +945,46 @@ export function SwarmView({ onBack, workspace }: { onBack: () => void; workspace
           </div>
         )}
 
+        {compare && (
+          <div className="rounded-xl border border-line bg-panel px-3.5 py-3 mb-3" data-testid="branch-compare">
+            <div className="flex items-center gap-2 mb-2">
+              <span className="text-[12px] font-semibold">{t("Branch A/B comparison")}</span>
+              <button className="text-[11px] text-faint hover:text-ink" onClick={() => setCompare(null)}>
+                ✕ {t("Close")}
+              </button>
+            </div>
+            <div className="flex items-center gap-3 text-[11px] text-faint mb-2">
+              <span className="flex-1 truncate">{compare.parent.intent}</span>
+              <span aria-hidden>→</span>
+              <span className="flex-1 truncate">{compare.fork.intent}</span>
+            </div>
+            <div className="space-y-1">
+              {(() => {
+                const parent = extractTaskOutcomes(compare.parent);
+                const fork = extractTaskOutcomes(compare.fork);
+                const ids = Array.from(new Set([...parent.map((t) => t.id), ...fork.map((t) => t.id)]));
+                const byId = (arr: TaskOutcome[], id: string) => arr.find((t) => t.id === id);
+                return ids.map((id) => {
+                  const p = byId(parent, id);
+                  const f = byId(fork, id);
+                  const diff = (p?.status ?? "—") !== (f?.status ?? "—");
+                  return (
+                    <div key={id} className="flex items-start gap-2 text-[12px]">
+                      <span className="text-faint font-mono w-12 shrink-0">{id}</span>
+                      <span className={"flex-1 truncate " + (diff ? "text-amber-500" : "")}>
+                        {p ? `${p.status}${p.confidence ? ` ${(p.confidence * 100).toFixed(0)}%` : ""}` : "—"}
+                      </span>
+                      <span className={"flex-1 truncate " + (diff ? "text-amber-500" : "")}>
+                        {f ? `${f.status}${f.confidence ? ` ${(f.confidence * 100).toFixed(0)}%` : ""}` : "—"}
+                      </span>
+                    </div>
+                  );
+                });
+              })()}
+            </div>
+          </div>
+        )}
+
         {history.length > 0 && (
           <div>
             <div className="text-[11px] uppercase tracking-[0.07em] text-faint font-semibold mb-1.5">
@@ -905,10 +993,16 @@ export function SwarmView({ onBack, workspace }: { onBack: () => void; workspace
             {history.map((h) => (
               <button
                 key={h.run_id}
-                className="w-full text-left rounded-lg border border-line bg-panel px-3 py-2 mb-1.5 hover:border-lineStrong"
+                className={"w-full text-left rounded-lg border border-line bg-panel px-3 py-2 mb-1.5 hover:border-lineStrong" + (h.parent_run_id ? " ml-4 border-dashed" : "")}
                 onClick={() => openRun(h.run_id)}
+                data-testid={`history-${h.run_id}`}
               >
                 <div className="flex items-center gap-2">
+                  {h.parent_run_id && (
+                    <span className="text-[10px] text-faint border border-line rounded px-1" title={h.parent_run_id}>
+                      {t("branch")}
+                    </span>
+                  )}
                   <span className={"text-[12px] " + (h.status === "completed" ? "text-ok" : h.status === "failed" ? "text-danger" : "text-muted")}>
                     {h.status}
                   </span>
@@ -919,6 +1013,21 @@ export function SwarmView({ onBack, workspace }: { onBack: () => void; workspace
             ))}
           </div>
         )}
+
+        {runId &&
+          (() => {
+            const parentId = history.find((h) => h.run_id === runId)?.parent_run_id;
+            if (!parentId) return null;
+            return (
+              <button
+                className="mt-2 rounded-lg border border-line px-2.5 py-1 text-[12px] text-muted hover:text-ink hover:border-lineStrong"
+                onClick={() => void runCompare(parentId)}
+                data-testid="swarm-compare-parent"
+              >
+                {t("Compare with parent branch")}
+              </button>
+            );
+          })()}
       </div>
     </div>
   );

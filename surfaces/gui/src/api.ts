@@ -945,6 +945,8 @@ export interface OrchestrationHistoryItem {
   status: string;
   created_at: number;
   updated_at: number;
+  // P0 建议3 保留分支 A/B: non-null when this run is a fork of another run.
+  parent_run_id?: string | null;
 }
 
 export async function getOrchestrateHistory(): Promise<{ runs: OrchestrationHistoryItem[] }> {
