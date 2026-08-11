@@ -4040,9 +4040,12 @@ class SessionManager:
 
     def usage_summary(self, days: int = 14) -> dict:
         """Token monitor: totals, per-day trend and per-session breakdown, plus
-        the context-cache hit rate (cached_tokens / prompt_tokens)."""
+        the context-cache hit rate (cached_tokens / prompt_tokens) and the
+        steady-state rate (rounds 3+ of each prefix segment — not diluted by
+        unavoidable first-round misses after a session rebuild)."""
         return {
             "totals": self.usage_store.totals(),
+            "steady": self.usage_store.steady_stats(),
             "by_day": self.usage_store.by_day(days),
             "by_session": self.usage_store.by_session(),
         }

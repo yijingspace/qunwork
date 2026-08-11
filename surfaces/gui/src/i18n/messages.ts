@@ -665,6 +665,8 @@ export const zh: Messages = {
   "Branch A/B comparison": "分支 A/B 对比",
   "branch": "分支",
   "Compare with parent branch": "与父分支对比",
+  "Steady hit rate": "稳态命中率",
+  "Warm rounds only — excludes prefix rebuilds": "仅统计热缓存轮次——排除前缀重建",
   "Rhythm: {p}": "节奏:{p}",
   "Due in the next 7 days": "未来 7 天到期",
   "Nothing scheduled.": "暂无排期。",

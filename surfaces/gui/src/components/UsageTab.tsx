@@ -5,6 +5,7 @@ import {
   setCacheWarmEnabled,
   triggerCacheWarm,
   type CacheWarmStatus,
+  type SteadyStats,
 } from "../api";
 import { useT } from "../i18n";
 import { Toggle } from "./Toggle";
@@ -67,6 +68,7 @@ function shortSession(id: string) {
 export function UsageTab() {
   const t = useT();
   const [totals, setTotals] = useState<UsageAgg | null>(null);
+  const [steady, setSteady] = useState<SteadyStats | null>(null);
   const [days, setDays] = useState<DayRow[]>([]);
   const [sessions, setSessions] = useState<SessionRow[]>([]);
   const [err, setErr] = useState("");
@@ -79,6 +81,7 @@ export function UsageTab() {
     getUsage()
       .then((r) => {
         setTotals(r.totals ?? null);
+        setSteady(r.steady ?? null);
         setDays(r.by_day ?? []);
         setSessions(r.by_session ?? []);
       })
@@ -149,6 +152,14 @@ export function UsageTab() {
             accent={hitColor}
             sub={totals.cached_tokens ? `${fmt(totals.cached_tokens)} ${t("cached")}` : undefined}
           />
+          {steady && steady.turns > 0 && (
+            <Stat
+              label={t("Steady hit rate")}
+              value={`${(steady.cache_hit_rate * 100).toFixed(1)}%`}
+              accent={steady.cache_hit_rate >= 0.85 ? "text-green-500" : steady.cache_hit_rate >= 0.6 ? "text-amber-500" : "text-red-500"}
+              sub={t("Warm rounds only — excludes prefix rebuilds")}
+            />
+          )}
         </div>
       ) : (
         <div className="text-[12px] text-muted mb-4">{t("Loading…")}</div>

@@ -52,3 +52,27 @@ def test_no_usage_returns_zeros():
     assert t["prompt_tokens"] == 0
     assert t["cache_hit_rate"] == 0.0
     assert t["turns"] == 0
+
+
+def test_steady_stats_excludes_prefix_rebuild_rounds(tmp_path):
+    """steady_stats drops the first two rounds of every prefix-rebuild segment
+    (detected by a ≥30% prompt shrink), so the plain ratio's dilution by
+    unavoidable first-round misses is removed."""
+    from coworker.usage import UsageStore
+
+    u = UsageStore(tmp_path / "u.db")
+    now = 1_800_000_000.0
+    # segment 1: growing prompts, warm by round 3
+    for i, (p, c) in enumerate([(1000, 0), (2000, 900), (3000, 1900), (4000, 2900)]):
+        u.record({"session_id": "s1", "surface": "t", "prompt_tokens": p,
+                  "cached_tokens": c, "ts": now + i})
+    # segment 2: prompt shrinks (rebuild) → first two rounds excluded
+    for i, (p, c) in enumerate([(1500, 0), (2500, 1200), (3500, 2400)]):
+        u.record({"session_id": "s1", "surface": "t", "prompt_tokens": p,
+                  "cached_tokens": c, "ts": now + 100 + i})
+    st = u.steady_stats()
+    # warm rounds: seg1 #2,#3 (3000,1900)+(4000,2900) + seg2 #2 (3500,2400)
+    assert st["prompt_tokens"] == 3000 + 4000 + 3500
+    assert st["cached_tokens"] == 1900 + 2900 + 2400
+    assert st["turns"] == 3
+    assert st["cache_hit_rate"] == round((1900 + 2900 + 2400) / (3000 + 4000 + 3500), 4)

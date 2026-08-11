@@ -2491,8 +2491,16 @@ export interface UsageTotals {
   turns: number;
 }
 
+export interface SteadyStats {
+  prompt_tokens: number;
+  cached_tokens: number;
+  turns: number;
+  cache_hit_rate: number;
+}
+
 export async function getUsage(days = 14): Promise<{
   totals: UsageTotals;
+  steady: SteadyStats;
   by_day: Array<{
     day: string;
     prompt_tokens: number;

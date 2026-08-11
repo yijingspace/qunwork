@@ -185,6 +185,44 @@ class UsageStore:
             "turns": int(row["n"]),
         }
 
+    def steady_stats(self) -> dict[str, Any]:
+        """Steady-state hit rate — the provider prefix cache's REAL efficiency.
+
+        A context-cache miss on the first round of a fresh prefix is unavoidable
+        (nothing is cached yet), so the plain cached/prompt ratio is diluted by
+        every prefix-rebuild segment (session restart / durable resume / new
+        task). This computes the ratio over rounds 3+ of each contiguous segment;
+        a segment boundary is detected when a round's prompt shrinks by ≥30%
+        versus the previous round (a rebuild never grows the prefix).
+
+        Example (the 2026-08-12 automation run): plain hit 66% vs steady 95%+.
+        """
+        with self._lock:
+            rows = self._con.execute(
+                "SELECT prompt_tokens, cached_tokens FROM token_usage ORDER BY created_at"
+            ).fetchall()
+        s_p = s_c = s_n = 0
+        in_segment = 0
+        prev_p: Optional[int] = None
+        for r in rows:
+            p, c = int(r["prompt_tokens"]), int(r["cached_tokens"])
+            if p <= 0:
+                continue
+            if prev_p is not None and p < prev_p * 0.7:
+                in_segment = 0  # a new prefix-rebuild segment starts
+            if in_segment >= 2:  # rounds 3+ of the segment — prefix is warm
+                s_p += p
+                s_c += c
+                s_n += 1
+            in_segment += 1
+            prev_p = p
+        return {
+            "prompt_tokens": s_p,
+            "cached_tokens": s_c,
+            "turns": s_n,
+            "cache_hit_rate": self._hit_rate(s_c, s_p),
+        }
+
 
 def render_usage_summary(u: dict[str, Any]) -> str:
     """Compact human-readable one-liner used by CLI/notices."""
