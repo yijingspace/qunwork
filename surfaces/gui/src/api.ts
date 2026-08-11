@@ -954,6 +954,18 @@ export async function getOrchestrateHistory(): Promise<{ runs: OrchestrationHist
   return await res.json();
 }
 
+// P0 增量2 (任务组生命周期): dissolve a finished run (解散蜂群,回收资源).
+export async function dissolveRun(
+  runId: string,
+): Promise<{ ok: boolean; error?: string; already?: boolean }> {
+  const res = await fetch(`${httpBase()}/v1/orchestrate/${encodeURIComponent(runId)}/dissolve`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: "{}",
+  });
+  return await res.json();
+}
+
 export async function connectConnector(
   name: string,
   fields: Record<string, string>,

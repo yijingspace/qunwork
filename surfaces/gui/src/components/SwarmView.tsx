@@ -5,6 +5,7 @@ import {
   getCoordinationReport,
   getHealth,
   getOrchestrateHistory,
+  dissolveRun,
   getOrchestrateRun,
   listSwarmTemplates,
   orchestrate,
@@ -369,6 +370,13 @@ export function SwarmView({ onBack, workspace }: { onBack: () => void; workspace
     } catch {
       setDeckError("compare failed");
     }
+  };
+
+  // -- P0 增量2: task-group lifecycle — dissolve a finished run ---------------
+  const dissolve = async (rid: string) => {
+    const res = await dissolveRun(rid);
+    setDeckError(res.ok ? null : res.error || "dissolve failed");
+    if (res.ok) await loadHistory();
   };
 
   const loadReport = async () => {
@@ -991,25 +999,39 @@ export function SwarmView({ onBack, workspace }: { onBack: () => void; workspace
               {t("History")}
             </div>
             {history.map((h) => (
-              <button
+              <div
                 key={h.run_id}
-                className={"w-full text-left rounded-lg border border-line bg-panel px-3 py-2 mb-1.5 hover:border-lineStrong" + (h.parent_run_id ? " ml-4 border-dashed" : "")}
-                onClick={() => openRun(h.run_id)}
-                data-testid={`history-${h.run_id}`}
+                className={"rounded-lg border border-line bg-panel px-3 py-2 mb-1.5 flex items-center gap-2" + (h.parent_run_id ? " ml-4 border-dashed" : "")}
               >
-                <div className="flex items-center gap-2">
-                  {h.parent_run_id && (
-                    <span className="text-[10px] text-faint border border-line rounded px-1" title={h.parent_run_id}>
-                      {t("branch")}
+                <button
+                  className="flex-1 min-w-0 text-left"
+                  onClick={() => openRun(h.run_id)}
+                  data-testid={`history-${h.run_id}`}
+                >
+                  <div className="flex items-center gap-2">
+                    {h.parent_run_id && (
+                      <span className="text-[10px] text-faint border border-line rounded px-1" title={h.parent_run_id}>
+                        {t("branch")}
+                      </span>
+                    )}
+                    <span className={"text-[12px] " + (h.status === "completed" ? "text-ok" : h.status === "failed" ? "text-danger" : h.status === "dissolved" ? "text-faint" : "text-muted")}>
+                      {h.status}
                     </span>
-                  )}
-                  <span className={"text-[12px] " + (h.status === "completed" ? "text-ok" : h.status === "failed" ? "text-danger" : "text-muted")}>
-                    {h.status}
-                  </span>
-                  <span className="text-[12.5px] flex-1 truncate">{h.intent}</span>
-                  <span className="text-[10.5px] text-faint">{new Date(h.created_at * 1000).toLocaleString()}</span>
-                </div>
-              </button>
+                    <span className="text-[12.5px] flex-1 truncate">{h.intent}</span>
+                    <span className="text-[10.5px] text-faint">{new Date(h.created_at * 1000).toLocaleString()}</span>
+                  </div>
+                </button>
+                {(h.status === "completed" || h.status === "failed") && (
+                  <button
+                    className="text-[11px] text-faint border border-line rounded px-1.5 py-0.5 hover:text-ink hover:border-lineStrong shrink-0"
+                    onClick={() => void dissolve(h.run_id)}
+                    data-testid={`dissolve-${h.run_id}`}
+                    title={t("Dissolve this finished run — release the task group")}
+                  >
+                    {t("Dissolve")}
+                  </button>
+                )}
+              </div>
             ))}
           </div>
         )}

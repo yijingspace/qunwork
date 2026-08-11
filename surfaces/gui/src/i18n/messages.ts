@@ -667,6 +667,8 @@ export const zh: Messages = {
   "Compare with parent branch": "与父分支对比",
   "Steady hit rate": "稳态命中率",
   "Warm rounds only — excludes prefix rebuilds": "仅统计热缓存轮次——排除前缀重建",
+  "Dissolve": "解散",
+  "Dissolve this finished run — release the task group": "解散该已结束运行——释放任务组",
   "Rhythm: {p}": "节奏:{p}",
   "Due in the next 7 days": "未来 7 天到期",
   "Nothing scheduled.": "暂无排期。",

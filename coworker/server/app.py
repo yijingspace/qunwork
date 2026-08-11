@@ -560,6 +560,27 @@ def create_app(manager: SessionManager) -> FastAPI:
     def orchestrate_history() -> dict[str, Any]:
         return {"runs": manager.orchestration_store.list_runs(limit=50)}
 
+    @app.post("/v1/orchestrate/{run_id}/dissolve")
+    def orchestrate_dissolve(run_id: str) -> dict[str, Any]:
+        """P0 增量2 (任务组生命周期): dissolve a FINISHED run — the explicit
+        '解散蜂群,回收资源' step of the swarm group lifecycle. Marks the run
+        dissolved (terminal), records a run_dissolved event, and refuses while
+        the run is still active (pause it first, then dissolve)."""
+        store = manager.orchestration_store
+        run = store.get_run(run_id)
+        if not run:
+            return {"ok": False, "error": "run not found"}
+        if run_id in manager.active_orchestration_controls:
+            return {
+                "ok": False,
+                "error": "run is still active — pause it before dissolving",
+            }
+        if run.get("status") == "dissolved":
+            return {"ok": True, "already": True, "run_id": run_id}
+        store.append_event(run_id, "run_dissolved", {"by": "operator"})
+        store.update_status(run_id, "dissolved")
+        return {"ok": True, "run_id": run_id}
+
     @app.get("/v1/orchestrate/{run_id}/report")
     def orchestrate_report(run_id: str) -> dict[str, Any]:
         """Coordination report (benchmark showcase): render the run's event stream

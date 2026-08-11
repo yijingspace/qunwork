@@ -174,3 +174,46 @@ def test_control_api_task_inject_and_retarget(tmp_path, monkeypatch):
         json={"action": "retarget", "task_id": "t1", "agent": "hacker"},
     )
     assert r.json()["ok"] is False
+
+
+def test_dissolve_run_lifecycle(tmp_path, monkeypatch):
+    """P0 增量2: a finished run can be dissolved (terminal status + event);
+    an active run is refused; dissolving twice is idempotent."""
+    monkeypatch.setenv("COWORKER_STATE_DIR", str(tmp_path / "state"))
+    from fastapi.testclient import TestClient
+
+    from coworker.server.app import create_app
+    from coworker.server.manager import SessionManager
+
+    manager = SessionManager(data_dir=tmp_path / "data")
+    client = TestClient(create_app(manager))
+    store = manager.orchestration_store
+
+    rid = store.create_run("finished goal")
+    store.update_status(rid, "completed")
+
+    # dissolve a finished run
+    r = client.post(f"/v1/orchestrate/{rid}/dissolve", json={})
+    assert r.json()["ok"] is True
+    run = store.get_run(rid)
+    assert run["status"] == "dissolved"
+    assert any(ev["kind"] == "run_dissolved" for ev in run["events"])
+    # list_runs surfaces the terminal status
+    assert store.list_runs()[0]["status"] == "dissolved"
+
+    # idempotent
+    r2 = client.post(f"/v1/orchestrate/{rid}/dissolve", json={})
+    assert r2.json()["ok"] is True and r2.json()["already"] is True
+
+    # active run refused
+    active = store.create_run("live goal")
+    from coworker.orchestrator.control import RunController
+
+    manager.active_orchestration_controls[active] = RunController()
+    r3 = client.post(f"/v1/orchestrate/{active}/dissolve", json={})
+    assert r3.json()["ok"] is False
+    assert "still active" in r3.json()["error"]
+
+    # missing run
+    r4 = client.post("/v1/orchestrate/nope/dissolve", json={})
+    assert r4.json()["ok"] is False
