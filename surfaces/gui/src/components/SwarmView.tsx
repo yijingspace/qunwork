@@ -33,6 +33,7 @@ interface TaskView {
   status: string;
   confidence: number;
   result: string;
+  agent: string;
 }
 
 interface Thought {
@@ -146,6 +147,12 @@ export function SwarmView({ onBack, workspace }: { onBack: () => void; workspace
   const [paused, setPaused] = useState(false);
   const [deckMsg, setDeckMsg] = useState("");
   const [deckError, setDeckError] = useState<string | null>(null);
+  // P0 建议3: fork-a-sub-task form state
+  const [showFork, setShowFork] = useState(false);
+  const [forkId, setForkId] = useState("");
+  const [forkDesc, setForkDesc] = useState("");
+  const [forkDeps, setForkDeps] = useState("");
+  const [forkAgent, setForkAgent] = useState("cowork");
   const [requeues, setRequeues] = useState<
     Array<{ task_id: string; attempt?: number; reason?: string }>
   >([]);
@@ -227,8 +234,14 @@ export function SwarmView({ onBack, workspace }: { onBack: () => void; workspace
       const p = ev.payload as Record<string, unknown>;
       if (ev.kind === "plan_ready") {
         for (const raw of (p.tasks as Record<string, unknown>[]) ?? []) {
-          tasks.push({ id: String(raw.id), description: String(raw.description ?? ""), deps: (raw.deps as string[]) ?? [], status: "pending", confidence: 0, result: "" });
+          tasks.push({ id: String(raw.id), description: String(raw.description ?? ""), deps: (raw.deps as string[]) ?? [], status: "pending", confidence: 0, result: "", agent: String(raw.agent ?? "") });
         }
+      } else if (ev.kind === "task_injected") {
+        // P0 建议3: a fork task joined the live plan.
+        tasks.push({ id: String(p.id), description: String(p.description ?? ""), deps: (p.deps as string[]) ?? [], status: "pending", confidence: 0, result: "", agent: String(p.agent ?? "") });
+      } else if (ev.kind === "task_retargeted") {
+        const td = tasks.find((x) => x.id === p.id);
+        if (td) td.agent = String(p.agent ?? "");
       } else if (ev.kind === "task_started") {
         const td = tasks.find((x) => x.id === p.id);
         if (td) td.status = "running";
@@ -279,6 +292,35 @@ export function SwarmView({ onBack, workspace }: { onBack: () => void; workspace
     if (!runId) return;
     await orchestrateControl(runId, approve ? "requeue_approve" : "requeue_reject", { task_id: taskId });
     setRequeues((prev) => prev.filter((r) => r.task_id !== taskId));
+  };
+
+  // -- P0 建议3: 蜂群指挥台 — fork a sub-task + retarget an agent -------------
+  const retarget = async (taskId: string, agent: string) => {
+    if (!runId) return;
+    const res = await orchestrateControl(runId, "retarget", { task_id: taskId, agent });
+    setDeckError(res.ok ? null : res.error || "retarget failed");
+    if (res.ok) {
+      setTasks((prev) => prev.map((t) => (t.id === taskId ? { ...t, agent } : t)));
+    }
+  };
+
+  const injectTask = async () => {
+    if (!runId || !forkDesc.trim()) return;
+    const deps = forkDeps.split(",").map((s) => s.trim()).filter(Boolean);
+    const res = await orchestrateControl(runId, "task_inject", {
+      task_id: forkId.trim() || `fork-${Date.now().toString(36)}`,
+      description: forkDesc.trim(),
+      deps,
+      agent: forkAgent,
+    });
+    setDeckError(res.ok ? null : res.error || "inject failed");
+    if (res.ok) {
+      setShowFork(false);
+      setForkId("");
+      setForkDesc("");
+      setForkDeps("");
+      setForkAgent("cowork");
+    }
   };
 
   const loadReport = async () => {
@@ -577,6 +619,49 @@ export function SwarmView({ onBack, workspace }: { onBack: () => void; workspace
             >
               {t("Send")}
             </button>
+            <button
+              className="rounded-lg border border-line px-2.5 py-1 text-[12.5px] text-muted hover:text-ink hover:border-lineStrong"
+              onClick={() => setShowFork((v) => !v)}
+              data-testid="swarm-fork-toggle"
+            >
+              {showFork ? t("Cancel") : "＋ " + t("Fork a task")}
+            </button>
+          </div>
+        )}
+        {showFork && (
+          <div className="mt-2 rounded-lg border border-line bg-paper p-2.5 space-y-2" data-testid="swarm-fork-form">
+            <div className="flex gap-2">
+              <input
+                className="flex-1 rounded-lg border border-line bg-paper px-2.5 py-1 text-[12.5px] outline-none focus:border-lineStrong"
+                placeholder={t("New task description (e.g. Write the appendix)")}
+                value={forkDesc}
+                onChange={(e) => setForkDesc(e.target.value)}
+              />
+            </div>
+            <div className="flex gap-2">
+              <input
+                className="flex-1 rounded-lg border border-line bg-paper px-2.5 py-1 text-[12.5px] outline-none focus:border-lineStrong"
+                placeholder={t("Depends on (task ids, comma-separated — optional)")}
+                value={forkDeps}
+                onChange={(e) => setForkDeps(e.target.value)}
+              />
+              <select
+                className="rounded-lg border border-line bg-paper px-2 py-1 text-[12.5px] outline-none"
+                value={forkAgent}
+                onChange={(e) => setForkAgent(e.target.value)}
+              >
+                <option value="cowork">cowork</option>
+                <option value="code">code</option>
+              </select>
+              <button
+                className="rounded-lg bg-accent px-2.5 py-1 text-[12.5px] text-white disabled:opacity-50 shrink-0"
+                disabled={!forkDesc.trim()}
+                onClick={() => void injectTask()}
+                data-testid="swarm-fork-submit"
+              >
+                {t("Add to plan")}
+              </button>
+            </div>
           </div>
         )}
         {requeues.length > 0 && (
@@ -708,8 +793,24 @@ export function SwarmView({ onBack, workspace }: { onBack: () => void; workspace
                   <span className="text-[13px] font-semibold flex-1">
                     [{task.id}] {task.description}
                   </span>
+                  {task.agent && (
+                    <span className="text-[10.5px] text-faint border border-line rounded px-1.5 py-0.5" data-testid={`task-agent-${task.id}`}>
+                      {task.agent}
+                    </span>
+                  )}
                   {task.confidence > 0 && (
                     <span className="text-[11px] text-faint">{(task.confidence * 100).toFixed(0)}%</span>
+                  )}
+                  {task.status === "pending" && (
+                    <select
+                      className="text-[11px] bg-panel border border-line rounded px-1 py-0.5 outline-none"
+                      value={task.agent || "cowork"}
+                      data-testid={`swarm-retarget-${task.id}`}
+                      onChange={(e) => retarget(task.id, e.target.value)}
+                    >
+                      <option value="cowork">cowork</option>
+                      <option value="code">code</option>
+                    </select>
                   )}
                 </div>
                 {task.deps.length > 0 && (

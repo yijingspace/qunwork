@@ -27,6 +27,10 @@ class RunController:
         self._pause_event = asyncio.Event()
         self._pause_event.set()  # running by default
         self._messages: "asyncio.Queue[str]" = asyncio.Queue()
+        # P0 建议3 (蜂群指挥台): structured DAG edits drained by the orchestrator
+        # between scheduling rounds — task injection (fork) + agent retargeting.
+        self._task_injections: "asyncio.Queue[dict[str, Any]]" = asyncio.Queue()
+        self._retargets: "asyncio.Queue[dict[str, Any]]" = asyncio.Queue()
         self._requeue: dict[str, "asyncio.Future[bool]"] = {}
         self._requeue_meta: dict[str, dict[str, Any]] = {}
         # Loop bound on the first orchestrator-side await (the loop that owns
@@ -81,6 +85,57 @@ class RunController:
         while True:
             try:
                 out.append(self._messages.get_nowait())
+            except asyncio.QueueEmpty:
+                break
+        return out
+
+    # -- P0 建议3: structured DAG edits ----------------------------------------
+    def inject_task(
+        self,
+        *,
+        id: str,
+        description: str,
+        deps: Optional[list[str]] = None,
+        agent: str = "",
+    ) -> None:
+        """Queue a fork task for the running plan. The orchestrator appends it
+        (validated: unique id, known deps) at the next scheduling round. Only
+        pending tasks are affected — running ones can't be interrupted."""
+
+        def _do() -> None:
+            self._task_injections.put_nowait(
+                {
+                    "id": id,
+                    "description": description,
+                    "deps": list(deps or []),
+                    "agent": agent,
+                }
+            )
+
+        self._call_threadsafe(_do)
+
+    def drain_task_injections(self) -> list[dict[str, Any]]:
+        out: list[dict[str, Any]] = []
+        while True:
+            try:
+                out.append(self._task_injections.get_nowait())
+            except asyncio.QueueEmpty:
+                break
+        return out
+
+    def retarget_task(self, task_id: str, agent: str) -> None:
+        """Reassign a pending task to a different executor role at runtime."""
+
+        def _do() -> None:
+            self._retargets.put_nowait({"id": task_id, "agent": agent})
+
+        self._call_threadsafe(_do)
+
+    def drain_retargets(self) -> list[dict[str, Any]]:
+        out: list[dict[str, Any]] = []
+        while True:
+            try:
+                out.append(self._retargets.get_nowait())
             except asyncio.QueueEmpty:
                 break
         return out

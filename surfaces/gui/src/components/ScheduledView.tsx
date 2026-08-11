@@ -90,6 +90,7 @@ export function ScheduledView({ onOpenRun, onRunNow, initialOpenId }: Props) {
     title: string;
     instructions: string;
     cron?: string;
+    priority?: "low" | "normal" | "high";
     permissions?: { tool: string; target: string; access: "read" | "write" }[];
   }) => {
     setBusy(payload.title);
@@ -205,13 +206,19 @@ function NewAutomationForm({
 }: {
   busy: boolean;
   onCancel: () => void;
-  onCreate: (p: { title: string; instructions: string; cron?: string }) => void;
+  onCreate: (p: {
+    title: string;
+    instructions: string;
+    cron?: string;
+    priority?: "low" | "normal" | "high";
+  }) => void;
 }) {
   const t = useT();
   const [title, setTitle] = useState("");
   const [instructions, setInstructions] = useState("");
   const [time, setTime] = useState("09:00");
   const [freq, setFreq] = useState("daily");
+  const [priority, setPriority] = useState<"low" | "normal" | "high">("normal");
 
   const valid = title.trim() && instructions.trim();
 
@@ -254,6 +261,18 @@ function NewAutomationForm({
             <option value="weekends">Weekends</option>
           </select>
         </label>
+        <label className="tmpl-field">
+          <span>{t("Priority")}</span>
+          <select
+            className="tmpl-input tmpl-select"
+            value={priority}
+            onChange={(e) => setPriority(e.target.value as "low" | "normal" | "high")}
+          >
+            <option value="low">{t("Low priority")}</option>
+            <option value="normal">{t("Normal priority")}</option>
+            <option value="high">{t("High priority")}</option>
+          </select>
+        </label>
       </div>
       <div className="tmpl-form-actions">
         <button
@@ -264,6 +283,7 @@ function NewAutomationForm({
               title: title.trim(),
               instructions: instructions.trim(),
               cron: toCron(time, freq),
+              priority,
             })
           }
         >

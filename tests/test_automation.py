@@ -461,3 +461,137 @@ def test_reap_stale_runs_marks_crashed_running_as_error(tmp_path):
     store.add_run(run2)
     assert store.reap_stale_runs(older_than=60) == 0
     assert store.find_run(run2.run_id).status == "running"
+
+
+# -- P0 建议4: Rhythm × Automation ---------------------------------------------
+
+def test_task_priority_default_and_roundtrip():
+    """priority defaults to normal; survives store round-trip; legacy blobs
+    (no priority key) load as normal — back-compatible."""
+    t = _task()
+    assert t.priority == "normal"
+    assert t.public()["priority"] == "normal"
+    t.priority = "low"
+    assert t.public()["priority"] == "low"
+
+    d = t.to_dict()
+    del d["priority"]  # simulate a pre-feature persisted blob
+    legacy = ScheduledTask.from_dict(d)
+    assert legacy.priority == "normal"
+
+
+async def test_scheduler_defers_low_priority_in_peak(tmp_path):
+    """During a rhythm peak (gate False) a low-priority task is deferred, while
+    a normal task still fires. Anti-starvation lets the deferred one through."""
+    store = TaskStore(tmp_path / "auto.db")
+    low = _task(title="Low-value cleanup", priority="low")
+    normal = _task(title="Normal task")
+    store.save(low)
+    store.save(normal)
+    ran: list[str] = []
+
+    async def runner(task, trigger):
+        ran.append(task.id)
+        return TaskRun(task_id=task.id, status="ok", trigger=trigger)
+
+    sched = Scheduler(
+        store,
+        runner,
+        tick_seconds=0.05,
+        rhythm_gate=lambda: False,  # permanent peak
+    )
+    for t in (low, normal):
+        t.next_run = 1.0
+        store._conn.execute(
+            "UPDATE scheduled_tasks SET next_run=1.0 WHERE id=?", (t.id,)
+        )
+    store._conn.commit()
+
+    sched.start()
+    await asyncio.sleep(0.2)
+    await sched.stop()
+    # normal fired; low was deferred (≤5 deferrals) and did NOT run
+    assert normal.id in ran
+    assert low.id not in ran
+    assert sched._deferrals.get(low.id, 0) > 0
+
+
+async def test_scheduler_anti_starvation_runs_deferred_low_priority(tmp_path):
+    """An unbroken peak must not postpone a low-priority task forever: after
+    _max_rhythm_deferrals deferrals it runs anyway."""
+    store = TaskStore(tmp_path / "auto.db")
+    low = _task(title="cleanup", priority="low")
+    store.save(low)
+    ran: list[str] = []
+
+    async def runner(task, trigger):
+        ran.append(task.id)
+        return TaskRun(task_id=task.id, status="ok", trigger=trigger)
+
+    sched = Scheduler(store, runner, tick_seconds=0.02, rhythm_gate=lambda: False)
+    sched._max_rhythm_deferrals = 2  # shorten the wait for the test
+    low.next_run = 1.0
+    store._conn.execute("UPDATE scheduled_tasks SET next_run=1.0 WHERE id=?", (low.id,))
+    store._conn.commit()
+
+    sched.start()
+    await asyncio.sleep(0.2)
+    await sched.stop()
+    assert low.id in ran  # anti-starvation kicked in
+
+
+def test_create_automation_accepts_priority(tmp_path, monkeypatch):
+    monkeypatch.setenv("COWORKER_STATE_DIR", str(tmp_path / "state"))
+    from coworker.server.manager import SessionManager
+
+    manager = SessionManager(data_dir=tmp_path / "data")
+    ok = manager.create_automation(
+        {
+            "title": "nightly archive",
+            "instructions": "archive old files",
+            "cron": "0 3 * * *",
+            "priority": "low",
+        }
+    )
+    assert ok["ok"] is True
+    assert ok["task"]["priority"] == "low"
+    # invalid priority falls back to normal
+    bad = manager.create_automation(
+        {
+            "title": "weird",
+            "instructions": "x",
+            "cron": "0 3 * * *",
+            "priority": "urgent!!",
+        }
+    )
+    assert bad["task"]["priority"] == "normal"
+
+
+def test_rhythm_recommendations_picks_valley_hour(tmp_path, monkeypatch):
+    """recommendations rank automations by valley_share and name the hour with
+    fewest historical runs as the recommended trigger hour."""
+    monkeypatch.setenv("COWORKER_STATE_DIR", str(tmp_path / "state"))
+    from coworker.server.manager import SessionManager
+
+    manager = SessionManager(data_dir=tmp_path / "data")
+    # 20 runs: 16 at 09:00, 2 at 03:00, 2 at 04:00 → valley hour 03:00
+    import datetime as _dt
+
+    base = _dt.datetime(2026, 8, 1, 9, 0).timestamp()
+    t = manager.task_store.save(_task(title="brief", schedule=Schedule(kind="cron", cron="0 9 * * *")))
+    for i, h in enumerate([9] * 16 + [3] * 2 + [4] * 2):
+        manager.task_store.add_run(
+            TaskRun(task_id=t.id, started_at=base + i * 3600 * 24 + (h - 9) * 3600, status="ok")
+        )
+    manager.task_store.save(_task(title="no-history", schedule=Schedule(kind="cron", cron="0 12 * * *")))
+
+    out = manager.rhythm_recommendations()
+    assert "recommendations" in out
+    recs = out["recommendations"]
+    assert len(recs) == 1  # only the task with ≥4 runs
+    r = recs[0]
+    assert r["task_id"] == t.id
+    assert r["recommended_hour"] == 3  # fewest runs
+    assert r["current_hour"] == 9
+    assert 0.0 < r["valley_share"] <= 1.0
+    assert r["runs"] == 20

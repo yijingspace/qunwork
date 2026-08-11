@@ -43,6 +43,15 @@ class Scheduler:
         self._running_ids: set[str] = set()  # overlap guard
         self._spawned: set[asyncio.Task] = set()  # keep spawned runs referenced
         self._max_rhythm_deferrals = 5  # anti-starvation: run after 5 peak ticks
+        # Task kinds that yield to interactive work during rhythm peaks: heavy
+        # maintenance ([HORNET] prefix, legacy) + explicitly low-priority tasks
+        # (P0 建议4 — the "自动避让" extension beyond [HORNET]).
+        self._deferrable_prefixes = ("[HORNET]",)
+        self._deferrable_priorities = ("low",)
+        # Deferral counts live HERE (not on the task object): `store.due()` returns
+        # a freshly deserialized instance every tick, so a count written on the
+        # task would be lost and the anti-starvation gate would never trip.
+        self._deferrals: dict[str, int] = {}
 
     def start(self) -> None:
         if self._task is None:
@@ -79,6 +88,15 @@ class Scheduler:
             except Exception:
                 logger.exception("scheduler tick failed")
 
+    def _is_deferrable(self, task) -> bool:
+        """Yield-to-interactive test: heavy maintenance tasks ([HORNET] prefix)
+        and explicitly low-priority automations defer during rhythm peaks."""
+        title = getattr(task, "title", "") or ""
+        if title.startswith(self._deferrable_prefixes):
+            return True
+        priority = (getattr(task, "priority", "normal") or "normal").lower()
+        return priority in self._deferrable_priorities
+
     async def _tick(self, *, trigger: str) -> None:
         in_valley = True
         if self.rhythm_gate is not None:
@@ -88,18 +106,20 @@ class Scheduler:
                 logger.exception("rhythm_gate failed — allowing all tasks")
                 in_valley = True
         for task in self.store.due():
-            # D: defer heavy tasks ([HORNET] prefix) during rhythm peaks.
+            # D: defer heavy/low-priority tasks during rhythm peaks.
             # Anti-starvation: a task deferred too many ticks runs anyway — an
-            # unbroken peak (growth period) must not postpone it forever.
-            if not in_valley and task.title.startswith("[HORNET]"):
-                defer_count = getattr(task, "_rhythm_deferrals", 0) + 1
-                task._rhythm_deferrals = defer_count
+            # unbroken peak (growth period) must not postpone it forever. Counts
+            # are kept on the scheduler (fresh task instances each tick).
+            if not in_valley and self._is_deferrable(task):
+                defer_count = self._deferrals.get(task.id, 0) + 1
+                self._deferrals[task.id] = defer_count
                 if defer_count < self._max_rhythm_deferrals:
                     logger.info("deferring heavy task %s — rhythm peak (%d/%d)",
                                 task.id, defer_count, self._max_rhythm_deferrals)
                     continue
                 logger.info("running %s after %d rhythm deferrals (anti-starvation)",
                             task.id, defer_count)
+                self._deferrals.pop(task.id, None)
             # Spawn, don't await: a run can suspend on a parked approval (standing
             # scoped approvals, §25) and one blocked automation must never stall the
             # scheduler loop, other due tasks, or self-wake resumption. Overlap is
@@ -128,6 +148,9 @@ class Scheduler:
             self.store.add_run(run)
         finally:
             self._running_ids.discard(task.id)
+            # The task actually fired — clear any rhythm deferrals so the next
+            # due cycle starts counting from zero.
+            self._deferrals.pop(task.id, None)
         # advance the task (run_count/last_run) → save recomputes next_run.
         fresh = self.store.get(task.id)
         if fresh is not None:

@@ -845,12 +845,15 @@ export async function recordSwarmTemplateRun(
 }
 
 // G2 command deck: live control over a running swarm run.
+// P0 建议3 adds task_inject (fork a sub-task) + retarget (reassign agent).
 export type OrchestrateControlAction =
   | "pause"
   | "resume"
   | "message"
   | "requeue_approve"
-  | "requeue_reject";
+  | "requeue_reject"
+  | "task_inject"
+  | "retarget";
 
 export interface OrchestrateControlStatus {
   ok: boolean;
@@ -869,7 +872,13 @@ export async function orchestrateControlStatus(
 export async function orchestrateControl(
   runId: string,
   action: OrchestrateControlAction,
-  body: { text?: string; task_id?: string } = {},
+  body: {
+    text?: string;
+    task_id?: string;
+    description?: string;
+    deps?: string[];
+    agent?: string;
+  } = {},
 ): Promise<{ ok: boolean; error?: string; paused?: boolean }> {
   const res = await fetch(`${httpBase()}/v1/orchestrate/${runId}/control`, {
     method: "POST",
@@ -1734,6 +1743,7 @@ export interface Automation {
   workspace: string;
   agent: string;
   enabled: boolean;
+  priority: string;
   next_run: number | null;
   last_run: number | null;
   last_status: string | null;
@@ -1818,6 +1828,7 @@ export async function createAutomation(payload: {
   cron?: string;
   fire_at?: string;
   timezone?: string;
+  priority?: "low" | "normal" | "high";
   // §25 standing grants (the creating surface rendered them; submit IS the consent).
   // Only target-bound write entries survive server-side validation.
   permissions?: { tool: string; target: string; access: "read" | "write" }[];
@@ -2288,6 +2299,29 @@ export async function rhythmForecast(): Promise<RhythmForecast> {
   return await res.json();
 }
 
+export interface RhythmRecommendation {
+  task_id: string;
+  title: string;
+  priority: string;
+  cron: string;
+  current_hour: number | null;
+  recommended_hour: number;
+  valley_share: number;
+  runs: number;
+  reason: string;
+}
+
+export interface RhythmRecommendations {
+  period_days: number;
+  rhythm: string;
+  recommendations: RhythmRecommendation[];
+}
+
+export async function rhythmRecommendations(): Promise<RhythmRecommendations> {
+  const res = await fetch(`${httpBase()}/v1/rhythm/recommendations`);
+  return await res.json();
+}
+
 export async function setKnowledgeRetired(
   id: number,
   retired: boolean,
@@ -2476,5 +2510,39 @@ export async function getUsage(days = 14): Promise<{
 }> {
   const res = await fetch(`${httpBase()}/v1/usage?days=${days}`);
   if (!res.ok) throw new Error(`usage ${res.status}`);
+  return await res.json();
+}
+
+// -- cache warm-up (P0 建议1) ------------------------------------------------
+export interface CacheWarmStatus {
+  enabled: boolean;
+  min_hit_rate: number;
+  max_items: number;
+  interval_hours: number;
+  last_warm_at: number;
+  week: { prompt_tokens: number; cached_tokens: number; calls: number };
+  org_hit_rate: number;
+}
+
+export async function getCacheWarmStatus(): Promise<CacheWarmStatus> {
+  const res = await fetch(`${httpBase()}/v1/cache/warm`);
+  return await res.json();
+}
+
+export async function setCacheWarmEnabled(enabled: boolean): Promise<{ ok: boolean; enabled: boolean }> {
+  const res = await fetch(`${httpBase()}/v1/cache/warm/toggle`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ enabled }),
+  });
+  return await res.json();
+}
+
+export async function triggerCacheWarm(maxItems?: number): Promise<{ ok: boolean; warmed: number; prompt_tokens?: number; status?: CacheWarmStatus }> {
+  const res = await fetch(`${httpBase()}/v1/cache/warm`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(maxItems ? { max_items: maxItems } : {}),
+  });
   return await res.json();
 }

@@ -55,6 +55,69 @@ def _send_telegram(
     return SendResult(False, error=data.get("description") or "telegram send failed")
 
 
+def _send_telegram_interactive(
+    token: str,
+    chat_id: str,
+    text: str,
+    buttons: list,
+    thread_id: Optional[str] = None,
+) -> SendResult:
+    """sendMessage with an inline keyboard — the P0 建议2 approve/deny buttons.
+    `buttons` are `interactions.Button(label, value)`; the value is our opaque
+    JSON (≈30 bytes, safely under Telegram's 64-byte callback_data limit)."""
+    import httpx
+
+    payload: dict = {
+        "chat_id": chat_id,
+        "text": text,
+        "reply_markup": {
+            "inline_keyboard": [
+                [{"text": b.label, "callback_data": b.value} for b in buttons]
+            ]
+        },
+    }
+    if thread_id and thread_id != "1":
+        try:
+            payload["message_thread_id"] = int(thread_id)
+        except ValueError:
+            pass
+    try:
+        resp = httpx.post(
+            f"https://api.telegram.org/bot{token}/sendMessage",
+            json=payload,
+            timeout=_TIMEOUT,
+        )
+        data = resp.json()
+    except Exception as exc:
+        return SendResult(False, error=str(exc))
+    if data.get("ok"):
+        return SendResult(
+            True, message_id=str(data.get("result", {}).get("message_id"))
+        )
+    return SendResult(False, error=data.get("description") or "telegram interactive failed")
+
+
+def _update_telegram_message(
+    token: str, chat_id: str, message_id: str, text: str
+) -> bool:
+    """editMessageText — swaps a resolved prompt's buttons for the outcome text."""
+    import httpx
+
+    try:
+        resp = httpx.post(
+            f"https://api.telegram.org/bot{token}/editMessageText",
+            json={
+                "chat_id": chat_id,
+                "message_id": int(message_id),
+                "text": text,
+            },
+            timeout=_TIMEOUT,
+        )
+        return bool(resp.json().get("ok"))
+    except Exception:
+        return False
+
+
 def _send_slack(
     token: str, chat_id: str, text: str, thread_id: Optional[str] = None
 ) -> SendResult:

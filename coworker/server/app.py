@@ -204,6 +204,31 @@ def create_app(manager: SessionManager) -> FastAPI:
                         pass
 
         task = asyncio.create_task(_hornet_observer_loop())
+        # P0 建议1: cache warm-up sweep — every interval_hours, if the feature is
+        # enabled AND the org hit-rate is below the threshold, inject the coldest
+        # knowledge prefixes (max_tokens=1) to push them into the prefix cache.
+        _cache_warm_stop = asyncio.Event()
+
+        async def _cache_warm_loop() -> None:
+            interval = max(manager.cache_warmer.interval_hours, 0.5) * 3600
+            while not _cache_warm_stop.is_set():
+                try:
+                    await asyncio.wait_for(_cache_warm_stop.wait(), timeout=interval)
+                except asyncio.TimeoutError:
+                    try:
+                        warmer = manager.cache_warmer
+                        if warmer.enabled:
+                            hit = (manager.usage_store.totals() or {}).get(
+                                "cache_hit_rate", 1.0
+                            )
+                            if hit < warmer.min_hit_rate:
+                                await manager.cache_warm_now()
+                    except Exception:
+                        import traceback
+
+                        traceback.print_exc()
+
+        warm_task = asyncio.create_task(_cache_warm_loop())
         try:
             live = (
                 await manager.start_gateway()
@@ -217,6 +242,8 @@ def create_app(manager: SessionManager) -> FastAPI:
         yield
         _hornet_loop_stop.set()
         task.cancel()
+        _cache_warm_stop.set()
+        warm_task.cancel()
         await manager.aclose()  # stop gateway + close MCP connections on shutdown
 
     app = FastAPI(title="coworker", version="0.0.0", lifespan=lifespan)
@@ -307,7 +334,12 @@ def create_app(manager: SessionManager) -> FastAPI:
             }
         session_id = f"__orchestrate__{secrets.token_hex(4)}"
         store = manager.orchestration_store
-        run_id = store.create_run(intent)
+        # P0 建议3 (保留分支 A/B): fork_of = the parent run whose plan_ready we copy;
+        # fork_inject = one extra task appended to the fork (the deck's "fork a
+        # sub-task" flows through this path when the parent has finished).
+        fork_of = str(body.get("fork_of") or "")
+        fork_inject = body.get("fork_inject")
+        run_id = store.create_run(intent, parent_run_id=fork_of or None)
         sync = bool(body.get("sync"))
 
         def _auto_write_coordination_report(rid: str) -> str | None:
@@ -386,11 +418,51 @@ def create_app(manager: SessionManager) -> FastAPI:
         except (TypeError, ValueError):
             pass
 
+        # P0 建议3: fork runs start from the parent's plan_ready snapshot instead
+        # of re-planning (a true A/B needs the SAME task graph, different run).
+        initial_plan = None
+        if fork_of:
+            try:
+                from ..orchestrator import Plan, Task
+
+                parent = store.get_run(fork_of)
+                snapshot = None
+                if parent:
+                    for ev in parent.get("events", []):
+                        if ev.get("kind") == "plan_ready":
+                            snapshot = ev.get("payload", {}).get("tasks") or []
+                            break
+                if snapshot:
+                    initial_plan = Plan(
+                        goal=intent,
+                        tasks=[
+                            Task(
+                                id=str(t.get("id")),
+                                description=str(t.get("description") or ""),
+                                deps=list(t.get("deps") or []),
+                                agent=str(t.get("agent") or ""),
+                            )
+                            for t in snapshot
+                        ],
+                    )
+                    if isinstance(fork_inject, dict) and fork_inject.get("id"):
+                        initial_plan.tasks.append(
+                            Task(
+                                id=str(fork_inject["id"]),
+                                description=str(fork_inject.get("description") or ""),
+                                deps=list(fork_inject.get("deps") or []),
+                                agent=str(fork_inject.get("agent") or ""),
+                            )
+                        )
+            except Exception:
+                initial_plan = None  # a broken snapshot falls back to fresh planning
+
         def _build() -> "Orchestrator":
             return Orchestrator(
                 provider=manager.provider,
                 model=body.get("model") or manager.model,
                 workspace=workspace,
+                initial_plan=initial_plan,
                 # Auto-approve worker writes: running the swarm is the authorization.
                 # (Inbox gating would deadlock headless workers waiting for clicks.)
                 max_parallel=int(body.get("max_parallel") or 4),
@@ -450,6 +522,7 @@ def create_app(manager: SessionManager) -> FastAPI:
                             "id": t.id,
                             "description": t.description,
                             "deps": t.deps,
+                            "agent": t.agent,
                             "status": t.status,
                             "confidence": t.confidence,
                             "result": (t.result or "")[:2000],
@@ -569,6 +642,27 @@ def create_app(manager: SessionManager) -> FastAPI:
             ok = ctrl.reject_requeue(task_id)
             store.append_event(run_id, "task_requeue_declined", {"id": task_id})
             return {"ok": ok, "task_id": task_id}
+        # P0 建议3 (蜂群指挥台): DAG edits at runtime.
+        if action == "task_inject":
+            tid = str(body.get("task_id") or "").strip()
+            desc = str(body.get("description") or "").strip()
+            if not tid or not desc:
+                return {"ok": False, "error": "task_id + description are required"}
+            deps = [str(d) for d in (body.get("deps") or [])]
+            agent = str(body.get("agent") or "")
+            ctrl.inject_task(id=tid, description=desc, deps=deps, agent=agent)
+            store.append_event(
+                run_id, "task_injected", {"id": tid, "description": desc, "deps": deps, "agent": agent}
+            )
+            return {"ok": True, "task_id": tid}
+        if action == "retarget":
+            tid = str(body.get("task_id") or "")
+            agent = str(body.get("agent") or "")
+            if not tid or agent not in ("cowork", "code"):
+                return {"ok": False, "error": "task_id + agent (cowork|code) are required"}
+            ctrl.retarget_task(tid, agent)
+            store.append_event(run_id, "task_retargeted", {"id": tid, "agent": agent})
+            return {"ok": True, "task_id": tid, "agent": agent}
         return {"ok": False, "error": f"unknown action: {action}"}
 
     @app.get("/v1/personas")
@@ -618,6 +712,86 @@ def create_app(manager: SessionManager) -> FastAPI:
         # Routes through resolve_inbox so a restart-orphaned prompt durably resumes its turn.
         ok = await manager.resolve_inbox(item_id, str(body.get("resolution", "deny")))
         return {"ok": ok}
+
+    # -- P0 建议2: Telegram Mini App -------------------------------------------
+    @app.get("/v1/telegram/webapp_url")
+    def telegram_webapp_url(init_data: str = "") -> dict[str, Any]:
+        """Validate a Telegram WebApp initData and issue a one-time page ticket."""
+        return manager.telegram_webapp_ticket(init_data)
+
+    @app.get("/v1/telegram/webapp/verify")
+    def telegram_webapp_verify(ticket: str = "") -> dict[str, Any]:
+        """Consume a page ticket (the mini app calls this once on load)."""
+        return manager.telegram_webapp_verify(ticket)
+
+    @app.get("/v1/telegram/webapp")
+    def telegram_webapp(ticket: str = ""):
+        """The Mini App approval page — a self-contained page: verifies its ticket,
+        lists pending Inbox items, and resolves them via the normal REST API. Data
+        never lands on Telegram servers; it is only ever this local page."""
+        from fastapi.responses import HTMLResponse
+
+        return HTMLResponse(
+            f"""<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>QunWork · Inbox</title>
+<style>
+ body {{ font: 15px/1.5 system-ui, sans-serif; margin: 0 auto; max-width: 560px; padding: 16px; background:#0f1115; color:#e6e6e6; }}
+ h1 {{ font-size: 18px; }}
+ .item {{ border:1px solid #2a2f3a; border-radius:10px; padding:12px 14px; margin:10px 0; background:#161a22; }}
+ .title {{ font-weight:600; }}
+ .meta {{ color:#8b93a7; font-size:12.5px; margin:4px 0 8px; }}
+ .body {{ white-space:pre-wrap; color:#c9cede; font-size:13.5px; }}
+ .btns {{ display:flex; gap:8px; margin-top:10px; }}
+ button {{ flex:1; padding:8px; border-radius:8px; border:1px solid #2a2f3a; background:#20242e; color:#e6e6e6; font-size:13.5px; cursor:pointer; }}
+ button:active {{ transform:translateY(1px); }}
+ button.approve {{ border-color:#2e7d4f; color:#7ee2a8; }}
+ button.deny {{ border-color:#a04040; color:#f0a0a0; }}
+ .done {{ color:#7ee2a8; font-size:12.5px; margin-top:8px; }}
+ .empty {{ color:#8b93a7; }}
+ .err {{ color:#f0a0a0; }}
+</style></head><body>
+<h1>🐝 QunWork · Inbox</h1>
+<div id="root"><div class="empty">Loading…</div></div>
+<script>
+ const ticket = {json.dumps(ticket)};
+ async function resolve(id, r) {{
+   await fetch('/v1/inbox/' + encodeURIComponent(id) + '/resolve', {{
+     method: 'POST', headers: {{'Content-Type': 'application/json'}},
+     body: JSON.stringify({{resolution: r}})
+   }});
+   load();
+ }}
+ async function load() {{
+   const root = document.getElementById('root');
+   try {{
+     const v = await (await fetch('/v1/telegram/webapp/verify?ticket=' + encodeURIComponent(ticket))).json();
+     if (!v.ok) {{ root.innerHTML = '<div class="err">Invalid or expired link — open it from the bot again.</div>'; return; }}
+     const d = await (await fetch('/v1/inbox')).json();
+     const pending = (d.items || []).filter(i => i.state === 'pending');
+     if (pending.length === 0) {{ root.innerHTML = '<div class="empty">No pending prompts. 🎉</div>'; return; }}
+     root.innerHTML = '';
+     for (const i of pending) {{
+       const el = document.createElement('div');
+       el.className = 'item';
+       el.innerHTML =
+         '<div class="title"></div><div class="meta"></div><div class="body"></div>' +
+         '<div class="btns"><button class="approve">Approve</button><button class="deny">Deny</button></div>' +
+         '<div class="done"></div>';
+       el.querySelector('.title').textContent = i.title || 'Prompt';
+       el.querySelector('.meta').textContent = (i.kind || '') + ' · ' + (i.session_title || '');
+       el.querySelector('.body').textContent = i.body || '';
+       el.querySelector('.approve').onclick = () => resolve(i.id, 'allow');
+       el.querySelector('.deny').onclick = () => resolve(i.id, 'deny');
+       root.appendChild(el);
+     }}
+   }} catch (e) {{ root.innerHTML = '<div class="err">Failed to load.</div>'; }}
+ }}
+ load();
+</script></body></html>""",
+            status_code=200,
+        )
 
     @app.get("/v1/subscriptions")
     def subscriptions() -> dict[str, Any]:
@@ -1042,6 +1216,23 @@ def create_app(manager: SessionManager) -> FastAPI:
     def usage_summary(days: int = 14) -> dict[str, Any]:
         return manager.usage_summary(days=days)
 
+    # -- cache warm-up (P0 建议1) ---------------------------------------------
+    @app.get("/v1/cache/warm")
+    def cache_warm_status() -> dict[str, Any]:
+        """Warm-up toggle + this week's injected tokens (surface='cachewarm')."""
+        return manager.cache_warm_status()
+
+    @app.post("/v1/cache/warm")
+    async def cache_warm_now(body: dict) -> dict[str, Any]:
+        """Trigger one warm pass now (optional max_items)."""
+        return await manager.cache_warm_now(
+            max_items=body.get("max_items") if isinstance(body, dict) else None
+        )
+
+    @app.post("/v1/cache/warm/toggle")
+    def cache_warm_toggle(body: dict) -> dict[str, Any]:
+        return manager.cache_warm_toggle(bool((body or {}).get("enabled")))
+
     @app.get("/v1/hornet/stats")
     def hornet_stats() -> dict[str, Any]:
         return manager.hornet_stats()
@@ -1086,6 +1277,11 @@ def create_app(manager: SessionManager) -> FastAPI:
     def rhythm_forecast() -> dict[str, Any]:
         """Phase 3 organizational rhythm: dominant cadence + what's due next week."""
         return manager.rhythm_forecast()
+
+    @app.get("/v1/rhythm/recommendations")
+    def rhythm_recommendations() -> dict[str, Any]:
+        """P0 建议4: per-automation best trigger time (run-history valleys × org cadence)."""
+        return manager.rhythm_recommendations()
 
     @app.get("/v1/knowledge/search")
     def knowledge_search(request: Request) -> dict[str, Any]:

@@ -218,6 +218,21 @@ class SessionManager:
         from ..orchestrator.run_store import OrchestrationRunStore
 
         self.orchestration_store = OrchestrationRunStore(base / "orchestration.db")
+        # P0 建议1: HORNET 冷度 × 缓存预热 — selects cold knowledge nodes and
+        # re-injects their prefixes through the provider (max_tokens=1) so real
+        # turns later hit the automatic context cache. Fed by usage_store/hornet.
+        from ..cachewarm import CacheWarmer
+
+        self.cache_warmer = CacheWarmer(
+            self.provider,
+            self.hornet,
+            self.usage_store,
+            default_model=self.model,
+        )
+        # P0 建议2: Telegram Mini App one-time page tickets (initData-validated).
+        from ..telegram_webapp import WebAppTickets
+
+        self.webapp_tickets = WebAppTickets()
         # G2 command deck: run_id → live control channel while a swarm run is active
         # (paused flag, operator messages, pending requeue approvals).
         self.active_orchestration_controls: dict[str, Any] = {}
@@ -2693,6 +2708,46 @@ class SessionManager:
             except Exception:
                 pass
 
+    # -- P0 建议2: Telegram Mini App (initData-validated page tickets) ---------
+    def telegram_webapp_ticket(self, init_data: str) -> dict[str, Any]:
+        """Validate a Telegram WebApp `initData` (HMAC-signed by the bot token),
+        check the user against the telegram allowlist, and issue a one-time page
+        ticket. The mini app then opens /v1/telegram/webapp?ticket=… — no token
+        ever rides the page URL, and a stolen ticket can't be replayed."""
+        from types import SimpleNamespace
+
+        from ..telegram_webapp import init_user_id, validate_telegram_init_data
+
+        profile = self.secrets.get("telegram:default") or {}
+        bot_token = profile.get("bot_token") or ""
+        if not bot_token:
+            return {"ok": False, "error": "telegram not configured"}
+        data = validate_telegram_init_data(init_data, bot_token)
+        if data is None:
+            return {"ok": False, "error": "invalid or stale initData"}
+        uid = init_user_id(data)
+        if not uid:
+            return {"ok": False, "error": "no user in initData"}
+        from ..connectors.config import is_authorized, load_settings
+
+        settings = (load_settings(self.secrets) or {}).get("telegram")
+        if settings is not None and not is_authorized(
+            settings, SimpleNamespace(user_id=uid, team_id=None)
+        ):
+            return {"ok": False, "error": "user not authorized"}
+        ticket = self.webapp_tickets.issue(uid)
+        return {
+            "ok": True,
+            "url": f"/v1/telegram/webapp?ticket={ticket}",
+            "user_id": uid,
+        }
+
+    def telegram_webapp_verify(self, ticket: str) -> dict[str, Any]:
+        uid = self.webapp_tickets.verify(ticket)
+        if uid is None:
+            return {"ok": False, "error": "invalid or expired ticket"}
+        return {"ok": True, "user_id": uid}
+
     # -- inbox replies over messaging connectors --------------------------------
     def _resolve_inbox_reply(self, event) -> bool:
         """Try to handle an inbound Slack/Telegram message as an Inbox reply. Returns True if the
@@ -3167,6 +3222,9 @@ class SessionManager:
         cron = (payload.get("cron") or "").strip() or None
         fire_at = (payload.get("fire_at") or "").strip() or None
         timezone = (payload.get("timezone") or "").strip() or "local"
+        priority = (payload.get("priority") or "normal").strip().lower()
+        if priority not in ("low", "normal", "high"):
+            priority = "normal"
 
         if not title:
             return {"ok": False, "error": "title is required"}
@@ -3195,6 +3253,7 @@ class SessionManager:
             workspace="",
             origin_surface="cowork",
             agent="cowork",
+            priority=priority,
             # Human-driven path (GUI form / onboarding recipes): the creating surface
             # rendered the grants, the submit IS the consent. Same validation as the
             # agent tool — only target-bound write grants survive.
@@ -3216,6 +3275,10 @@ class SessionManager:
             task.instructions = changes["instructions"]
         if changes.get("title") is not None:
             task.title = changes["title"]
+        if changes.get("priority") is not None:
+            priority = str(changes["priority"]).strip().lower()
+            if priority in ("low", "normal", "high"):
+                task.priority = priority
         if changes.get("cron") is not None:
             from croniter import croniter
 
@@ -3984,6 +4047,23 @@ class SessionManager:
             "by_session": self.usage_store.by_session(),
         }
 
+    # -- P0 建议1: cache warm-up (HORNET coldness × usage hit-rate) ------------
+    def cache_warm_status(self) -> dict[str, Any]:
+        return self.cache_warmer.status()
+
+    def cache_warm_toggle(self, enabled: bool) -> dict[str, Any]:
+        self.cache_warmer.enabled = bool(enabled)
+        return {"ok": True, "enabled": self.cache_warmer.enabled}
+
+    async def cache_warm_now(self, max_items: Optional[int] = None) -> dict[str, Any]:
+        """One explicit warm pass (also the auto-loop's engine). Records every
+        probe call in usage_store (surface='cachewarm')."""
+        if not self.cache_warmer.enabled and max_items is None:
+            return {"ok": False, "error": "cache warm-up is disabled"}
+        result = await self.cache_warmer.warm_once(max_items=max_items)
+        result["status"] = self.cache_warmer.status()
+        return result
+
     def hornet_stats(self) -> dict:
         return {
             "nodes": self.hornet.node_count(),
@@ -4463,6 +4543,66 @@ class SessionManager:
         valley = pred[0] < mean  # valley if predicted below average
         self._rhythm_valley_cache = (time.monotonic(), valley)
         return valley
+
+    def rhythm_recommendations(self) -> dict[str, Any]:
+        """P0 建议4 (Rhythm × Automation): per-automation best trigger time, learned
+        from the task's own run history × the org's dominant cadence. For each enabled
+        recurring automation with enough history we find the hour-of-day valley (fewest
+        runs) — scheduling heavy/low-priority work there yields the cache/CPU to
+        interactive hours. Pure statistics, no trained model; missing data → skipped.
+        """
+        from collections import Counter
+        from datetime import datetime as _dt
+
+        org = self.rhythm_forecast()
+        period = int(org.get("period_days") or 0)
+        recs: list[dict[str, Any]] = []
+        for t in self.task_store.list():
+            if not t.enabled:
+                continue
+            if not getattr(t.schedule, "cron", None):
+                continue  # one-shot tasks have no cadence to recommend
+            runs = self.task_store.runs(t.id, limit=200)
+            if len(runs) < 4:
+                continue  # not enough history for a reliable valley
+            hours: Counter = Counter(
+                _dt.fromtimestamp(r.started_at).hour for r in runs
+            )
+            if not hours:
+                continue
+            total = len(runs)
+            # Valley hour = fewest historical runs (tie → earliest hour). Only
+            # consider hours that actually have runs — a zero-count hour is not
+            # evidence of a valley, it's just an unscheduled time slot.
+            best_hour = min(hours, key=lambda h: (hours[h], h))
+            # How pronounced: 1 − share of runs that land in the valley hour.
+            valley_share = 1.0 - (hours.get(best_hour, 0) / max(total, 1))
+            try:
+                cur_hour = int(t.schedule.cron.split()[1])  # cron: min hour dom mon dow
+            except Exception:
+                cur_hour = None
+            recs.append(
+                {
+                    "task_id": t.id,
+                    "title": t.title,
+                    "priority": t.priority,
+                    "cron": t.schedule.cron,
+                    "current_hour": cur_hour,
+                    "recommended_hour": best_hour,
+                    "valley_share": round(valley_share, 3),
+                    "runs": total,
+                    "reason": (
+                        f"{total} runs — fewest at {best_hour:02d}:00"
+                        f" (share {1 - valley_share:.0%})"
+                    ),
+                }
+            )
+        recs.sort(key=lambda r: r["valley_share"], reverse=True)
+        return {
+            "period_days": period,
+            "rhythm": org.get("rhythm"),
+            "recommendations": recs,
+        }
 
     def knowledge_scan(self, workspace: Optional[str] = None) -> dict[str, Any]:
         ws = self.resolve_workspace(workspace) or self.default_workspace

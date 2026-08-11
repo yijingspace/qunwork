@@ -41,6 +41,13 @@ class OrchestrationRunStore:
                 final TEXT
             )"""
         )
+        # P0 建议3 (保留分支 A/B): a run may be a fork of a parent run — the parent
+        # link lets the UI group the branches under their origin run.
+        cols = [r[1] for r in self._db.execute("PRAGMA table_info(orchestration_runs)")]
+        if "parent_run_id" not in cols:
+            self._db.execute(
+                "ALTER TABLE orchestration_runs ADD COLUMN parent_run_id TEXT"
+            )
         self._db.execute(
             """CREATE TABLE IF NOT EXISTS orchestration_events (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -57,13 +64,13 @@ class OrchestrationRunStore:
         self._db.commit()
 
     # -- runs ---------------------------------------------------------------
-    def create_run(self, intent: str) -> str:
+    def create_run(self, intent: str, *, parent_run_id: Optional[str] = None) -> str:
         run_id = f"orch_{uuid.uuid4().hex[:12]}"
         now = time.time()
         with self._lock:
             self._db.execute(
-                "INSERT INTO orchestration_runs (run_id, intent, status, created_at, updated_at) VALUES (?,?,?,?,?)",
-                (run_id, intent, "running", now, now),
+                "INSERT INTO orchestration_runs (run_id, intent, status, created_at, updated_at, parent_run_id) VALUES (?,?,?,?,?,?)",
+                (run_id, intent, "running", now, now, parent_run_id),
             )
             self._db.commit()
         return run_id
@@ -105,7 +112,7 @@ class OrchestrationRunStore:
     def get_run(self, run_id: str) -> Optional[dict[str, Any]]:
         with self._lock:
             row = self._db.execute(
-                "SELECT run_id, intent, status, created_at, updated_at, final FROM orchestration_runs WHERE run_id = ?",
+                "SELECT run_id, intent, status, created_at, updated_at, final, parent_run_id FROM orchestration_runs WHERE run_id = ?",
                 (run_id,),
             ).fetchone()
             if not row:
@@ -121,6 +128,7 @@ class OrchestrationRunStore:
             "created_at": row[3],
             "updated_at": row[4],
             "final": row[5],
+            "parent_run_id": row[6],
             "events": [
                 {"kind": k, "payload": json.loads(p)} for k, p in events
             ],
@@ -129,7 +137,7 @@ class OrchestrationRunStore:
     def list_runs(self, limit: int = 20) -> list[dict[str, Any]]:
         with self._lock:
             rows = self._db.execute(
-                "SELECT run_id, intent, status, created_at, updated_at FROM orchestration_runs ORDER BY created_at DESC LIMIT ?",
+                "SELECT run_id, intent, status, created_at, updated_at, parent_run_id FROM orchestration_runs ORDER BY created_at DESC LIMIT ?",
                 (limit,),
             ).fetchall()
         return [
@@ -139,6 +147,7 @@ class OrchestrationRunStore:
                 "status": r[2],
                 "created_at": r[3],
                 "updated_at": r[4],
+                "parent_run_id": r[5],
             }
             for r in rows
         ]

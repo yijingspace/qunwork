@@ -103,6 +103,9 @@ class Task:
     id: str
     description: str
     deps: list[str] = field(default_factory=list)
+    # P0 建议3: executor role override — empty means "use the run's executor_agent"
+    # (the global choice). The command deck's retarget action sets it at runtime.
+    agent: str = ""
     # pending | running | done | needs_human
     status: str = "pending"
     result: str = ""

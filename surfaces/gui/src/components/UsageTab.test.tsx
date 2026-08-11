@@ -9,6 +9,17 @@ vi.mock("../api", async (importOriginal) => {
   return {
     ...actual,
     getUsage: vi.fn(),
+    getCacheWarmStatus: vi.fn().mockResolvedValue({
+      enabled: true,
+      min_hit_rate: 0.3,
+      max_items: 5,
+      interval_hours: 6,
+      last_warm_at: 0,
+      week: { prompt_tokens: 420, cached_tokens: 0, calls: 4 },
+      org_hit_rate: 0.7667,
+    }),
+    setCacheWarmEnabled: vi.fn().mockResolvedValue({ ok: true, enabled: true }),
+    triggerCacheWarm: vi.fn().mockResolvedValue({ ok: true, warmed: 5, prompt_tokens: 420 }),
   };
 });
 
@@ -62,5 +73,17 @@ describe("UsageTab", () => {
     expect(await screen.findByText(/sess-abc-123/)).toBeTruthy();
     expect(screen.getByText("08-07")).toBeTruthy();
     expect(screen.getByText("08-08")).toBeTruthy();
+  });
+
+  it("shows the cache warm-up card with this-week stats", async () => {
+    render(
+      <LanguageProvider>
+        <UsageTab />
+      </LanguageProvider>
+    );
+    expect(await screen.findByTestId("cache-warm-card")).toBeTruthy();
+    expect(screen.getByText("Cache warm-up")).toBeTruthy();
+    expect(screen.getByText(/420/)).toBeTruthy(); // this-week injected tokens
+    expect(screen.getByRole("switch")).toBeTruthy(); // the warm-up toggle
   });
 });

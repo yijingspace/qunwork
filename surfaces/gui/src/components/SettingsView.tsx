@@ -6,6 +6,8 @@ import {
   getTrustedWorkspaces,
   listMemories,
   rhythmForecast,
+  rhythmRecommendations,
+  RhythmRecommendations,
   searchAssets,
   searchMemories,
   setKnowledgeRetired,
@@ -845,11 +847,16 @@ export function RhythmCard() {
   const t = useT();
   const [data, setData] = useState<RhythmForecast | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const [recs, setRecs] = useState<RhythmRecommendations | null>(null);
 
   useEffect(() => {
     rhythmForecast()
       .then(setData)
       .catch((e) => setErr(String(e)));
+    // P0 建议4: per-automation best trigger times (run-history valleys).
+    rhythmRecommendations()
+      .then(setRecs)
+      .catch(() => setRecs(null));
   }, []);
 
   const rhythmLabel = (r: string) =>
@@ -857,6 +864,8 @@ export function RhythmCard() {
 
   const fmt = (ts?: number) =>
     ts ? new Date(ts * 1000).toLocaleDateString() : "";
+
+  const hourLabel = (h: number) => `${String(h).padStart(2, "0")}:00`;
 
   return (
     <div className={CARD + " p-4 mb-4"} data-testid="rhythm-card">
@@ -888,6 +897,39 @@ export function RhythmCard() {
                   <span className="text-faint font-mono w-20 shrink-0">{fmt(u.next_run)}</span>
                   <span className="text-ink truncate">{u.title}</span>
                   {u.cron ? <span className="text-faint font-mono text-[10.5px]">{u.cron}</span> : null}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {recs && (
+        <div className="mt-3" data-testid="rhythm-recommendations">
+          <div className="text-[10.5px] uppercase tracking-[0.07em] text-faint font-semibold mb-1">
+            {t("Best trigger times (learned from run history)")}
+          </div>
+          {recs.recommendations.length === 0 ? (
+            <div className="text-[12px] text-faint">
+              {t("No recommendations yet — let automations run a few times and valleys will appear here.")}
+            </div>
+          ) : (
+            <div className="space-y-1.5">
+              {recs.recommendations.map((r) => (
+                <div key={r.task_id} className="text-[12px]">
+                  <div className="flex items-center gap-2">
+                    <span className="text-ink truncate">{r.title}</span>
+                    {r.priority === "low" && (
+                      <span className="text-[10px] text-faint border border-line rounded px-1">{t("low")}</span>
+                    )}
+                  </div>
+                  <div className="text-faint text-[11px]">
+                    {t("runs")} {r.runs} ·{" "}
+                    {r.current_hour != null && r.current_hour !== r.recommended_hour
+                      ? `${hourLabel(r.current_hour)} → ${hourLabel(r.recommended_hour)}`
+                      : hourLabel(r.recommended_hour)}{" "}
+                    · {r.reason}
+                  </div>
                 </div>
               ))}
             </div>

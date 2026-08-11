@@ -102,6 +102,22 @@ class UsageStore:
             "turns": int(n),
         }
 
+    def surface_totals(self, surface: str, since: float) -> dict[str, Any]:
+        """Token totals for one `surface` (e.g. 'cachewarm') since `since` —
+        used to report warm-up spend without mixing it into user totals."""
+        with self._lock:
+            row = self._con.execute(
+                "SELECT COALESCE(SUM(prompt_tokens),0) p, "
+                "COALESCE(SUM(cached_tokens),0) h, COUNT(*) n "
+                "FROM token_usage WHERE surface=? AND created_at >= ?",
+                (surface, since),
+            ).fetchone()
+        return {
+            "prompt_tokens": int(row["p"]),
+            "cached_tokens": int(row["h"]),
+            "calls": int(row["n"]),
+        }
+
     def by_day(self, days: int = 14) -> list[dict[str, Any]]:
         """Per-day totals for the last `days` days (oldest first)."""
         since = _now() - days * 86400

@@ -96,12 +96,19 @@ class TelegramAdapter(BasePlatformAdapter):
 
     async def connect(self) -> bool:
         try:
-            from telegram.ext import Application, MessageHandler, filters
+            from telegram.ext import (
+                Application,
+                CallbackQueryHandler,
+                MessageHandler,
+                filters,
+            )
         except ImportError:
             logger.warning(
                 "python-telegram-bot not installed — `pip install coworker[messaging]`"
             )
             return False
+
+        from .base import InteractionEvent
 
         self._app = Application.builder().token(self.token).build()
 
@@ -110,9 +117,36 @@ class TelegramAdapter(BasePlatformAdapter):
             if event is not None:
                 await self.handle_message(event)
 
+        async def _on_callback(update, _context):
+            """P0 建议2: an inline-keyboard click — resolve the Inbox item it carries,
+            then the manager swaps the buttons for the outcome text."""
+            query = update.callback_query
+            if query is None:
+                return
+            message = getattr(query, "message", None)
+            if message is None:
+                return
+            user = query.from_user
+            user_name = (
+                user.username or user.first_name or "someone"
+            ) if user is not None else "someone"
+            event = InteractionEvent(
+                platform="telegram",
+                chat_id=str(message.chat_id),
+                message_id=str(message.message_id),
+                value=query.data or "",
+                user_name=user_name,
+            )
+            await self.handle_interaction(event)
+            try:
+                await query.answer()
+            except Exception:
+                pass
+
         self._app.add_handler(
             MessageHandler(filters.TEXT & ~filters.COMMAND, _on_update)
         )
+        self._app.add_handler(CallbackQueryHandler(_on_callback))
         await self._app.initialize()
         await self._app.start()
         await self._app.updater.start_polling(drop_pending_updates=True)
@@ -133,6 +167,28 @@ class TelegramAdapter(BasePlatformAdapter):
         self, chat_id: str, text: str, *, thread_id: Optional[str] = None
     ) -> SendResult:
         return _send_telegram(self.token, chat_id, text, thread_id)
+
+    async def send_interactive(
+        self, chat_id: str, text: str, buttons, *, thread_id: Optional[str] = None
+    ) -> SendResult:
+        """P0 建议2: prompt with an inline keyboard (Approve/Deny). Offload the
+        blocking HTTP so the event loop never stalls on the round-trip."""
+        from .senders import _send_telegram_interactive
+
+        return await asyncio.to_thread(
+            _send_telegram_interactive, self.token, chat_id, text, buttons, thread_id
+        )
+
+    async def update_message(self, chat_id: str, message_id: str, text: str) -> None:
+        """P0 建议2: replace a resolved prompt's inline keyboard with the outcome
+        text (mirrors Slack's chat_update flow)."""
+        if not message_id:
+            return
+        from .senders import _update_telegram_message
+
+        await asyncio.to_thread(
+            _update_telegram_message, self.token, chat_id, message_id, text
+        )
 
 
 class SlackAdapter(BasePlatformAdapter):

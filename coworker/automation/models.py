@@ -122,6 +122,9 @@ class ScheduledTask:
     agent: str = "cowork"
     id: str = field(default_factory=lambda: "task-" + uuid.uuid4().hex[:10])
     task_session_id: str = ""  # the task's OWN thread (set to f"__task__{id}")
+    # Rhythm×Automation (P0 建议4): low-priority tasks yield to interactive work
+    # during rhythm peaks (deferred by the scheduler); normal/high run as scheduled.
+    priority: str = "normal"  # low | normal | high
     model: Optional[str] = None
     notify_on_completion: bool = True
     notify_target: Optional[str] = None  # extra messaging target ("telegram:123")
@@ -197,6 +200,7 @@ class ScheduledTask:
             "workspace": self.workspace,
             "agent": self.agent,
             "enabled": self.enabled,
+            "priority": self.priority,
             "next_run": self.next_run,
             "last_run": self.last_run,
             "last_status": self.last_status,

@@ -1,6 +1,13 @@
 import { useEffect, useState } from "react";
-import { getUsage } from "../api";
+import {
+  getUsage,
+  getCacheWarmStatus,
+  setCacheWarmEnabled,
+  triggerCacheWarm,
+  type CacheWarmStatus,
+} from "../api";
 import { useT } from "../i18n";
+import { Toggle } from "./Toggle";
 
 const FIELD_LABEL = "text-[12.5px] font-medium text-ink";
 
@@ -63,6 +70,10 @@ export function UsageTab() {
   const [days, setDays] = useState<DayRow[]>([]);
   const [sessions, setSessions] = useState<SessionRow[]>([]);
   const [err, setErr] = useState("");
+  // P0 建议1: cache warm-up toggle + this-week stats
+  const [warm, setWarm] = useState<CacheWarmStatus | null>(null);
+  const [warming, setWarming] = useState(false);
+  const [warmNote, setWarmNote] = useState("");
 
   useEffect(() => {
     getUsage()
@@ -72,7 +83,39 @@ export function UsageTab() {
         setSessions(r.by_session ?? []);
       })
       .catch(() => setErr(t("Failed to load usage data.")));
+    getCacheWarmStatus().then(setWarm).catch(() => setWarm(null));
   }, [t]);
+
+  const toggleWarm = async (next: boolean) => {
+    setWarm((w) => (w ? { ...w, enabled: next } : w));
+    try {
+      const r = await setCacheWarmEnabled(next);
+      setWarm((w) => (w ? { ...w, enabled: r.enabled } : w));
+    } catch {
+      setWarmNote(t("Failed to update cache warm-up."));
+    }
+  };
+
+  const warmNow = async () => {
+    setWarming(true);
+    setWarmNote("");
+    try {
+      const r = await triggerCacheWarm();
+      setWarmNote(
+        r.ok
+          ? t("Warmed {n} knowledge prefixes ({p} prompt tokens).", {
+              n: r.warmed ?? 0,
+              p: r.prompt_tokens ?? 0,
+            })
+          : t("Warm-up skipped: {reason}", { reason: (r as any).reason ?? (r as any).error ?? "?" })
+      );
+      getCacheWarmStatus().then(setWarm).catch(() => {});
+    } catch {
+      setWarmNote(t("Warm-up failed."));
+    } finally {
+      setWarming(false);
+    }
+  };
 
   const hit = totals?.cache_hit_rate ?? 0;
   const hitColor = hit >= 0.6 ? "text-green-500" : hit >= 0.3 ? "text-amber-500" : "text-red-500";
@@ -98,7 +141,7 @@ export function UsageTab() {
       {totals ? (
         <div className="flex flex-wrap gap-2.5 mb-4">
           <Stat label={t("Total tokens")} value={fmt(totals.total_tokens)} sub={`${t("turns")}: ${totals.turns}`} />
-          <Stat label={t("Prompt (in)")} value={fmt(totals.prompt_tokens)} sub={`cached ${fmt(totals.cached_tokens)}`} />
+          <Stat label={t("Prompt (in)")} value={fmt(totals.prompt_tokens)} sub={`${t("cached")} ${fmt(totals.cached_tokens)}`} />
           <Stat label={t("Completion (out)")} value={fmt(totals.completion_tokens)} />
           <Stat
             label={t("Cache hit rate")}
@@ -111,6 +154,38 @@ export function UsageTab() {
         <div className="text-[12px] text-muted mb-4">{t("Loading…")}</div>
       )}
 
+      {warm && (
+        <div
+          className="rounded-xl border border-line bg-panel/60 px-4 py-3 mb-4"
+          data-testid="cache-warm-card"
+        >
+          <div className="flex items-center gap-2">
+            <span className="text-[12px] font-semibold">{t("Cache warm-up")}</span>
+            <Toggle checked={warm.enabled} onChange={toggleWarm} title={t("Warm cold knowledge prefixes in the background")} />
+          </div>
+          <p className="text-[11.5px] text-muted mt-1.5">
+            {t(
+              "When the cache hit rate drops below {rate}%, QunWork re-injects the coldest HORNET knowledge prefixes (max_tokens=1) so later turns hit instead of miss.",
+              { rate: Math.round(warm.min_hit_rate * 100) }
+            )}
+          </p>
+          <div className="flex items-center gap-4 mt-2 text-[11.5px] text-muted">
+            <span>{t("This week")}: {warm.week.calls} {t("calls")} · {fmt(warm.week.prompt_tokens)} {t("prompt tokens")}</span>
+            <span>{t("Org cache hit rate")}: {(warm.org_hit_rate * 100).toFixed(1)}%</span>
+          </div>
+          <div className="flex items-center gap-2 mt-2.5">
+            <button
+              className="text-[11.5px] px-2.5 py-1 rounded-lg border border-lineStrong bg-panel hover:border-accent hover:text-accent"
+              onClick={warmNow}
+              disabled={warming || !warm.enabled}
+            >
+              {warming ? t("Warming…") : t("Warm now")}
+            </button>
+            {warmNote && <span className="text-[11.5px] text-muted">{warmNote}</span>}
+          </div>
+        </div>
+      )}
+
       {days.length > 0 ? (
         <div className="rounded-xl border border-line bg-panel/60 px-4 py-3 mb-4">
           <div className="text-[12px] font-semibold mb-2">{t("Last 14 days")}</div>
@@ -119,7 +194,7 @@ export function UsageTab() {
               const total = d.prompt_tokens + d.completion_tokens;
               const h = Math.max(3, Math.round((total / maxDay) * 68));
               return (
-                <div key={d.day} className="flex-1 flex flex-col items-center gap-1" title={`${d.day}: ${fmt(total)} tok, ${(d.cache_hit_rate * 100).toFixed(0)}% hit`}>
+                <div key={d.day} className="flex-1 flex flex-col items-center gap-1" title={`${d.day}: ${fmt(total)} ${t("Tokens")}, ${(d.cache_hit_rate * 100).toFixed(0)}% ${t("Cache hit")}`}>
                   <div className="w-full rounded-sm flex flex-col-reverse" style={{ height: h }}>
                     <div className="w-full bg-blue-500/85" style={{ height: `${(d.completion_tokens / Math.max(1, total)) * 100}%` }} />
                     <div className="w-full bg-blue-400/45" style={{ height: `${(d.prompt_tokens / Math.max(1, total)) * 100}%` }} />

@@ -223,6 +223,9 @@ class Orchestrator:
     # approval). None = headless run with auto-requeue (legacy behaviour).
     controller: Optional[Any] = None
     requeue_approval_timeout: float = 120.0
+    # P0 建议3: an already-built plan to execute instead of calling the planner
+    # (the swarm deck's fork action copies the parent run's plan_ready + injects).
+    initial_plan: Optional[Plan] = None
     # T4 convergence guard (LoopCoop fixed-point): how many consecutive rounds
     # without real progress (no new done task, no changed result, no accepted
     # requeue) before the run is declared stalled instead of spinning forever.
@@ -322,7 +325,7 @@ class Orchestrator:
             # Auto-approve worker writes by default (running the swarm IS the
             # authorization); callers may override with their own approver.
             approver=self.approver if self.approver is not None else auto_approver(),
-            agent=self.executor_agent,
+            agent=task.agent or self.executor_agent,
             model_settings=self.model_settings,
             # Interconnect: team memory tools + unified knowledge DB in every worker.
             memory_store=self.memory_store,
@@ -430,14 +433,19 @@ class Orchestrator:
         # T4: consecutive no-progress rounds → stall (fixed point without completion).
         stall_rounds = 0
         stalled_reason: Optional[str] = None
-        plan = await self._plan(intent)
+        plan = self.initial_plan if self.initial_plan is not None else await self._plan(intent)
         self._last_plan = plan
         self._emit(
             "plan_ready",
             {
                 "goal": intent,
                 "tasks": [
-                    {"id": t.id, "description": t.description, "deps": t.deps}
+                    {
+                        "id": t.id,
+                        "description": t.description,
+                        "deps": t.deps,
+                        "agent": t.agent,
+                    }
                     for t in plan.tasks
                 ],
             },
@@ -605,6 +613,45 @@ class Orchestrator:
             if ctrl is not None:
                 await ctrl.wait_if_paused()
                 directives = ctrl.drain_messages()
+                # P0 建议3 (蜂群指挥台): drain structured DAG edits — fork-task
+                # injections + pending-task agent retargets. `by_id` is captured
+                # by the process() closure by NAME, so rebinding it here makes
+                # ready()/dependency lookups see the new tasks immediately.
+                # getattr-guarded: a minimal test Deck that only implements the
+                # G2 basics must keep working.
+                for spec in getattr(ctrl, "drain_task_injections", lambda: [])():
+                    tid = spec.get("id", "")
+                    if not tid or tid in by_id:
+                        continue  # duplicate id — drop
+                    deps = spec.get("deps") or []
+                    if any(d not in by_id for d in deps):
+                        continue  # unknown dep would deadlock — drop
+                    plan.tasks.append(
+                        Task(
+                            id=tid,
+                            description=spec.get("description", ""),
+                            deps=list(deps),
+                            agent=spec.get("agent", ""),
+                        )
+                    )
+                    by_id = plan.by_id()
+                    stall_rounds = 0  # a fresh task is real progress — reset the stall guard
+                    self._emit(
+                        "task_injected",
+                        {
+                            "id": tid,
+                            "description": spec.get("description", ""),
+                            "deps": list(deps),
+                            "agent": spec.get("agent", ""),
+                        },
+                    )
+                for spec in getattr(ctrl, "drain_retargets", lambda: [])():
+                    tgt = by_id.get(spec.get("id", ""))
+                    if tgt is not None and tgt.status == "pending":
+                        tgt.agent = spec.get("agent", "")
+                        self._emit(
+                            "task_retargeted", {"id": tgt.id, "agent": tgt.agent}
+                        )
             else:
                 directives = []
             # Governance inspection BEFORE dispatch (every N steps): red lines must
