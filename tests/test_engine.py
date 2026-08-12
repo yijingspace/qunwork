@@ -517,3 +517,58 @@ def test_persist_callback_fires_per_iteration(tmp_path):
     # the transcript is complete (user + assistant tool-call + tool result + final)
     roles = [m.get("role") for m in engine.messages if m.get("role") != "notice"]
     assert "user" in roles and "tool" in roles
+
+
+# -- usage fallback estimation (provider without include_usage) ---------------
+
+def test_usage_estimated_when_provider_silent(tmp_path):
+    """A provider that reports no usage must still move the monitor: the sink
+    receives a character-based estimate instead of being silently skipped."""
+    captured: dict = {}
+
+    def _sink(entry):
+        captured.update(entry)
+
+    provider = ScriptedProvider(
+        [
+            _text_turn("你好世界" + "x" * 120),  # CJK + Latin, no usage reported
+        ]
+    )
+    registry = ToolRegistry()
+    registry.register_all(ai.toolkits.files(root=str(tmp_path), allow_write=True))
+    permissions = PermissionEngine(workspace_root=tmp_path)
+    engine = TurnEngine(
+        provider=provider,
+        registry=registry,
+        permissions=permissions,
+        model="gpt-5.5",
+        usage_sink=_sink,
+        max_iterations=8,
+    )
+    _collect(engine, "hi")
+    assert "prompt_tokens" in captured
+    assert captured["completion_tokens"] >= 1
+    assert captured["model"] == "gpt-5.5"
+
+
+def test_estimate_usage_cjk_vs_latin():
+    """CJK ≈ 1.5 char/token, Latin ≈ 4 char/token — a CJK-heavy completion
+    estimates more tokens than the same character count in Latin."""
+    from coworker.engine import TurnEngine
+
+    provider = ScriptedProvider([_text_turn("ok")])
+    registry = ToolRegistry()
+    permissions = PermissionEngine(workspace_root=__import__("pathlib").Path("."))
+    engine = TurnEngine(
+        provider=provider,
+        registry=registry,
+        permissions=permissions,
+        model="gpt-5.5",
+    )
+    # A turn whose text is 30 CJK chars vs 30 Latin chars
+    cjk = engine._estimate_usage(_text_turn("蜂群协作" * 7 + "数据"))  # ~30 CJK chars
+    latin = engine._estimate_usage(_text_turn("a" * 120))
+    assert cjk is not None and latin is not None
+    # 30 CJK / 1.5 ≈ 20 tokens; 120 Latin / 4 = 30 tokens
+    assert cjk["completion_tokens"] == 20
+    assert latin["completion_tokens"] == 30

@@ -854,4 +854,6 @@ export const zh: Messages = {
   "Swarms": "蜂群数",
   "Create new swarm": "新建蜂群",
   "Description of what this swarm should achieve": "描述该蜂群需要完成的目标",
+  "Refresh": "刷新",
+  "Refresh usage": "刷新用量",
 };

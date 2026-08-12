@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   getUsage,
   getCacheWarmStatus,
@@ -9,6 +9,7 @@ import {
 } from "../api";
 import { useT } from "../i18n";
 import { Toggle } from "./Toggle";
+import { Icon } from "./Icon";
 
 const FIELD_LABEL = "text-[12.5px] font-medium text-ink";
 
@@ -72,22 +73,46 @@ export function UsageTab() {
   const [days, setDays] = useState<DayRow[]>([]);
   const [sessions, setSessions] = useState<SessionRow[]>([]);
   const [err, setErr] = useState("");
+  const [refreshing, setRefreshing] = useState(false);
   // P0 建议1: cache warm-up toggle + this-week stats
   const [warm, setWarm] = useState<CacheWarmStatus | null>(null);
   const [warming, setWarming] = useState(false);
   const [warmNote, setWarmNote] = useState("");
+  const pollRef = useRef<number | null>(null);
+  // Request sequencing: a slow older reload must not overwrite a newer one
+  // (10s poll + manual refresh + visibilitychange can overlap). Stale
+  // responses are dropped.
+  const reqSeq = useRef(0);
+
+  const reload = useCallback(async () => {
+    const seq = ++reqSeq.current;
+    setRefreshing(true);
+    try {
+      const r = await getUsage();
+      if (seq !== reqSeq.current) return; // a newer reload started — drop stale data
+      setTotals(r.totals ?? null);
+      setSteady(r.steady ?? null);
+      setDays(r.by_day ?? []);
+      setSessions(r.by_session ?? []);
+      setErr("");
+    } catch {
+      if (seq === reqSeq.current) setErr(t("Failed to load usage data."));
+    } finally {
+      if (seq === reqSeq.current) setRefreshing(false);
+    }
+  }, [t]);
 
   useEffect(() => {
-    getUsage()
-      .then((r) => {
-        setTotals(r.totals ?? null);
-        setSteady(r.steady ?? null);
-        setDays(r.by_day ?? []);
-        setSessions(r.by_session ?? []);
-      })
-      .catch(() => setErr(t("Failed to load usage data.")));
+    reload();
     getCacheWarmStatus().then(setWarm).catch(() => setWarm(null));
-  }, [t]);
+    pollRef.current = window.setInterval(reload, 10_000);
+    const onVisible = () => { if (document.visibilityState === "visible") reload(); };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      if (pollRef.current != null) window.clearInterval(pollRef.current);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [reload]);
 
   const toggleWarm = async (next: boolean) => {
     setWarm((w) => (w ? { ...w, enabled: next } : w));
@@ -132,6 +157,17 @@ export function UsageTab() {
         <span className={`text-[13px] font-semibold tabular-nums ${hitColor}`}>
           {(hit * 100).toFixed(1)}%
         </span>
+        <span className="flex-1" />
+        <button
+          type="button"
+          onClick={() => reload()}
+          disabled={refreshing}
+          className="shrink-0 text-[12px] px-2.5 py-1.5 rounded-md border border-line bg-paper hover:border-lineStrong text-muted hover:text-ink disabled:opacity-40 inline-flex items-center gap-1.5"
+          title={t("Refresh usage")}
+        >
+          <Icon name="refresh" size={13} className={refreshing ? "animate-spin" : ""} />
+          {t("Refresh")}
+        </button>
       </div>
       <p className={FIELD_LABEL + " mb-3"}>
         {t(

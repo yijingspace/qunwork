@@ -746,21 +746,67 @@ class TurnEngine:
         )
 
     def _record_usage(self, turn: AssistantTurn) -> None:
-        """Push the turn's token usage to the ledger sink (if the provider
-        reported it and a sink is wired). Cache hit rate is derived by the
-        consumer from cached_tokens / prompt_tokens."""
-        if not turn.usage or self.usage_sink is None:
+        """Push the turn's token usage to the ledger sink. Falls back to a
+        character-based estimate when the provider didn't report usage so the
+        monitor keeps moving even on servers without include_usage support."""
+        if self.usage_sink is None:
+            return
+        usage = turn.usage or self._estimate_usage(turn)
+        if not usage:
             return
         try:
             self.usage_sink(
                 {
                     **self.audit_context,
                     "model": self.model,
-                    **turn.usage,
+                    **usage,
                 }
             )
         except Exception:
             pass
+
+    def _estimate_usage(self, turn: AssistantTurn) -> Optional[dict[str, int]]:
+        """Conservative per-character estimate (CJK ≈ 1.5 char/token, Latin ≈ 4
+        char/token). Used only when the provider reported no usage at all, so
+        the usage panel never stays frozen at 0."""
+        text = (turn.text or "") + (turn.reasoning or "")
+        for tc in turn.tool_calls:
+            args = tc.arguments if isinstance(tc.arguments, str) else str(tc.arguments)
+            text += (tc.name or "") + args
+        if not text:
+            return None
+        def _cjk_count(s: str) -> int:
+            return sum(
+                1
+                for ch in s
+                if "\u3000" <= ch <= "\u9fff"
+                or "\uac00" <= ch <= "\ud7af"
+                or "\u0e00" <= ch <= "\u0fff"
+            )
+        cjk = _cjk_count(text)
+        latin = len(text) - cjk
+        completion = max(1, round(cjk / 1.5 + latin / 4))
+        # For prompt we don't have the raw request here; _record_usage is
+        # called AFTER messages.append, so we can ballpark from the last few
+        # message bodies already in the engine. Good enough for a fallback
+        # monitor, and any real provider returns exact include_usage anyway.
+        recent_chars = 0
+        for m in self.messages[-3:]:
+            c = m.get("content") or ""
+            if isinstance(c, str):
+                recent_chars += len(c)
+            elif isinstance(c, list):
+                for part in c:
+                    if isinstance(part, dict) and isinstance(part.get("text"), str):
+                        recent_chars += len(part["text"])
+        cjk_p = _cjk_count(text)
+        prompt = max(1, round(cjk_p / 1.5 + max(0, recent_chars - cjk_p) / 4))
+        return {
+            "prompt_tokens": prompt,
+            "completion_tokens": completion,
+            "cached_tokens": 0,
+            "cache_miss_tokens": prompt,
+        }
 
     def _audit(self, tool_call: ToolCall, **event: Any) -> None:
         if self.audit_sink is None:
