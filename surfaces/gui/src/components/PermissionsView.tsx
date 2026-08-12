@@ -29,6 +29,7 @@ export function PermissionsView() {
   }, []);
 
   return (
+    <div className="h-full overflow-y-auto">
     <div className="max-w-4xl mx-auto px-6 py-6">
       <h1 className="text-[22px] font-semibold tracking-tight flex items-center gap-2.5">
         <span className="text-[20px]">🔐</span>
@@ -98,6 +99,7 @@ export function PermissionsView() {
             {t("Approval thresholds will be configurable in Phase 2.")}
           </div>
         )}
+      </div>
       </div>
     </div>
   );

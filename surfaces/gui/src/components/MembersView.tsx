@@ -28,6 +28,7 @@ export function MembersView() {
   }, [t]);
 
   return (
+    <div className="h-full overflow-y-auto">
     <div className="max-w-4xl mx-auto px-6 py-6">
       <h1 className="text-[22px] font-semibold tracking-tight flex items-center gap-2.5">
         <span className="text-[20px]">👥</span>
@@ -119,6 +120,7 @@ export function MembersView() {
             </tbody>
           </table>
         )}
+      </div>
       </div>
     </div>
   );

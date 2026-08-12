@@ -1416,8 +1416,10 @@ export function App() {
       ) : surface === "permissions" ? (
         <PermissionsView />
       ) : surface === "usage" ? (
-        <div className="max-w-4xl mx-auto px-6 py-6">
-          <UsageTab />
+        <div className="h-full overflow-y-auto">
+          <div className="max-w-4xl mx-auto px-6 py-6">
+            <UsageTab />
+          </div>
         </div>
       ) : surface === "persona" ? (
         <PersonaView
