@@ -230,6 +230,10 @@ class Orchestrator:
     # busy signal on start and withdraw on completion; the scheduler reads it to
     # shrink the parallel batch when the field is loaded. None = legacy behaviour.
     pheromone: Optional[Any] = None
+    # P1 增量 (Agent 状态池 acquire/release): 如果 Manager 已实例化 AgentPool，
+    # 这里就能用到它——None → 保持旧行为 (每次 _execute 都新建 build_engine)。
+    agent_pool: Optional[Any] = None
+    task_group_id: Optional[str] = None
     # T4 convergence guard (LoopCoop fixed-point): how many consecutive rounds
     # without real progress (no new done task, no changed result, no accepted
     # requeue) before the run is declared stalled instead of spinning forever.
@@ -339,38 +343,68 @@ class Orchestrator:
     ) -> str:
         from . import auto_approver
 
-        engine = build_executor_engine(
-            workspace=self.workspace,
-            provider=self.provider,
-            model=self.model,
-            # Auto-approve worker writes by default (running the swarm IS the
-            # authorization); callers may override with their own approver.
-            approver=self.approver if self.approver is not None else auto_approver(),
-            agent=task.agent or self.executor_agent,
-            model_settings=self.model_settings,
-            # Interconnect: team memory tools + unified knowledge DB in every worker.
-            memory_store=self.memory_store,
-            knowledge_db_path=self.knowledge_db_path,
-            usage_sink=self.usage_sink,
-        )
-        parts = [f"Task [{task.id}]: {task.description}\nExecute it now and report the result."]
-        if deps:
-            parts.append("\nDependencies' results (reuse them):\n" + "\n".join(deps))
-        if hints:
-            parts.append("\nRelevant prior results (context only):\n" + "\n".join(hints))
-        prompt = "\n".join(parts)
-
-        def feed(kind: str, payload: dict[str, Any]) -> None:
-            if kind == "worker_thought" and payload.get("text"):
-                raw = str(payload["text"])
-                if on_text is not None:
-                    on_text(raw)  # keep raw for the timeout-degradation draft
-                self._emit(
-                    "worker_thought",
-                    {"worker": "executor", "task_id": task.id, "text": clean_thought(raw, "executor")},
+        role_tag = task.agent or self.executor_agent
+        pool_inst = None
+        acquired_agent_id: Optional[str] = None
+        # 1) Try the pool first; if it gives us an instance, tag the group+task.
+        if self.agent_pool is not None:
+            try:
+                pool_inst = self.agent_pool.acquire(
+                    role_tag,
+                    task_group_id=self.task_group_id,
+                    task_id=task.id,
                 )
+                if pool_inst is not None:
+                    acquired_agent_id = pool_inst.id
+            except Exception:
+                pool_inst = None
+        try:
+            engine = build_executor_engine(
+                workspace=self.workspace,
+                provider=self.provider,
+                model=self.model,
+                approver=self.approver if self.approver is not None else auto_approver(),
+                agent=role_tag,
+                model_settings=self.model_settings,
+                memory_store=self.memory_store,
+                knowledge_db_path=self.knowledge_db_path,
+                usage_sink=self.usage_sink,
+            )
+            parts = [f"Task [{task.id}]: {task.description}\nExecute it now and report the result."]
+            if deps:
+                parts.append("\nDependencies' results (reuse them):\n" + "\n".join(deps))
+            if hints:
+                parts.append("\nRelevant prior results (context only):\n" + "\n".join(hints))
+            prompt = "\n".join(parts)
 
-        text, status = await _run_engine_async(engine, prompt, on_event=feed)
+            def feed(kind: str, payload: dict[str, Any]) -> None:
+                if kind == "worker_thought" and payload.get("text"):
+                    raw = str(payload["text"])
+                    if on_text is not None:
+                        on_text(raw)
+                    self._emit(
+                        "worker_thought",
+                        {
+                            "worker": "executor",
+                            "task_id": task.id,
+                            "agent_id": acquired_agent_id,
+                            "text": clean_thought(raw, "executor"),
+                        },
+                    )
+                if acquired_agent_id is not None and self.agent_pool is not None:
+                    try:
+                        self.agent_pool.heartbeat(acquired_agent_id)
+                    except Exception:
+                        pass
+
+            text, status = await _run_engine_async(engine, prompt, on_event=feed)
+        finally:
+            # 2) Always release back. The pool tolerates double release safely.
+            if acquired_agent_id is not None and self.agent_pool is not None:
+                try:
+                    self.agent_pool.release(acquired_agent_id)
+                except Exception:
+                    pass
         if _looks_like_interim(text):
             # Deliverable push: the model stopped with a process note ("I will
             # verify…", "Let me check…") instead of the product — observed on

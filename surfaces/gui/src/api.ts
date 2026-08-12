@@ -1482,6 +1482,42 @@ export async function resolveInboxItem(
   return res.json();
 }
 
+// -- P2: Inbox compliance annotation (权限矩阵合规标注) ------------------------
+export interface ComplianceInfo {
+  tool_name: string;
+  capability: string | null;
+  member_role: string | null;
+  role_has_capability: boolean | null;
+  fund_tier: { amount: number; limit: number; role: string; label: string } | null;
+  fund_approval: {
+    allowed: boolean;
+    role: string;
+    required_tier?: string;
+    tier_label?: string;
+    amount?: number;
+    escalation?: string;
+  } | null;
+  escalation: string | null;
+  compliance_level: "routine" | "elevated" | "board";
+}
+
+export interface InboxComplianceView {
+  pending_count: number;
+  member_role: string | null;
+  items: {
+    item_id: string;
+    title: string;
+    state: string;
+    compliance: ComplianceInfo;
+    member_role: string | null;
+  }[];
+}
+
+export async function getInboxCompliance(): Promise<InboxComplianceView> {
+  const res = await fetch(`${httpBase()}/v1/inbox/compliance`);
+  return res.json();
+}
+
 // -- channel subscriptions (view-only) ----------------------------------------
 export interface Subscription {
   session_id: string;
@@ -2567,4 +2603,142 @@ export async function triggerCacheWarm(maxItems?: number): Promise<{ ok: boolean
     body: JSON.stringify(maxItems ? { max_items: maxItems } : {}),
   });
   return await res.json();
+}
+
+// ── Team / Organization API (Phase 0: types + graceful fallback) ─────────────
+
+export interface TeamInfo {
+  id: string;
+  name: string;
+  my_member_id: string;
+  member_count: number;
+  online_count: number;
+  sync_status: "single" | "connected" | "connecting" | "offline";
+  last_sync: number | null;
+}
+
+export interface Member {
+  id: string;
+  name: string;
+  role: string;
+  status: "online" | "offline";
+  current_task_group: string | null;
+  last_seen: number | null;
+}
+
+export interface AgentInstance {
+  id: string;
+  role: string;
+  persona_id: string;
+  state: "idle" | "working" | "fault";
+  current_task_group: string | null;
+  load: number;
+  last_heartbeat: number;
+}
+
+export interface TaskGroup {
+  group_id: string;
+  goal: string;
+  owner_member: string;
+  member_ids: string[];
+  agent_ids: string[];
+  state: "forming" | "active" | "reviewing" | "dissolved";
+  created_at: number;
+  dissolved_at: number | null;
+}
+
+export interface PermissionCell {
+  allowed: boolean;
+  scope?: string;
+  max_amount?: number;
+}
+
+export interface ApprovalThreshold {
+  min_amount: number;
+  max_amount: number | null;
+  approver_role: string;
+  require_human: boolean;
+  require_board: boolean;
+}
+
+export interface PermissionMatrix {
+  roles: Record<string, Record<string, PermissionCell>>;
+  thresholds: ApprovalThreshold[];
+}
+
+export interface SyncStatus {
+  status: "single" | "connected" | "connecting" | "offline";
+  last_sync: number | null;
+  pending_changes: number;
+  peers_online: number;
+}
+
+// Phase 0: these gracefully return empty/null when the team module isn't loaded yet.
+// Phase 1 will wire them to real /v1/team/* endpoints.
+
+export async function getTeam(): Promise<TeamInfo | null> {
+  try {
+    const res = await fetch(`${httpBase()}/v1/team`);
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+
+export async function listMembers(): Promise<Member[]> {
+  try {
+    const res = await fetch(`${httpBase()}/v1/team/members`);
+    if (!res.ok) return [];
+    return await res.json();
+  } catch {
+    return [];
+  }
+}
+
+export async function listAgents(): Promise<AgentInstance[]> {
+  try {
+    const res = await fetch(`${httpBase()}/v1/team/agents`);
+    if (!res.ok) return [];
+    return await res.json();
+  } catch {
+    return [];
+  }
+}
+
+export async function listTaskGroups(): Promise<TaskGroup[]> {
+  try {
+    const res = await fetch(`${httpBase()}/v1/team/task-groups`);
+    if (!res.ok) return [];
+    return await res.json();
+  } catch {
+    return [];
+  }
+}
+
+export async function dissolveTaskGroup(id: string): Promise<{ ok: boolean }> {
+  const res = await fetch(`${httpBase()}/v1/team/task-groups/${encodeURIComponent(id)}/dissolve`, {
+    method: "POST",
+  });
+  return await res.json();
+}
+
+export async function getPermissions(): Promise<PermissionMatrix | null> {
+  try {
+    const res = await fetch(`${httpBase()}/v1/team/permissions`);
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+
+export async function getSyncStatus(): Promise<SyncStatus | null> {
+  try {
+    const res = await fetch(`${httpBase()}/v1/team/sync/status`);
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
+  }
 }

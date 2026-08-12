@@ -112,6 +112,10 @@ def _approval_body(request) -> str:
     return "\n".join(parts)
 
 
+# P2: re-export for inline use in inbox_compliance_view
+from ..permission_matrix import annotate_compliance  # noqa: E402
+
+
 class SessionManager:
     def __init__(
         self,
@@ -246,6 +250,20 @@ class SessionManager:
         from ..pheromone import PheromoneField
 
         self.pheromone = PheromoneField()
+        # P1 增量 (团队 / Agent 状态池): one shared pool, persistence in team.db.
+        # 团队功能默认是「懒加载 + 幂等」——ensure_team 在第一次 API 被调用时才建行，
+        # 保证单机模式也不产生副作用。
+        from ..team import AgentPool, TaskLifecycle, TeamStore
+
+        self.agent_pool = AgentPool()
+        self.team_store = TeamStore(base / "team.db")
+        self._team_lifecycle = TaskLifecycle(
+            self.team_store,
+            self.agent_pool,
+            # Phase 1 归档：先把蜂群的交付产物塞到 TeamStore.ingest 接口；
+            # 等 KnowledgeStore.add 支持元数据直接写入时再替换。
+            ingest_swarm_assets=self._team_ingest_group_assets,
+        )
         # G2 command deck: run_id → live control channel while a swarm run is active
         # (paused flag, operator messages, pending requeue approvals).
         self.active_orchestration_controls: dict[str, Any] = {}
@@ -879,9 +897,13 @@ class SessionManager:
     def inbox_approver(self, session_id: str, agent: str):
         """Inbox-based approver — the default for no-socket runs (background, self-wake, durable
         resume). On resume the item already exists + is resolved, so wait returns at once.
+
+        P2 增量: 自动从 TeamStore 查询本机成员角色, 注入审批卡合规标注。
         """
 
         async def approve(request):
+            # P2: 查询本机成员角色, 用于权限矩阵合规标注
+            member_role = self._get_my_member_role()
             item = self.inbox.add_approval(
                 session_id,
                 f"Run `{request.tool_name}`?",
@@ -889,6 +911,9 @@ class SessionManager:
                 inbox=self.inbox_routing.route_for(session_id, agent),
                 tool_call_id=getattr(request, "tool_call_id", None),
                 data=self.approval_prompt_data(session_id, request),
+                member_role=member_role,
+                tool_name=request.tool_name,
+                arguments=getattr(request, "arguments", None),
             )
             if item.state == "pending":
                 self.persist_session(session_id)
@@ -4106,6 +4131,150 @@ class SessionManager:
         return {
             "levels": self.pheromone.levels(),
             "total_load": round(self.pheromone.total_load(), 3),
+        }
+
+    # -- P1 团队 / AgentPool API 面 -------------------------------------------
+    def _team_ingest_group_assets(self, group_id: str) -> None:
+        """Default hook for TaskLifecycle: on dissolve, push the group's deliverables
+        into the knowledge store as an archive note."""
+        try:
+            g = self.team_store.get_task_group(group_id)
+            if not g:
+                return
+            title = f"[蜂群归档] {g['goal'][:60]}"
+            body = (
+                f"Group: {group_id}\n"
+                f"Goal: {g['goal']}\n"
+                f"State: {g['state']} (dissolved_at: {g.get('dissolved_at')})\n"
+                f"Members: {', '.join(g.get('member_ids', [])) or '-'}\n"
+                f"Agents: {', '.join(g.get('agent_ids', [])) or '-'}\n"
+            )
+            self.knowledge.add(
+                title=title,
+                raw=body,
+                source=f"swarm:{group_id}",
+                tags=("swarm-archive",),
+            )
+        except Exception:
+            # 归档失败不得影响 dissolve 主流程（后台任务静默记录即可）
+            import logging as _log
+            _log.getLogger(__name__).exception("team ingest failed %s", group_id)
+
+    def team_info(self, *, name_hint: str = "My Team"):
+        """GET /v1/team — first call seeds the team row. Front-end treats null =
+        "not yet on team mode" (today this only happens if the store errors)."""
+        self.team_store.ensure_team(name=name_hint)
+        return self.team_store.team_summary()
+
+    def list_members(self) -> list[dict]:
+        # 如果还没有任何团队记录，则静默创建（API 首次访问不报错）。
+        self.team_store.ensure_team()
+        return self.team_store.list_members()
+
+    def add_member(self, name: str, role: str = "worker", persona_id=None):
+        self.team_store.ensure_team()
+        return self.team_store.add_member(name, role=role, persona_id=persona_id)
+
+    def update_member(self, member_id: str, **fields):
+        return {"ok": bool(self.team_store.update_member(member_id, **fields))}
+
+    def remove_member(self, member_id: str):
+        return {"ok": bool(self.team_store.remove_member(member_id))}
+
+    def list_agents(self) -> list[dict]:
+        """GET /v1/team/agents. Returns BOTH the live in-memory pool + the
+        persisted snapshot rows; prefers pool for freshness. This guarantees
+        the page shows something immediately when the pool is empty."""
+        live = [
+            {
+                "id": a.id,
+                "role": a.role,
+                "persona_id": a.persona_id,
+                "state": a.state.value,
+                "current_task_group": a.current_task_group,
+                "current_task_id": a.current_task_id,
+                "load": a.load,
+                "last_heartbeat": a.last_heartbeat,
+            }
+            for a in self.agent_pool.list()
+        ]
+        if live:
+            return live
+        # Fallback: recover from the DB snapshot if pool has no live instances
+        return self.team_store.load_agent_snapshot()
+
+    def add_agent(self, role: str, persona_id: str = "") -> dict:
+        """扩容 (Scale up): register a new agent instance and persist a snapshot."""
+        persona = persona_id or role
+        inst = self.agent_pool.register(role, persona)
+        self.team_store.save_agent_snapshot(self.agent_pool.list())
+        return {
+            "id": inst.id, "role": inst.role,
+            "persona_id": inst.persona_id, "state": inst.state.value,
+        }
+
+    def remove_agent(self, agent_id: str) -> dict:
+        ok = self.agent_pool.unregister(agent_id)
+        if ok:
+            self.team_store.save_agent_snapshot(self.agent_pool.list())
+        return {"ok": ok, "id": agent_id}
+
+    def agent_load(self) -> dict:
+        return self.agent_pool.load_summary()
+
+    def list_task_groups(self, include_dissolved: bool = False):
+        return self.team_store.list_task_groups(include_dissolved=include_dissolved)
+
+    def create_task_group(self, goal: str, **kwargs):
+        return self._team_lifecycle.create(goal, **kwargs)
+
+    def dissolve_task_group(self, group_id: str):
+        # dissolve API 也持久化 Agent 池快照（agent 已经在内部释放）
+        result = self._team_lifecycle.dissolve(group_id)
+        self.team_store.save_agent_snapshot(self.agent_pool.list())
+        return result
+
+    # -- P2 权限矩阵 × inbox 审批合规标注 --------------------------------------
+    def _get_my_member_role(self) -> Optional[str]:
+        """Look up the local user's role from TeamStore. Returns None if team
+        hasn't been initialized yet (single-user mode — no compliance annotation)."""
+        try:
+            team = self.team_store.get_team()
+            if not team:
+                return None
+            my_id = team.get("my_member_id")
+            if not my_id:
+                return None
+            member = self.team_store.get_member(my_id)
+            return member.get("role") if member else None
+        except Exception:
+            return None
+
+    def inbox_compliance_view(self) -> dict[str, Any]:
+        """GET /v1/inbox/compliance — batch compliance annotation for all pending
+        approval items. Front-end uses this to render tier badges on the inbox list."""
+        pending = self.inbox.pending()
+        my_role = self._get_my_member_role()
+        items = []
+        for item in pending:
+            if item.kind != "approval":
+                continue
+            compliance = (item.data or {}).get("compliance")
+            if compliance is None:
+                # 回补: 如果 item 没有合规标注 (P2 之前创建的), 现场生成
+                tool_name = item.title.replace("Run `", "").replace("`?", "")
+                compliance = annotate_compliance(tool_name, None, my_role)
+            items.append({
+                "item_id": item.id,
+                "title": item.title,
+                "state": item.state,
+                "compliance": compliance,
+                "member_role": my_role,
+            })
+        return {
+            "pending_count": len(items),
+            "member_role": my_role,
+            "items": items,
         }
 
     # -- P0 增量3: 组织级权限矩阵 ---------------------------------------------

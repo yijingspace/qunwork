@@ -1,14 +1,21 @@
 import { useEffect, useState } from "react";
 import { useT } from "../i18n";
 import {
+  getInbox,
   getOrchestrateHistory,
+  getTeam,
   listKnowledge,
+  listMembers,
   listMemories,
   listSkills,
   listSwarmTemplates,
+  listTaskGroups,
   rhythmForecast,
+  type Member,
   type OrchestrationHistoryItem,
   type RhythmForecast,
+  type TaskGroup,
+  type TeamInfo,
 } from "../api";
 import {
   OrgAssetsCard,
@@ -16,6 +23,7 @@ import {
   TeamMemoryCard,
   TeamWorkspaceCard,
 } from "./SettingsView";
+import { SyncIndicator } from "./SyncIndicator";
 
 /**
  * Organization page (home nav): the org's asset network at a glance.
@@ -32,6 +40,10 @@ export function OrganizationView() {
     runs: number;
     rhythm: RhythmForecast | null;
   } | null>(null);
+  const [team, setTeam] = useState<TeamInfo | null>(null);
+  const [members, setMembers] = useState<Member[]>([]);
+  const [taskGroups, setTaskGroups] = useState<TaskGroup[]>([]);
+  const [pendingInbox, setPendingInbox] = useState(0);
 
   useEffect(() => {
     let alive = true;
@@ -53,6 +65,11 @@ export function OrganizationView() {
         rhythm: rh.status === "fulfilled" ? rh.value : null,
       });
     });
+    // Team data (Phase 0: gracefully empty when team module not yet loaded)
+    getTeam().then((ti) => { if (alive) setTeam(ti); }).catch(() => {});
+    listMembers().then((ms) => { if (alive) setMembers(ms); }).catch(() => {});
+    listTaskGroups().then((tg) => { if (alive && tg.length) setTaskGroups(tg.filter((g) => g.state !== "dissolved")); }).catch(() => {});
+    getInbox().then((items) => { if (alive) setPendingInbox(items?.length ?? 0); }).catch(() => {});
     return () => {
       alive = false;
     };
@@ -76,6 +93,14 @@ export function OrganizationView() {
           <span className="text-[20px]">🏢</span>
           {t("Organization")}
         </h1>
+        <div className="flex items-center gap-3 mt-2">
+          <SyncIndicator />
+          {team && (
+            <span className="text-[12px] text-faint">
+              {team.name} · {t("Members")} {team.member_count} · {t("Online")} {team.online_count}
+            </span>
+          )}
+        </div>
         <p className="text-[13px] text-muted mt-1.5 leading-relaxed">
           {t(
             "Your organizational asset network — knowledge, skills, templates, team memory and swarm runs. Everything your swarm has learned lives here and gets reused automatically.",
@@ -109,6 +134,79 @@ export function OrganizationView() {
             </div>
           </div>
         ))}
+      </div>
+
+      {/* Active Swarms */}
+      <div className="rounded-xl2 border border-line bg-panel p-4 mb-4">
+        <div className="text-[14px] font-semibold mb-2.5 flex items-center gap-2">
+          <span>🐝</span> {t("Active Swarms")}
+        </div>
+        {taskGroups.length === 0 ? (
+          <div className="text-[13px] text-faint">{t("No active swarms.")}</div>
+        ) : (
+          <div className="space-y-2">
+            {taskGroups.map((g) => (
+              <div key={g.group_id} className="flex items-center gap-2 text-[13px]">
+                <span className={
+                  "shrink-0 px-1.5 py-px rounded text-[10.5px] " +
+                  (g.state === "active" ? "bg-accentSoft text-accent" :
+                   g.state === "forming" ? "bg-warnSoft text-warnInk" :
+                   "bg-faint/20 text-faint")
+                }>
+                  {g.state}
+                </span>
+                <span className="truncate text-ink">{g.goal}</span>
+                <span className="ml-auto text-faint shrink-0 font-mono text-[10.5px]">
+                  {g.member_ids.length} {t("Members")}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Team Members snapshot */}
+      <div className="rounded-xl2 border border-line bg-panel p-4 mb-4">
+        <div className="text-[14px] font-semibold mb-2.5 flex items-center gap-2">
+          <span>👥</span> {t("Team Members")}
+        </div>
+        {members.length === 0 ? (
+          <div className="text-[13px] text-faint">
+            {t("No team members yet. Invite colleagues to join your swarm.")}
+          </div>
+        ) : (
+          <div className="space-y-1.5">
+            {members.slice(0, 5).map((m) => (
+              <div key={m.id} className="flex items-center gap-2 text-[13px]">
+                <span className={m.status === "online" ? "text-ok" : "text-faint"}>
+                  {m.status === "online" ? "●" : "○"}
+                </span>
+                <span className="truncate text-ink">{m.name}</span>
+                <span className="text-faint text-[12px]">({t(m.role)})</span>
+                <span className="ml-auto text-faint text-[12px] truncate max-w-[200px]">
+                  {m.current_task_group || "—"}
+                </span>
+              </div>
+            ))}
+            {members.length > 5 && (
+              <div className="text-[12px] text-faint">+ {members.length - 5}</div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Pending Approvals */}
+      <div className="rounded-xl2 border border-line bg-panel p-4 mb-4">
+        <div className="text-[14px] font-semibold mb-2.5 flex items-center gap-2">
+          <span>📋</span> {t("Pending Approvals")}
+        </div>
+        {pendingInbox === 0 ? (
+          <div className="text-[13px] text-faint">{t("No pending approvals.")}</div>
+        ) : (
+          <div className="text-[13px] text-accent">
+            {pendingInbox} {t("items need your attention")}
+          </div>
+        )}
       </div>
 
       <OrgAssetsCard />

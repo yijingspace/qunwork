@@ -58,6 +58,9 @@ import { AuditView } from "./components/AuditView";
 import { useT } from "./i18n";
 import { InboxView } from "./components/InboxView";
 import { OrganizationView } from "./components/OrganizationView";
+import { MembersView } from "./components/MembersView";
+import { PermissionsView } from "./components/PermissionsView";
+import { UsageTab } from "./components/UsageTab";
 import { ApprovalCard } from "./components/ApprovalCard";
 import { DirectoryRequestCard } from "./components/DirectoryRequestCard";
 import { PlanCard } from "./components/PlanCard";
@@ -219,6 +222,9 @@ export function App() {
     | "persona"
     | "organization"
     | "settings"
+    | "members"
+    | "permissions"
+    | "usage"
   >("session");
   // A remembered Scheduled-detail target must not outlive the surface (see the
   // scheduledOpenId comment above): nav re-entry lands on the list, never a
@@ -1369,6 +1375,12 @@ export function App() {
         inboxActive={surface === "inbox"}
         organizationActive={surface === "organization"}
         onOpenOrganization={() => setSurface("organization")}
+        onOpenMembers={() => setSurface("members")}
+        membersActive={surface === "members"}
+        onOpenPermissions={() => setSurface("permissions")}
+        permissionsActive={surface === "permissions"}
+        onOpenUsage={() => setSurface("usage")}
+        usageActive={surface === "usage"}
         collapsed={navCollapsed}
         onCollapse={toggleNav}
         onPeekLeave={() => setNavPeek(false)}
@@ -1399,6 +1411,14 @@ export function App() {
         <InboxView onOpenSession={openSessionFromInbox} />
       ) : surface === "organization" ? (
         <OrganizationView />
+      ) : surface === "members" ? (
+        <MembersView />
+      ) : surface === "permissions" ? (
+        <PermissionsView />
+      ) : surface === "usage" ? (
+        <div className="max-w-4xl mx-auto px-6 py-6">
+          <UsageTab />
+        </div>
       ) : surface === "persona" ? (
         <PersonaView
           personaId={personaViewId || agent}

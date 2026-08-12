@@ -438,6 +438,18 @@ body {
   display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
 }
 .approval-reason { margin-top: 8px; font-size: 12.5px; color: var(--muted); }
+/* P2: 组织权限矩阵合规徽章 */
+.compliance-badge {
+  margin-top: 8px; padding: 6px 10px; border-radius: 8px; font-size: 11.5px;
+  display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: center;
+}
+.compliance-badge .compliance-level { font-weight: 600; display: inline-flex; align-items: center; gap: 4px; }
+.compliance-badge .compliance-tier { color: var(--warn-ink); }
+.compliance-badge .compliance-deny { color: var(--danger, #c0392b); }
+.compliance-badge .compliance-escalation { color: var(--muted); font-size: 11px; }
+.compliance-routine { background: var(--paper); border: 1px solid var(--line); color: var(--muted); }
+.compliance-elevated { background: rgba(243, 156, 18, 0.08); border: 1px solid rgba(243, 156, 18, 0.3); }
+.compliance-board { background: rgba(192, 57, 43, 0.08); border: 1px solid rgba(192, 57, 43, 0.3); }
 /* Standing-approval consent lines (§25): reads = quiet disclosure, writes = the grants. */
 .approval-grants {
   margin-top: 11px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper);

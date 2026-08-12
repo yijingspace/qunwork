@@ -130,3 +130,80 @@ def detect_amount(arguments: Optional[dict]) -> Optional[float]:
             except (TypeError, ValueError):
                 continue
     return None
+
+
+# -- 工具 → 能力映射 (P2 增量: 审批合规标注) ----------------------------------
+# 把工具名映射到组织能力标签,用于 can() 校验。
+# 这不是安全边界(安全由 engine approver 保证)——这是合规标注,
+# 告诉人类审批者「这个动作在组织矩阵里属于什么级别」。
+_TOOL_CAPABILITY: dict[str, str] = {
+    "write_file": "write_memory",
+    "replace_in_file": "write_memory",
+    "apply_patch": "write_memory",
+    "apply_unified_diff": "write_memory",
+    "run_shell": "issue_commands",
+    "send_message": "issue_commands",
+    "send_file": "issue_commands",
+    "create_scheduled_task": "project_group",
+}
+
+# 资金相关工具 (需要额外金额分级检查)
+_FUND_TOOLS: set[str] = {"send_message", "send_file", "run_shell"}
+
+
+def annotate_compliance(
+    tool_name: str,
+    arguments: Optional[dict],
+    member_role: Optional[str] = None,
+) -> dict:
+    """P2 核心: 给一个待审批的工具调用生成合规标注。
+
+    返回字典包含:
+    - tool_name: 工具名
+    - capability: 对应的组织能力标签 (如 write_memory / issue_commands)
+    - member_role: 当前成员角色 (如果已知)
+    - role_has_capability: 当前角色是否具备该能力
+    - fund_tier: 资金分级信息 (如果检测到金额)
+    - fund_approval: 资金审批权限检查结果
+    - escalation: 升级路径描述 (如果需要)
+    - compliance_level: 综合合规级别 ("routine" / "elevated" / "board")
+
+    这个标注是**辅助人类决策**的,不会自动批准或拒绝——与方案五.3「人类兜底机制」一致。
+    """
+    cap = _TOOL_CAPABILITY.get(tool_name)
+    result: dict = {
+        "tool_name": tool_name,
+        "capability": cap,
+        "member_role": member_role,
+        "role_has_capability": None,
+        "fund_tier": None,
+        "fund_approval": None,
+        "escalation": None,
+        "compliance_level": "routine",
+    }
+
+    # 1) 角色能力检查
+    if cap and member_role:
+        result["role_has_capability"] = can(member_role, cap)
+
+    # 2) 资金分级检查
+    amount = detect_amount(arguments)
+    if amount is not None and amount > 0:
+        tier = fund_tier(amount)
+        result["fund_tier"] = tier
+        if member_role:
+            approval = fund_approval(member_role, amount)
+            result["fund_approval"] = approval
+            if not approval["allowed"]:
+                result["escalation"] = approval.get("escalation")
+                result["compliance_level"] = "elevated" if tier["role"] != "board_human" else "board"
+        else:
+            # 没有角色信息时,仅标注级别
+            result["compliance_level"] = "elevated" if tier["role"] != "board_human" else "board"
+
+    # 3) 如果角色无能力且不是资金问题,标注为 elevated
+    if result["role_has_capability"] is False and not amount:
+        result["compliance_level"] = "elevated"
+        result["escalation"] = human_escalation_for(member_role or "")
+
+    return result

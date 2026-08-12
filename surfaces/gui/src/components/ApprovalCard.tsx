@@ -3,6 +3,7 @@ import { useT } from "../i18n";
 import type { ApprovalDecision, Item } from "../types";
 import { humanizeApprovalTitle, type HumanLine } from "../humanize";
 import { Icon } from "./Icon";
+import type { ComplianceInfo } from "../api";
 
 export function shortArgs(args: any): string {
   if (!args || typeof args !== "object") return "";
@@ -184,6 +185,45 @@ function Buttons({
   );
 }
 
+// P2: 组织权限矩阵合规徽章 — 显示资金级别 / 角色能力 / 升级路径
+function ComplianceBadge({ compliance }: { compliance?: ComplianceInfo }) {
+  const t = useT();
+  if (!compliance) return null;
+  const level = compliance.compliance_level;
+  if (level === "routine" && !compliance.fund_tier) return null;
+
+  const levelClass = level === "board" ? "compliance-board" : level === "elevated" ? "compliance-elevated" : "compliance-routine";
+  const levelLabel = level === "board"
+    ? t("Board approval")
+    : level === "elevated"
+      ? t("Elevated approval")
+      : t("Routine");
+
+  return (
+    <div className={`compliance-badge ${levelClass}`} data-testid="compliance-badge">
+      <span className="compliance-level">
+        <Icon name="shield" size={12} /> {levelLabel}
+      </span>
+      {compliance.fund_tier && (
+        <span className="compliance-tier">
+          {t("Fund tier")}: {compliance.fund_tier.label}
+          {compliance.fund_tier.amount > 0 && ` (¥${compliance.fund_tier.amount.toLocaleString()})`}
+        </span>
+      )}
+      {compliance.role_has_capability === false && (
+        <span className="compliance-deny">
+          {t("Role lacks capability")}: {compliance.capability}
+        </span>
+      )}
+      {compliance.escalation && (
+        <span className="compliance-escalation">
+          {t("Escalation")}: {compliance.escalation}
+        </span>
+      )}
+    </div>
+  );
+}
+
 export function ApprovalCard({
   item,
   onApprove,
@@ -225,6 +265,7 @@ export function ApprovalCard({
         </div>
         {peek && content && <PreviewBlock text={content} />}
         {reason && <div className="approval-reason">{reason}</div>}
+        <ComplianceBadge compliance={item.compliance} />
       </div>
     );
   }
@@ -287,6 +328,7 @@ export function ApprovalCard({
         !grants.length &&
         shortArgs(item.args) && <div className="approval-rest">{shortArgs(item.args)}</div>}
       {reason && <div className="approval-reason">{reason}</div>}
+      <ComplianceBadge compliance={item.compliance} />
 
       {item.resolved ? (
         <div className="resolved">{t("Approved: {action}", { action: item.resolved.replace("_", " ") })}</div>

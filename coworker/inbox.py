@@ -169,9 +169,29 @@ class InboxStore:
         visibility=VIS_INBOX,
         data=None,
         tool_call_id=None,
+        member_role=None,
+        tool_name=None,
+        arguments=None,
     ) -> InboxItem:
         # `data` carries the automation-run context for standing scoped approvals (§25):
         # {task_id, task_title, standing_target?} — the in-app card's "Allow every time" gate.
+        #
+        # P2 增量: 如果传入了 member_role + tool_name, 自动调用 permission_matrix
+        # 生成合规标注并写入 data.compliance, 前端据此显示资金级别/角色能力/升级路径。
+        data = dict(data or {})
+        if tool_name and member_role is not None:
+            try:
+                from .permission_matrix import annotate_compliance
+                data["compliance"] = annotate_compliance(tool_name, arguments, member_role)
+            except Exception:
+                pass  # 合规标注失败不得阻塞审批流程
+        elif tool_name:
+            # 即使没有角色信息, 也尝试检测金额分级 (纯标注用)
+            try:
+                from .permission_matrix import annotate_compliance
+                data["compliance"] = annotate_compliance(tool_name, arguments, None)
+            except Exception:
+                pass
         return self.add(
             session_id,
             KIND_APPROVAL,
@@ -345,9 +365,18 @@ class InboxStore:
 
 
 # -- approver routing -----------------------------------------------------------
-def inbox_approver(store: InboxStore, session_id: str, *, inbox: str = "default"):
+def inbox_approver(
+    store: InboxStore,
+    session_id: str,
+    *,
+    inbox: str = "default",
+    member_role: Optional[str] = None,
+):
     """An Approver that routes a permission request to the Inbox and suspends until resolved.
     Maps the resolution to an ApprovalOutcome (allow → ONCE, always → ALWAYS_TOOL, else DENY).
+
+    P2 增量: member_role 如果提供, 审批卡会自动带上组织权限矩阵的合规标注
+    (资金分级 / 角色能力 / 升级路径), 辅助人类决策但不阻止。
     """
     from .engine import ApprovalOutcome, PermissionRequest
 
@@ -357,6 +386,9 @@ def inbox_approver(store: InboxStore, session_id: str, *, inbox: str = "default"
             title=f"Run `{request.tool_name}`?",
             body=request.reason or "",
             inbox=inbox,
+            member_role=member_role,
+            tool_name=request.tool_name,
+            arguments=getattr(request, "arguments", None),
         )
         resolution = await store.wait(item.id)
         if resolution == "always":

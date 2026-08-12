@@ -118,6 +118,8 @@ export type Item =
       // context, the card offers "Allow every time" (§25).
       standingTarget?: string;
       resolved?: ApprovalDecision;
+      // P2: 组织权限矩阵合规标注 (从 InboxItem.data.compliance 透传)
+      compliance?: import("./api").ComplianceInfo;
     }
   | {
       kind: "dirreq";

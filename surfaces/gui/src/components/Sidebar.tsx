@@ -148,11 +148,17 @@ interface Props {
   onOpenAudit: () => void;
   onOpenInbox: () => void;
   onOpenOrganization: () => void;
+  onOpenMembers: () => void;
+  onOpenPermissions: () => void;
+  onOpenUsage: () => void;
   scheduledActive: boolean;
   integrationsActive: boolean;
   auditActive: boolean;
   inboxActive: boolean;
   organizationActive: boolean;
+  membersActive: boolean;
+  permissionsActive: boolean;
+  usageActive: boolean;
   // Collapse controls (⌘B / hover-peek). `onCollapse` docks/undocks; `onPeekLeave` hides the
   // floating peek when the pointer leaves the panel.
   collapsed?: boolean;
@@ -379,6 +385,31 @@ export function Sidebar(props: Props) {
           Inbox row's name-includes-the-badge-count nuisance, not repeated). */}
       {trailing != null && <span aria-hidden>{trailing}</span>}
     </button>
+  );
+
+  // A nav row in the sectioned area above the session list (emoji icon + label + optional badge).
+  const navItem = (
+    emoji: string,
+    label: string,
+    onClick: () => void,
+    active?: boolean,
+    testId?: string,
+    trailing?: ReactNode,
+  ) => (
+    <div className="px-2.5 mt-0.5">
+      <button
+        className={
+          "w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-[13px] text-left hover:bg-paper hover:text-ink " +
+          (active ? "text-ink bg-paper" : "text-muted")
+        }
+        data-testid={testId}
+        onClick={onClick}
+      >
+        <span className="text-[14px] shrink-0">{emoji}</span>
+        <span className="flex-1">{label}</span>
+        {trailing}
+      </button>
+    </div>
   );
 
   // Display identity for the account row: the cloud profile only carries the email, so the
@@ -1040,62 +1071,25 @@ export function Sidebar(props: Props) {
         </button>
       </div>
 
-      {/* Automations: a first-class nav row (UX-023) — the account menu keeps its entry.
-          The badge is the cross-automation unseen-run total. */}
-      <div className="px-2.5 mt-1">
-        <button
-          className={
-            "w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-[13px] text-left hover:bg-paper hover:text-ink " +
-            (props.scheduledActive ? "text-ink bg-paper" : "text-muted")
-          }
-          data-testid="nav-automations"
-          onClick={props.onOpenScheduled}
-        >
-          <Icon name="clock" size={15} className="shrink-0" />
-          <span className="flex-1">{t("Automations")}</span>
-        </button>
+      {/* ── 团队蜂群 ── */}
+      <div className="px-3 mt-2 mb-0.5">
+        <span className="text-[10px] font-semibold uppercase tracking-wider text-faint">{t("Team Swarm")}</span>
       </div>
+      {navItem("🏢", t("Organization Home"), props.onOpenOrganization, props.organizationActive, "nav-organization")}
+      {navItem("🐝", t("Multi-agent swarm"), props.onOpenSwarm, props.swarmActive, "nav-swarm")}
+      {navItem("📬", t("Inbox"), props.onOpenInbox, props.inboxActive, "nav-inbox-team", <AttnBadge n={totalAttention} />)}
+      {navItem("👥", t("Members"), props.onOpenMembers, props.membersActive, "nav-members")}
+      {navItem("🔐", t("Permissions"), props.onOpenPermissions, props.permissionsActive, "nav-permissions")}
 
-      {/* Swarm: multi-agent orchestration panel (UX: worker swarm visualization). */}
-      <div className="px-2.5 mt-1">
-        <button
-          className={
-            "w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-[13px] text-left hover:bg-paper hover:text-ink " +
-            (props.swarmActive ? "text-ink bg-paper" : "text-muted")
-          }
-          data-testid="nav-swarm"
-          onClick={props.onOpenSwarm}
-        >
-          <span className="text-[14px]">🐝</span>
-          <span className="flex-1">{t("Multi-agent swarm")}</span>
-        </button>
+      {/* ── 知识资产 ── */}
+      <div className="px-3 mt-2.5 mb-0.5">
+        <span className="text-[10px] font-semibold uppercase tracking-wider text-faint">{t("Knowledge Assets")}</span>
       </div>
-      <div className="px-2.5 mt-1">
-        <button
-          className={
-            "w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-[13px] text-left hover:bg-paper hover:text-ink " +
-            (props.skillsActive ? "text-ink bg-paper" : "text-muted")
-          }
-          data-testid="nav-skills"
-          onClick={props.onOpenSkills}
-        >
-          <span className="text-[14px]">🧩</span>
-          <span className="flex-1">{t("Skill marketplace")}</span>
-        </button>
-      </div>
-      <div className="px-2.5 mt-1">
-        <button
-          className={
-            "w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-[13px] text-left hover:bg-paper hover:text-ink " +
-            (props.knowledgeActive ? "text-ink bg-paper" : "text-muted")
-          }
-          data-testid="nav-knowledge"
-          onClick={props.onOpenKnowledge}
-        >
-          <span className="text-[14px]">📚</span>
-          <span className="flex-1">{t("Knowledge library")}</span>
-        </button>
-      </div>
+      {navItem("📚", t("Knowledge library"), props.onOpenKnowledge, props.knowledgeActive, "nav-knowledge")}
+      {navItem("🧩", t("Skill marketplace"), props.onOpenSkills, props.skillsActive, "nav-skills")}
+      {navItem("📅", t("Automations"), props.onOpenScheduled, props.scheduledActive, "nav-automations")}
+      {navItem("📦", t("Connectors"), props.onOpenIntegrations, props.integrationsActive, "nav-integrations")}
+      {navItem("📊", t("Usage"), props.onOpenUsage, props.usageActive, "nav-usage")}
       <div className="flex-1 overflow-y-auto px-2.5 mt-3 pb-2">
         <div className="space-y-4">
           {pinnedBand()}
@@ -1231,7 +1225,6 @@ export function Sidebar(props: Props) {
                   <AttnBadge n={totalAttention} />,
                 )}
                 {appMenuItem("plug", t("Connectors"), props.onOpenIntegrations, props.integrationsActive)}
-                {appMenuItem("diamond", t("Organization"), props.onOpenOrganization, props.organizationActive)}
                 <div className="h-px bg-line my-1 mx-2" />
                 {appMenuItem(
                   "gear",

@@ -496,6 +496,9 @@ def create_app(manager: SessionManager) -> FastAPI:
                 ),
                 # P0 增量1: shared stigmergic load field — batch sizes adapt to it.
                 pheromone=manager.pheromone,
+                # P1 增量: optional agent pool + task group id.
+                agent_pool=getattr(manager, "agent_pool", None),
+                task_group_id=body.get("task_group_id") or None,
             )
 
         async def _finalize(orch: "Orchestrator") -> dict[str, Any]:
@@ -1261,6 +1264,116 @@ def create_app(manager: SessionManager) -> FastAPI:
     def pheromone_status() -> dict[str, Any]:
         """Stigmergic load field: busy signals per executor role + total load."""
         return manager.pheromone_status()
+
+    # -- P1 团队 / Agent 状态池 / 任务组生命周期 API ----------------------------
+    @app.get("/v1/team")
+    def team_info(name: str = "My Team") -> dict[str, Any]:
+        return manager.team_info(name_hint=name)
+
+    @app.get("/v1/team/members")
+    def list_team_members() -> list[dict]:
+        return manager.list_members()
+
+    @app.post("/v1/team/members")
+    def add_team_member(body: dict) -> dict:
+        name = str((body or {}).get("name") or "").strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="name required")
+        return manager.add_member(
+            name=name,
+            role=str((body or {}).get("role") or "worker"),
+            persona_id=(body or {}).get("persona_id"),
+        )
+
+    @app.patch("/v1/team/members/{member_id}")
+    def update_team_member(member_id: str, body: dict) -> dict:
+        return manager.update_member(member_id, **(body or {}))
+
+    @app.delete("/v1/team/members/{member_id}")
+    def remove_team_member(member_id: str) -> dict:
+        return manager.remove_member(member_id)
+
+    @app.get("/v1/team/agents")
+    def list_team_agents() -> list[dict]:
+        return manager.list_agents()
+
+    @app.post("/v1/team/agents")
+    def add_team_agent(body: dict) -> dict:
+        body = body or {}
+        role = str(body.get("role") or "worker").strip() or "worker"
+        return manager.add_agent(role, persona_id=str(body.get("persona_id") or role))
+
+    @app.delete("/v1/team/agents/{agent_id}")
+    def remove_team_agent(agent_id: str) -> dict:
+        return manager.remove_agent(agent_id)
+
+    @app.get("/v1/team/agents/load")
+    def team_agent_load() -> dict[str, Any]:
+        return manager.agent_load()
+
+    @app.get("/v1/team/task-groups")
+    def list_team_task_groups(include_dissolved: bool = False) -> list[dict]:
+        return manager.list_task_groups(include_dissolved=include_dissolved)
+
+    @app.post("/v1/team/task-groups")
+    def create_team_task_group(body: dict) -> dict:
+        body = body or {}
+        goal = str(body.get("goal") or "").strip()
+        if not goal:
+            raise HTTPException(status_code=400, detail="goal required")
+        return manager.create_task_group(
+            goal,
+            owner_member=body.get("owner_member"),
+            member_ids=body.get("member_ids") or None,
+            agent_ids=body.get("agent_ids") or None,
+            group_id=body.get("group_id") or None,
+        )
+
+    @app.post("/v1/team/task-groups/{group_id}/transition")
+    def transition_task_group(group_id: str, body: dict) -> dict:
+        new_state = str((body or {}).get("state") or "").strip()
+        if not new_state:
+            raise HTTPException(status_code=400, detail="state required")
+        try:
+            return manager._team_lifecycle.transition(group_id, new_state)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+
+    @app.post("/v1/team/task-groups/{group_id}/dissolve")
+    def dissolve_task_group_post(group_id: str) -> dict:
+        try:
+            return manager.dissolve_task_group(group_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+
+    # -- P2 权限矩阵 × inbox 审批合规标注 --------------------------------------
+    @app.get("/v1/inbox/compliance")
+    def inbox_compliance() -> dict[str, Any]:
+        """Batch compliance annotation for all pending approval items.
+        Returns each item's fund tier, role capability check, and escalation path."""
+        return manager.inbox_compliance_view()
+
+    @app.post("/v1/inbox/{item_id}/annotate")
+    def annotate_inbox_item(item_id: str, body: dict) -> dict[str, Any]:
+        """Manually annotate an inbox item with compliance info (e.g. when the
+        member role was unknown at creation time and has since been set)."""
+        from ..permission_matrix import annotate_compliance
+
+        item = manager.inbox.get(item_id)
+        if item is None:
+            raise HTTPException(status_code=404, detail="item not found")
+        tool_name = (body or {}).get("tool_name") or item.title.replace("Run `", "").replace("`?", "")
+        arguments = (body or {}).get("arguments")
+        member_role = (body or {}).get("member_role") or manager._get_my_member_role()
+        compliance = annotate_compliance(tool_name, arguments, member_role)
+        # Write back to the item's data
+        if item.data is None:
+            item.data = {}
+        item.data["compliance"] = compliance
+        manager.inbox._save()
+        return {"item_id": item_id, "compliance": compliance}
 
     # -- P0 增量3: 组织级权限矩阵 ---------------------------------------------
     @app.get("/v1/permission-matrix")

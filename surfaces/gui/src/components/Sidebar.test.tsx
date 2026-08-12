@@ -71,6 +71,12 @@ const baseProps = {
   inboxActive: false,
         onOpenOrganization: vi.fn(),
         organizationActive: false,
+  onOpenMembers: vi.fn(),
+  onOpenPermissions: vi.fn(),
+  onOpenUsage: vi.fn(),
+  membersActive: false,
+  permissionsActive: false,
+  usageActive: false,
 };
 
 afterEach(() => {
