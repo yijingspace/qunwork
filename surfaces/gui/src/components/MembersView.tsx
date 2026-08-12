@@ -1,17 +1,68 @@
 import { useEffect, useState } from "react";
 import { useT } from "../i18n";
-import { listMembers, listAgents, type Member, type AgentInstance } from "../api";
+import {
+  addAgent,
+  addMember,
+  listAgents,
+  listMembers,
+  removeAgent,
+  removeMember,
+  updateMember,
+  type AgentInstance,
+  type Member,
+} from "../api";
+
+const VALID_ROLES: Array<Member["role"]> = [
+  "worker",
+  "gm",
+  "reviewer",
+  "auditor",
+  "critic",
+  "scheduler",
+  "chairman",
+  "board",
+];
 
 /**
- * Members page (team swarm section): member roster + Agent instance pool.
- * Phase 0: read-only display with graceful empty-state (single-machine mode
- * shows "no team members yet"). Phase 1 will add add/remove/scale controls.
+ * Members page: member roster + Agent instance pool — **now interactive**.
+ *
+ * Members:
+ *   - Add member (name + role dropdown) → POST /v1/team/members
+ *   - Remove member → DELETE /v1/team/members/:id
+ *   - Change role inline via select → PATCH /v1/team/members/:id
+ *
+ * Agents:
+ *   - Scale up (role select → add) → POST /v1/team/agents
+ *   - Remove/downsize agent → DELETE /v1/team/agents/:id
+ *
+ * Every mutation optimistically updates state + then re-fetches to reconcile,
+ * since the server may choose to sanitize names/IDs.
  */
 export function MembersView() {
   const t = useT();
   const [members, setMembers] = useState<Member[] | null>(null);
   const [agents, setAgents] = useState<AgentInstance[] | null>(null);
   const [err, setErr] = useState<string | null>(null);
+
+  // --- member form ---
+  const [newName, setNewName] = useState("");
+  const [newRole, setNewRole] = useState<Member["role"]>("worker");
+  const [savingMember, setSavingMember] = useState(false);
+
+  // --- agent form ---
+  const [newAgentRole, setNewAgentRole] = useState<AgentInstance["role"]>("worker");
+  const [savingAgent, setSavingAgent] = useState(false);
+
+  const reload = () => {
+    Promise.allSettled([listMembers(), listAgents()]).then(([m, a]) => {
+      if (m.status === "fulfilled") setMembers(m.value);
+      else setMembers([]);
+      if (a.status === "fulfilled") setAgents(a.value);
+      else setAgents([]);
+      if (m.status === "rejected" && a.status === "rejected")
+        setErr(t("Team features require the team module (Phase 1)."));
+    });
+  };
 
   useEffect(() => {
     let alive = true;
@@ -26,6 +77,47 @@ export function MembersView() {
     });
     return () => { alive = false; };
   }, [t]);
+
+  const onAddMember = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const name = newName.trim();
+    if (!name || savingMember) return;
+    setSavingMember(true);
+    try {
+      await addMember(name, newRole);
+      setNewName("");
+    } finally {
+      setSavingMember(false);
+      reload();
+    }
+  };
+
+  const onRemoveMember = async (id: string) => {
+    await removeMember(id);
+    reload();
+  };
+
+  const onChangeMemberRole = async (id: string, role: Member["role"]) => {
+    await updateMember(id, { role });
+    reload();
+  };
+
+  const onAddAgent = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (savingAgent) return;
+    setSavingAgent(true);
+    try {
+      await addAgent(newAgentRole);
+    } finally {
+      setSavingAgent(false);
+      reload();
+    }
+  };
+
+  const onRemoveAgent = async (id: string) => {
+    await removeAgent(id);
+    reload();
+  };
 
   return (
     <div className="h-full overflow-y-auto">
@@ -46,7 +138,37 @@ export function MembersView() {
 
       {/* 成员列表 */}
       <div className="mt-5 rounded-xl2 border border-line bg-panel p-4">
-        <div className="text-[14px] font-semibold mb-3">{t("Team Members")}</div>
+        <div className="flex items-center justify-between mb-3">
+          <div className="text-[14px] font-semibold">{t("Team Members")}</div>
+        </div>
+
+        {/* Invite form */}
+        <form onSubmit={onAddMember} className="mb-4 flex gap-2">
+          <input
+            type="text"
+            value={newName}
+            onChange={(e) => setNewName(e.target.value)}
+            placeholder={t("Member name")}
+            className="flex-1 min-w-0 rounded-lg border border-line bg-paper px-3 py-1.5 text-[13px] outline-none focus:border-accent"
+          />
+          <select
+            value={newRole}
+            onChange={(e) => setNewRole(e.target.value as Member["role"])}
+            className="rounded-lg border border-line bg-paper px-2 py-1.5 text-[13px] outline-none focus:border-accent"
+          >
+            {VALID_ROLES.map((r) => (
+              <option key={r} value={r}>{t(r)}</option>
+            ))}
+          </select>
+          <button
+            type="submit"
+            disabled={!newName.trim() || savingMember}
+            className="rounded-lg bg-accent text-white px-3 py-1.5 text-[12.5px] font-medium disabled:opacity-40"
+          >
+            {savingMember ? "…" : t("Invite")}
+          </button>
+        </form>
+
         {!members ? (
           <div className="text-[13px] text-faint">{t("Loading…")}</div>
         ) : members.length === 0 ? (
@@ -61,13 +183,26 @@ export function MembersView() {
                 <th className="py-1.5 font-medium">{t("Role")}</th>
                 <th className="py-1.5 font-medium">{t("Status")}</th>
                 <th className="py-1.5 font-medium">{t("Current task")}</th>
+                <th className="py-1.5 font-medium w-[70px]" />
               </tr>
             </thead>
             <tbody>
               {members.map((m) => (
                 <tr key={m.id} className="border-b border-line/50">
                   <td className="py-2">{m.name}</td>
-                  <td className="py-2">{t(m.role)}</td>
+                  <td className="py-2">
+                    <select
+                      value={m.role}
+                      onChange={(e) =>
+                        onChangeMemberRole(m.id, e.target.value as Member["role"])
+                      }
+                      className="rounded-md border border-line bg-paper px-1.5 py-0.5 text-[12px] outline-none focus:border-accent"
+                    >
+                      {VALID_ROLES.map((r) => (
+                        <option key={r} value={r}>{t(r)}</option>
+                      ))}
+                    </select>
+                  </td>
                   <td className="py-2">
                     <span className={m.status === "online" ? "text-ok" : "text-faint"}>
                       {m.status === "online" ? "● " : "○ "}
@@ -75,6 +210,15 @@ export function MembersView() {
                     </span>
                   </td>
                   <td className="py-2 text-muted">{m.current_task_group || "—"}</td>
+                  <td className="py-2 text-right">
+                    <button
+                      onClick={() => onRemoveMember(m.id)}
+                      className="rounded-md border border-line px-2 py-0.5 text-[11.5px] text-danger hover:bg-danger/10"
+                      title={t("Remove")}
+                    >
+                      {t("Remove")}
+                    </button>
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -84,7 +228,29 @@ export function MembersView() {
 
       {/* Agent 实例池 */}
       <div className="mt-4 rounded-xl2 border border-line bg-panel p-4">
-        <div className="text-[14px] font-semibold mb-3">{t("Agent Pool")}</div>
+        <div className="flex items-center justify-between mb-3">
+          <div className="text-[14px] font-semibold">{t("Agent Pool")}</div>
+        </div>
+
+        <form onSubmit={onAddAgent} className="mb-4 flex gap-2">
+          <select
+            value={newAgentRole}
+            onChange={(e) => setNewAgentRole(e.target.value as AgentInstance["role"])}
+            className="flex-1 min-w-0 rounded-lg border border-line bg-paper px-3 py-1.5 text-[13px] outline-none focus:border-accent"
+          >
+            {VALID_ROLES.map((r) => (
+              <option key={r} value={r}>{t("Add Agent")} · {t(r)}</option>
+            ))}
+          </select>
+          <button
+            type="submit"
+            disabled={savingAgent}
+            className="rounded-lg bg-accent text-white px-3 py-1.5 text-[12.5px] font-medium disabled:opacity-40"
+          >
+            {savingAgent ? "…" : t("Scale up")}
+          </button>
+        </form>
+
         {!agents ? (
           <div className="text-[13px] text-faint">{t("Loading…")}</div>
         ) : agents.length === 0 ? (
@@ -99,6 +265,7 @@ export function MembersView() {
                 <th className="py-1.5 font-medium">{t("Role")}</th>
                 <th className="py-1.5 font-medium">{t("State")}</th>
                 <th className="py-1.5 font-medium">{t("Load")}</th>
+                <th className="py-1.5 font-medium w-[70px]" />
               </tr>
             </thead>
             <tbody>
@@ -115,6 +282,16 @@ export function MembersView() {
                     </span>
                   </td>
                   <td className="py-2">{Math.round(a.load * 100)}%</td>
+                  <td className="py-2 text-right">
+                    <button
+                      onClick={() => onRemoveAgent(a.id)}
+                      disabled={a.state === "working"}
+                      className="rounded-md border border-line px-2 py-0.5 text-[11.5px] text-danger hover:bg-danger/10 disabled:opacity-40"
+                      title={t("Remove")}
+                    >
+                      {t("Remove")}
+                    </button>
+                  </td>
                 </tr>
               ))}
             </tbody>

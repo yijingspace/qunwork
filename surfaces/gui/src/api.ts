@@ -2696,6 +2696,37 @@ export async function listMembers(): Promise<Member[]> {
   }
 }
 
+export async function addMember(
+  name: string,
+  role: Member["role"] = "worker",
+): Promise<Member> {
+  const res = await fetch(`${httpBase()}/v1/team/members`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name, role }),
+  });
+  return await res.json();
+}
+
+export async function updateMember(
+  id: string,
+  fields: Partial<{ role: Member["role"]; status: string; current_task_group: string }>,
+): Promise<{ ok: boolean }> {
+  const res = await fetch(`${httpBase()}/v1/team/members/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(fields),
+  });
+  return await res.json();
+}
+
+export async function removeMember(id: string): Promise<{ ok: boolean }> {
+  const res = await fetch(`${httpBase()}/v1/team/members/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  });
+  return await res.json();
+}
+
 export async function listAgents(): Promise<AgentInstance[]> {
   try {
     const res = await fetch(`${httpBase()}/v1/team/agents`);
@@ -2706,14 +2737,70 @@ export async function listAgents(): Promise<AgentInstance[]> {
   }
 }
 
-export async function listTaskGroups(): Promise<TaskGroup[]> {
+export async function addAgent(
+  role: AgentInstance["role"] = "worker",
+  persona_id?: string,
+): Promise<AgentInstance> {
+  const res = await fetch(`${httpBase()}/v1/team/agents`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ role, persona_id: persona_id ?? role }),
+  });
+  return await res.json();
+}
+
+export async function removeAgent(id: string): Promise<{ ok: boolean; id: string }> {
+  const res = await fetch(`${httpBase()}/v1/team/agents/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  });
+  return await res.json();
+}
+
+export async function getAgentLoad(): Promise<Record<string, number>> {
+  const res = await fetch(`${httpBase()}/v1/team/agents/load`);
+  return await res.json();
+}
+
+export async function listTaskGroups(include_dissolved = false): Promise<TaskGroup[]> {
   try {
-    const res = await fetch(`${httpBase()}/v1/team/task-groups`);
+    const res = await fetch(
+      `${httpBase()}/v1/team/task-groups?include_dissolved=${include_dissolved ? "1" : "0"}`,
+    );
     if (!res.ok) return [];
     return await res.json();
   } catch {
     return [];
   }
+}
+
+export async function createTaskGroup(params: {
+  goal: string;
+  owner_member?: string;
+  member_ids?: string[];
+  agent_ids?: string[];
+  group_id?: string;
+}): Promise<TaskGroup> {
+  const res = await fetch(`${httpBase()}/v1/team/task-groups`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(params),
+  });
+  return await res.json();
+}
+
+export async function transitionTaskGroup(
+  id: string,
+  state: string,
+): Promise<TaskGroup> {
+  const res = await fetch(
+    `${httpBase()}/v1/team/task-groups/${encodeURIComponent(id)}/transition`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ state }),
+    },
+  );
+  return await res.json();
 }
 
 export async function dissolveTaskGroup(id: string): Promise<{ ok: boolean }> {

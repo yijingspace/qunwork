@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import { useT } from "../i18n";
 import {
+  createTaskGroup,
+  dissolveTaskGroup,
   getInbox,
   getOrchestrateHistory,
   getTeam,
@@ -11,6 +13,7 @@ import {
   listSwarmTemplates,
   listTaskGroups,
   rhythmForecast,
+  transitionTaskGroup,
   type Member,
   type OrchestrationHistoryItem,
   type RhythmForecast,
@@ -25,10 +28,23 @@ import {
 } from "./SettingsView";
 import { SyncIndicator } from "./SyncIndicator";
 
+const NEXT_STATE: Record<string, string[]> = {
+  forming: ["active", "dissolved"],
+  active: ["reviewing", "dissolved"],
+  reviewing: ["active", "dissolved"],
+  fault: ["active", "dissolved"],
+  dissolved: [],
+};
+
 /**
  * Organization page (home nav): the org's asset network at a glance.
  * Everything here also lives in Settings ▸ General — this page is the trust
  * surface: "your organization runs here, and here is what it remembers."
+ *
+ * P2 (不再是占位符): Active Swarms 卡片支持:
+ *   - 创建新蜂群 (goal → forming)
+ *   - 状态 transition (forming → active → reviewing → dissolved)
+ *   - 解散蜂群 (dissolve, 释放 agent + 归档到知识)
  */
 export function OrganizationView() {
   const t = useT();
@@ -44,6 +60,20 @@ export function OrganizationView() {
   const [members, setMembers] = useState<Member[]>([]);
   const [taskGroups, setTaskGroups] = useState<TaskGroup[]>([]);
   const [pendingInbox, setPendingInbox] = useState(0);
+
+  // Create swarm form state
+  const [newGoal, setNewGoal] = useState("");
+  const [creating, setCreating] = useState(false);
+  // Which swarm is having the dissolve-confirmation shown?
+  const [dissolvingId, setDissolvingId] = useState<string | null>(null);
+  // busy transitioning {groupId: true}
+  const [busyGroups, setBusyGroups] = useState<Record<string, boolean>>({});
+
+  const reloadGroups = () => {
+    listTaskGroups().then((tg) => {
+      setTaskGroups(tg.filter((g) => g.state !== "dissolved"));
+    }).catch(() => setTaskGroups([]));
+  };
 
   useEffect(() => {
     let alive = true;
@@ -68,12 +98,41 @@ export function OrganizationView() {
     // Team data (Phase 0: gracefully empty when team module not yet loaded)
     getTeam().then((ti) => { if (alive) setTeam(ti); }).catch(() => {});
     listMembers().then((ms) => { if (alive) setMembers(ms); }).catch(() => {});
-    listTaskGroups().then((tg) => { if (alive && tg.length) setTaskGroups(tg.filter((g) => g.state !== "dissolved")); }).catch(() => {});
+    listTaskGroups().then((tg) => { if (alive) setTaskGroups(tg.filter((g) => g.state !== "dissolved")); }).catch(() => {});
     getInbox().then((items) => { if (alive) setPendingInbox(items?.length ?? 0); }).catch(() => {});
     return () => {
       alive = false;
     };
   }, []);
+
+  const onCreateSwarm = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const goal = newGoal.trim();
+    if (!goal || creating) return;
+    setCreating(true);
+    try {
+      await createTaskGroup({ goal });
+      setNewGoal("");
+    } finally {
+      setCreating(false);
+      reloadGroups();
+    }
+  };
+
+  const onTransition = async (gid: string, next: string) => {
+    if (busyGroups[gid]) return;
+    setBusyGroups((b) => ({ ...b, [gid]: true }));
+    try {
+      if (next === "dissolved") {
+        await dissolveTaskGroup(gid);
+      } else {
+        await transitionTaskGroup(gid, next);
+      }
+    } finally {
+      setBusyGroups((b) => { const n = { ...b }; delete n[gid]; return n; });
+      reloadGroups();
+    }
+  };
 
   const rhythmLabel = (r: string) =>
     r === "weekly" ? t("Weekly rhythm") : r === "daily" ? t("Daily rhythm") : r === "monthly" ? t("Monthly rhythm") : r === "irregular" ? t("Irregular — no dominant cadence yet") : r;
@@ -137,31 +196,102 @@ export function OrganizationView() {
         ))}
       </div>
 
-      {/* Active Swarms */}
+      {/* Active Swarms — interactive */}
       <div className="rounded-xl2 border border-line bg-panel p-4 mb-4">
-        <div className="text-[14px] font-semibold mb-2.5 flex items-center gap-2">
-          <span>🐝</span> {t("Active Swarms")}
+        <div className="text-[14px] font-semibold mb-2.5 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <span>🐝</span> {t("Active Swarms")}
+          </div>
         </div>
+
+        {/* Create new swarm form */}
+        <form onSubmit={onCreateSwarm} className="mb-4 flex gap-2">
+          <input
+            type="text"
+            value={newGoal}
+            onChange={(e) => setNewGoal(e.target.value)}
+            placeholder={t("Description of what this swarm should achieve")}
+            className="flex-1 min-w-0 rounded-lg border border-line bg-paper px-3 py-2 text-[13px] outline-none focus:border-accent"
+          />
+          <button
+            type="submit"
+            disabled={!newGoal.trim() || creating}
+            className="rounded-lg bg-accent text-white px-3 py-2 text-[12.5px] font-medium disabled:opacity-40 shrink-0"
+          >
+            {creating ? "…" : t("Create new swarm")}
+          </button>
+        </form>
+
         {taskGroups.length === 0 ? (
           <div className="text-[13px] text-faint">{t("No active swarms.")}</div>
         ) : (
-          <div className="space-y-2">
-            {taskGroups.map((g) => (
-              <div key={g.group_id} className="flex items-center gap-2 text-[13px]">
-                <span className={
-                  "shrink-0 px-1.5 py-px rounded text-[10.5px] " +
-                  (g.state === "active" ? "bg-accentSoft text-accent" :
-                   g.state === "forming" ? "bg-warnSoft text-warnInk" :
-                   "bg-faint/20 text-faint")
-                }>
-                  {g.state}
-                </span>
-                <span className="truncate text-ink">{g.goal}</span>
-                <span className="ml-auto text-faint shrink-0 font-mono text-[10.5px]">
-                  {g.member_ids.length} {t("Members")}
-                </span>
-              </div>
-            ))}
+          <div className="space-y-2.5">
+            {taskGroups.map((g) => {
+              const groupId = g.group_id;
+              const busy = busyGroups[groupId];
+              const nextStates = NEXT_STATE[g.state] ?? [];
+              return (
+                <div key={groupId} className="border border-line rounded-lg px-3 py-2">
+                  <div className="flex items-center gap-2 text-[13px]">
+                    <span className={
+                      "shrink-0 px-1.5 py-px rounded text-[10.5px] " +
+                      (g.state === "active" ? "bg-accentSoft text-accent" :
+                       g.state === "forming" ? "bg-warnSoft text-warnInk" :
+                       "bg-faint/20 text-faint")
+                    }>
+                      {busy ? t("Dissolving…") : g.state}
+                    </span>
+                    <span className="truncate text-ink flex-1 min-w-0">{g.goal}</span>
+                    <span className="text-faint shrink-0 font-mono text-[10.5px]">
+                      {g.member_ids.length} {t("Members")}
+                    </span>
+                  </div>
+                  {/* State transition actions */}
+                  <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                    {nextStates.filter((s) => s !== "dissolved").map((next) => (
+                      <button
+                        key={next}
+                        onClick={() => onTransition(groupId, next)}
+                        disabled={busy}
+                        className="rounded-md border border-line px-2 py-0.5 text-[11.5px] hover:bg-paper disabled:opacity-40"
+                      >
+                        → {next}
+                      </button>
+                    ))}
+                    {nextStates.includes("dissolved") && dissolvingId !== groupId && (
+                      <button
+                        onClick={() => setDissolvingId(groupId)}
+                        disabled={busy}
+                        className="rounded-md border border-line px-2 py-0.5 text-[11.5px] text-danger hover:bg-danger/10 disabled:opacity-40"
+                      >
+                        {t("Dissolve swarm")}
+                      </button>
+                    )}
+                    {dissolvingId === groupId && (
+                      <>
+                        <span className="text-[11.5px] text-danger">
+                          {t("Dissolve this swarm?")}
+                        </span>
+                        <button
+                          onClick={() => onTransition(groupId, "dissolved")}
+                          disabled={busy}
+                          className="rounded-md bg-danger text-white px-2 py-0.5 text-[11.5px] disabled:opacity-40"
+                        >
+                          {busy ? "…" : t("Dissolve")}
+                        </button>
+                        <button
+                          onClick={() => setDissolvingId(null)}
+                          disabled={busy}
+                          className="rounded-md border border-line px-2 py-0.5 text-[11.5px] disabled:opacity-40"
+                        >
+                          ×
+                        </button>
+                      </>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
           </div>
         )}
       </div>

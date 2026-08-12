@@ -1046,10 +1046,12 @@ export function Sidebar(props: Props) {
             <Icon name="sidebar" size={16} />
           </button>
         )}
-        <div className="brand-wordmark text-[15px]">
-          <img src={qunworkMark} alt="QunWork" className="brand-logo" /> QunWork<span className="beta-tag">BETA</span>
+        <div className="flex flex-col min-w-0">
+          <div className="brand-wordmark text-[15px]">
+            <img src={qunworkMark} alt="QunWork" className="brand-logo" /> QunWork<span className="beta-tag">BETA</span>
+          </div>
+          <div className="brand-slogan">{t("QunWork — collaboration, naturally.")}</div>
         </div>
-        <div className="brand-slogan">{t("QunWork — collaboration, naturally.")}</div>
       </div>
 
       {/* New session: split button — primary starts the last-used persona; ▾ picks a specific one. */}
