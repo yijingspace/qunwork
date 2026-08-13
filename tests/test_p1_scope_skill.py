@@ -37,8 +37,10 @@ def test_get_tool_scopes():
     assert get_tool_scopes("load_skill") == []
     # MCP 工具
     scopes = get_tool_scopes("mcp__myserver__some_tool")
-    # 未声明的 MCP 工具默认 read:default
-    assert scopes == ["read:default"]
+    # 未声明的 MCP 工具默认 write:default → 零信任 fail-closed (需审批)
+    assert scopes == ["write:default"]
+    # 未声明的连接器工具同样 fail-closed
+    assert get_tool_scopes("newconn__do_thing") == ["write:default"]
     # connector 解析
     assert parse_connector_from_tool("github__create_pr") == "github"
     assert parse_connector_from_tool("mcp__myserver__tool") == "myserver"
@@ -272,3 +274,47 @@ def test_emergence_to_skill_generation():
         assert skill.source == "hornet_emergence"
         assert skill.version == "0.0.1"
         assert "emergence" in skill.tags
+
+
+# -- security-review 修复回归 (MEDIUM-1 脱敏 / MEDIUM-2 scope fail-closed) ----
+import os
+
+def test_decision_trace_redacts_sensitive_args(tmp_path):
+    """工具参数中的密钥/内容不得明文进入决策轨迹(内存 + audit 镜像)。"""
+    from coworker.engine import TurnEngine
+    from coworker.providers import AssistantTurn
+
+    class _P:
+        def complete(self, **kw):
+            return AssistantTurn(text="ok")
+        def capabilities(self, model):
+            return None
+
+    engine = TurnEngine(
+        provider=_P(), registry=None, permissions=None,  # type: ignore[arg-type]
+        model="m",
+    )
+    engine._record_decision(
+        "tool_selection",
+        tool="write_file",
+        arguments={"path": "secret.txt", "api_key": "sk-abc123", "content": "x" * 500},
+        candidates=[{"name": "write_file", "arguments": {"password": "hunter2"}}],
+    )
+    entry = engine.decision_trace[-1]
+    assert entry["arguments"]["api_key"] == "***"
+    assert entry["arguments"]["content"] != "x" * 500  # 截断
+    assert "hunter2" not in str(entry)  # 嵌套 candidates 也脱敏
+    assert "sk-abc123" not in str(entry)
+
+
+def test_scope_undeclared_tool_is_fail_closed(tmp_path):
+    """MCP/未声明连接器工具默认 write 级 → 未配置 persona 升级审批(零信任)。"""
+    from coworker.connector_scopes import PersonaScopeStore, check_scope
+
+    store = PersonaScopeStore(tmp_path / "scopes.db")
+    dec = check_scope("gm", "mcp__myserver__tool", store)
+    assert dec.allowed is False and dec.needs_approval is True
+    dec2 = check_scope("gm", "newconn__do_thing", store)
+    assert dec2.allowed is False and dec2.needs_approval is True
+    # 内置工具仍无 scope 约束
+    assert check_scope("gm", "load_skill", store).allowed is True

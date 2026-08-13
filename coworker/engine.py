@@ -901,6 +901,29 @@ class TurnEngine:
             pass
 
     # -- 13 Agent 影子模式: 决策回放 -------------------------------------------
+    # 敏感参数脱敏: 工具参数可能含 write_file 内容 / API 密钥类字段 —
+    # 决策轨迹(内存 + audit 镜像 + HTTP 出口)不得以明文携带。
+    _SENSITIVE_ARG_KEYS = (
+        "key", "token", "secret", "password", "authorization",
+        "credential", "api_key", "access_token", "refresh_token",
+    )
+
+    @staticmethod
+    def _redact_args(value: Any) -> Any:
+        if isinstance(value, dict):
+            out: dict[str, Any] = {}
+            for k, v in value.items():
+                if any(s in k.lower() for s in TurnEngine._SENSITIVE_ARG_KEYS):
+                    out[k] = "***"
+                elif isinstance(v, str) and len(v) > 200:
+                    out[k] = v[:200] + "…(truncated)"
+                else:
+                    out[k] = TurnEngine._redact_args(v)
+            return out
+        if isinstance(value, list):
+            return [TurnEngine._redact_args(v) for v in value]
+        return value
+
     def _record_decision(self, kind: str, **fields: Any) -> None:
         """追加一条决策轨迹 entry。
 
@@ -912,16 +935,20 @@ class TurnEngine:
           - plan_decision / directory_decision / question_decision: 交互式工具结果
 
         每条 entry 含: ts / iteration / kind / agent / session_id (来自 audit_context)
-        + 调用方提供的 fields。同时镜像写入 audit_sink (stage=decision_trace) 以便
-        离线审计 (engine 实例销毁后仍可查询)。
+        + 调用方提供的 fields。工具参数类字段(arguments/candidates)递归脱敏后
+        再落内存轨迹与 audit 镜像, 避免明文敏感内容进入可回放/可查询的轨迹。
         """
+        redacted = {
+            k: (self._redact_args(v) if k in ("arguments", "candidates", "entry_args") else v)
+            for k, v in fields.items()
+        }
         entry: dict[str, Any] = {
             "ts": time.time(),
             "iteration": self._iterations,
             "kind": kind,
             "agent": self.audit_context.get("agent", ""),
             "session_id": self.audit_context.get("session_id", ""),
-            **fields,
+            **redacted,
         }
         self.decision_trace.append(entry)
         # 镜像到 audit_events 表 (stage=decision_trace) — 离线审计与 engine 解耦。

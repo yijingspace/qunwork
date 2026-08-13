@@ -154,7 +154,9 @@ def get_tool_scopes(tool_name: str) -> list[str]:
         return []
 
     scopes = CONNECTOR_SCOPES.get(connector, {})
-    return scopes.get(tool, ["read:default"])
+    # fail-closed (零信任): 未在 CONNECTOR_SCOPES 声明的工具(含所有 MCP 工具、
+    # 新连接器)默认 write 级 → check_scope 升级为审批, 而非静默放行。
+    return scopes.get(tool, ["write:default"])
 
 
 def parse_connector_from_tool(tool_name: str) -> Optional[str]:
