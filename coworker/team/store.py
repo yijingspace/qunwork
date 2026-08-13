@@ -110,6 +110,27 @@ class TeamStore:
                     dissolved_at REAL
                 )"""
             )
+            # P2P 同步变更日志 (TeamSync outbox/inbox)。
+            # change_id 全局唯一(作者前缀) → 去重; ts 用于 LWW 合并。
+            self._db.execute(
+                """CREATE TABLE IF NOT EXISTS sync_changes (
+                    change_id TEXT PRIMARY KEY,
+                    entity_type TEXT NOT NULL,
+                    entity_id TEXT NOT NULL,
+                    op TEXT NOT NULL,
+                    payload TEXT NOT NULL,
+                    ts REAL NOT NULL,
+                    author TEXT NOT NULL,
+                    synced INTEGER NOT NULL DEFAULT 0
+                )"""
+            )
+            # 同步配置: peer 端点 + 上次同步时间
+            self._db.execute(
+                """CREATE TABLE IF NOT EXISTS sync_config (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                )"""
+            )
             self._db.commit()
 
     # ── Team identity -------------------------------------------------------
@@ -371,6 +392,112 @@ class TeamStore:
             "sync_status": "single",
             "last_sync": None,
         }
+
+    # ── P2P sync (TeamSync outbox / config) ----------------------------------
+    def record_sync_change(
+        self,
+        entity_type: str,
+        entity_id: str,
+        op: str,
+        payload: dict,
+        *,
+        author: str = "local",
+        change_id: Optional[str] = None,
+        ts: Optional[float] = None,
+    ) -> str:
+        """Append one change to the outbox. Returns its change_id."""
+        cid = change_id or f"{author}:{uuid.uuid4().hex[:12]}"
+        now = ts if ts is not None else _now()
+        with self._lock:
+            self._db.execute(
+                """INSERT OR REPLACE INTO sync_changes(change_id,entity_type,entity_id,op,payload,ts,author,synced)
+                   VALUES (?,?,?,?,?,?,?,0)""",
+                (cid, entity_type, entity_id, op, _json_dumps(payload), now, author),
+            )
+            self._db.commit()
+        return cid
+
+    def pending_sync_changes(self, limit: int = 500) -> list[dict]:
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT change_id,entity_type,entity_id,op,payload,ts,author FROM sync_changes WHERE synced=0 ORDER BY ts LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [
+            {
+                "change_id": r[0], "entity_type": r[1], "entity_id": r[2],
+                "op": r[3], "payload": _json_loads(r[4], {}), "ts": r[5], "author": r[6],
+            }
+            for r in rows
+        ]
+
+    def mark_sync_changes_synced(self, change_ids: list[str]) -> int:
+        if not change_ids:
+            return 0
+        with self._lock:
+            cur = self._db.executemany(
+                "UPDATE sync_changes SET synced=1 WHERE change_id=?",
+                [(cid,) for cid in change_ids],
+            )
+            self._db.commit()
+        return cur.rowcount
+
+    def list_sync_changes(self, after_id: int = 0, limit: int = 500) -> list[dict]:
+        """Full ordered change log (for a peer pulling our outbox)."""
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT change_id,entity_type,entity_id,op,payload,ts,author FROM sync_changes WHERE change_id > ? ORDER BY ts LIMIT ?",
+                (after_id, limit),
+            ).fetchall()
+        return [
+            {
+                "change_id": r[0], "entity_type": r[1], "entity_id": r[2],
+                "op": r[3], "payload": _json_loads(r[4], {}), "ts": r[5], "author": r[6],
+            }
+            for r in rows
+        ]
+
+    def ingest_sync_change(self, change: dict) -> bool:
+        """Idempotent insert of an incoming change (dedup by change_id)."""
+        cid = str(change.get("change_id") or "")
+        if not cid:
+            return False
+        with self._lock:
+            exists = self._db.execute(
+                "SELECT 1 FROM sync_changes WHERE change_id=?", (cid,)
+            ).fetchone()
+            if exists:
+                return False
+            self._db.execute(
+                """INSERT INTO sync_changes(change_id,entity_type,entity_id,op,payload,ts,author,synced)
+                   VALUES (?,?,?,?,?,?,?,1)""",
+                (
+                    cid,
+                    str(change.get("entity_type") or ""),
+                    str(change.get("entity_id") or ""),
+                    str(change.get("op") or "upsert"),
+                    _json_dumps(change.get("payload") or {}),
+                    float(change.get("ts") or _now()),
+                    str(change.get("author") or "remote"),
+                ),
+            )
+            self._db.commit()
+        return True
+
+    def sync_config_get(self, key: str, default: Optional[str] = None) -> Optional[str]:
+        with self._lock:
+            row = self._db.execute(
+                "SELECT value FROM sync_config WHERE key=?", (key,)
+            ).fetchone()
+        return row[0] if row else default
+
+    def sync_config_set(self, key: str, value: str) -> None:
+        with self._lock:
+            self._db.execute(
+                "INSERT OR REPLACE INTO sync_config(key,value) VALUES (?,?)",
+                (key, value),
+            )
+            self._db.commit()
 
     def close(self) -> None:
         with self._lock:

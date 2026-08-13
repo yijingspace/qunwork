@@ -253,6 +253,10 @@ def create_app(manager: SessionManager) -> FastAPI:
         "/auth/callback",
         "/mcp/oauth/callback",
         "/oauth/callback",
+        # P2P 同步: peer 之间互调(outbox 拉取 / ingest 推送) —
+        # 数据本身 AES-GCM 加密 + Ed25519 签名, 传输面无需 API token。
+        "/v1/team/sync/outbox",
+        "/v1/team/sync/ingest",
     }
 
     def _request_authenticated(request: Request) -> bool:
@@ -1385,6 +1389,38 @@ def create_app(manager: SessionManager) -> FastAPI:
     def team_permissions() -> dict[str, Any]:
         """PermissionMatrix shape for the PermissionsView page (roles + thresholds)."""
         return manager.team_permissions_view()
+
+    # -- P2P 团队同步 (设计方案第六章) ----------------------------------------
+    @app.post("/v1/team/sync/config")
+    def team_sync_config(body: dict) -> dict[str, Any]:
+        """Configure the peer endpoint; collects a local snapshot on first set."""
+        return manager.team_sync_config(str((body or {}).get("peer_url") or ""))
+
+    @app.get("/v1/team/sync/status")
+    def team_sync_status() -> dict[str, Any]:
+        return manager.team_sync_status()
+
+    @app.post("/v1/team/sync/run")
+    async def team_sync_run(body: dict) -> dict[str, Any]:
+        """One sync round: push local pending → pull peer outbox → merge."""
+        return await manager.team_sync_run()
+
+    @app.get("/v1/team/sync/outbox")
+    def team_sync_outbox() -> dict[str, Any]:
+        """Peer-facing: this node's pending changes, encrypted (AES-GCM + sig)."""
+        changes = manager.team_sync.pending()
+        envelopes = manager.team_sync.pack_for_transport(changes)
+        return {"envelopes": envelopes}
+
+    @app.post("/v1/team/sync/ingest")
+    def team_sync_ingest(body: dict) -> dict[str, Any]:
+        """Peer-facing: receive encrypted envelopes, verify + decrypt + merge."""
+        envelopes = (body or {}).get("envelopes") or []
+        changes = manager.team_sync.unpack_from_transport(envelopes)
+        if not changes:
+            return {"ok": True, "received": len(envelopes), "applied": 0}
+        result = manager.team_sync.merge_changes(changes)
+        return {"ok": True, "received": len(changes), **result}
 
     @app.get("/v1/hornet/stats")
     def hornet_stats() -> dict[str, Any]:

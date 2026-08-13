@@ -264,6 +264,15 @@ class SessionManager:
             # 等 KnowledgeStore.add 支持元数据直接写入时再替换。
             ingest_swarm_assets=self._team_ingest_group_assets,
         )
+        # P2P 团队同步 (设计方案第六章): 加密变更日志 + LWW 合并 + peer 拉取。
+        from ..team.sync import TeamSync
+
+        self.team_sync = TeamSync(
+            self.team_store,
+            secrets_path=base / "sync_secrets",
+            author="local",
+            knowledge_upsert=self._sync_knowledge_upsert,
+        )
         # G2 command deck: run_id → live control channel while a swarm run is active
         # (paused flag, operator messages, pending requeue approvals).
         self.active_orchestration_controls: dict[str, Any] = {}
@@ -4132,6 +4141,47 @@ class SessionManager:
             "levels": self.pheromone.levels(),
             "total_load": round(self.pheromone.total_load(), 3),
         }
+
+    # -- P2P 团队同步 (设计方案第六章) ----------------------------------------
+    def _sync_knowledge_upsert(self, payload: dict) -> None:
+        """Merge a remote knowledge change — 追加合并 (CRDT 只追加语义)."""
+        title = str(payload.get("title") or "").strip()
+        content = str(payload.get("content") or payload.get("body") or "").strip()
+        if title and content:
+            self.knowledge.add_text(
+                title=title,
+                content=content,
+                kind=str(payload.get("kind") or "synced"),
+            )
+
+    def team_sync_config(self, peer_url: str) -> dict[str, Any]:
+        peer_url = (peer_url or "").strip().rstrip("/")
+        if not peer_url:
+            return {"ok": False, "error": "peer_url required"}
+        self.team_store.sync_config_set("peer_url", peer_url)
+        # 配置 peer 后立即收集一次本地快照作为待同步变更。
+        n = len(self.team_sync.collect_snapshot_changes())
+        return {"ok": True, "peer_url": peer_url, "snapshot_changes": n}
+
+    def team_sync_status(self) -> dict[str, Any]:
+        peer = self.team_store.sync_config_get("peer_url") or ""
+        last = self.team_store.sync_config_get("last_sync")
+        pending = len(self.team_sync.pending())
+        return {
+            "status": "connected" if peer else "single",
+            "peer_url": peer,
+            "pending_changes": pending,
+            "last_sync": float(last) if last else None,
+            "public_key": self.team_sync.secrets.public_key_hex,
+        }
+
+    async def team_sync_run(self) -> dict[str, Any]:
+        """One sync round (push + pull). Collects fresh snapshot changes first."""
+        self.team_sync.collect_snapshot_changes()
+        result = await self.team_sync.run()
+        if result.get("ok"):
+            result["status"] = self.team_sync_status()
+        return result
 
     # -- P1 团队 / AgentPool API 面 -------------------------------------------
     def _team_ingest_group_assets(self, group_id: str) -> None:
