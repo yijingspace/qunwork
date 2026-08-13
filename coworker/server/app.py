@@ -18,7 +18,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Optional
 
-from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
@@ -1380,6 +1380,11 @@ def create_app(manager: SessionManager) -> FastAPI:
     def permission_matrix() -> dict[str, Any]:
         """Org permission matrix (角色×能力) + fund tiers + human escalation."""
         return manager.permission_matrix_view()
+
+    @app.get("/v1/team/permissions")
+    def team_permissions() -> dict[str, Any]:
+        """PermissionMatrix shape for the PermissionsView page (roles + thresholds)."""
+        return manager.team_permissions_view()
 
     @app.get("/v1/hornet/stats")
     def hornet_stats() -> dict[str, Any]:

@@ -210,3 +210,48 @@ def test_dissolve_releases_agents_and_runs_ingest_hook():
     # idempotent — dissolving twice does not blow up.
     twice = lc.dissolve(g["id"])
     assert twice["already_dissolved"] is True
+
+
+# -- API 层回归（本次修复: HTTPException import / /v1/team/permissions / dissolve 归档）--
+
+def _team_client(tmp_path, monkeypatch):
+    monkeypatch.setenv("COWORKER_STATE_DIR", str(tmp_path / "state"))
+    from fastapi.testclient import TestClient
+    from coworker.server.app import create_app
+    from coworker.server.manager import SessionManager
+
+    mgr = SessionManager(data_dir=tmp_path / "data")
+    return TestClient(create_app(mgr))
+
+
+def test_api_illegal_transition_returns_400(tmp_path, monkeypatch):
+    """非法状态转移必须返回 400（修复前 HTTPException 未 import → NameError 500）。"""
+    client = _team_client(tmp_path, monkeypatch)
+    gm = client.post("/v1/team/members", json={"name": "gm", "role": "gm"}).json()["id"]
+    gid = client.post("/v1/team/task-groups", json={"goal": "g", "owner_member": gm}).json()["id"]
+    client.post(f"/v1/team/task-groups/{gid}/transition", json={"state": "active"})
+    r = client.post(f"/v1/team/task-groups/{gid}/transition", json={"state": "forming"})
+    assert r.status_code == 400
+    # 未知组 → 404
+    assert client.post("/v1/team/task-groups/nope/transition", json={"state": "active"}).status_code == 404
+
+
+def test_api_team_permissions_shape(tmp_path, monkeypatch):
+    """GET /v1/team/permissions 返回前端 PermissionMatrix 格式(roles + thresholds)。"""
+    client = _team_client(tmp_path, monkeypatch)
+    d = client.get("/v1/team/permissions").json()
+    assert "chairman" in d["roles"] and "worker" in d["roles"]
+    assert d["roles"]["chairman"]["project_group"]["allowed"] is True
+    assert d["roles"]["worker"].get("issue_commands") is None  # fail-closed
+    t = d["thresholds"]
+    assert [x["approver_role"] for x in t] == ["general_manager", "chairman", "board_human"]
+    assert t[0]["max_amount"] == 5000 and t[2]["require_human"] is True
+
+
+def test_api_dissolve_archives_to_knowledge(tmp_path, monkeypatch):
+    """dissolve 后蜂群归档必须写入 knowledge（修复前 knowledge.add 不存在 → 归档静默失败）。"""
+    client = _team_client(tmp_path, monkeypatch)
+    gid = client.post("/v1/team/task-groups", json={"goal": "归档测试"}).json()["id"]
+    assert client.post(f"/v1/team/task-groups/{gid}/dissolve", json={}).json()["dissolved"] is True
+    items = client.get("/v1/knowledge").json().get("items", [])
+    assert any("[蜂群归档]" in k.get("title", "") for k in items)

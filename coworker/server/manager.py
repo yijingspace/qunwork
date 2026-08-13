@@ -4149,11 +4149,11 @@ class SessionManager:
                 f"Members: {', '.join(g.get('member_ids', [])) or '-'}\n"
                 f"Agents: {', '.join(g.get('agent_ids', [])) or '-'}\n"
             )
-            self.knowledge.add(
+            self.knowledge.add_text(
                 title=title,
-                raw=body,
-                source=f"swarm:{group_id}",
-                tags=("swarm-archive",),
+                content=body,
+                kind="swarm-archive",
+                source_run_id=f"swarm:{group_id}",
             )
         except Exception:
             # 归档失败不得影响 dissolve 主流程（后台任务静默记录即可）
@@ -4293,6 +4293,31 @@ class SessionManager:
             ],
             "human_escalation": dict(sorted(HUMAN_ESCALATION.items())),
         }
+
+    def team_permissions_view(self) -> dict[str, Any]:
+        """GET /v1/team/permissions — the shape the PermissionsView page renders:
+        `roles` (capability → cell) + `thresholds` (fund tiers as ranges)."""
+        from ..permission_matrix import FUND_TIERS, MATRIX
+
+        roles = {
+            role: {cap: {"allowed": True} for cap in sorted(caps)}
+            for role, caps in sorted(MATRIX.items())
+        }
+        thresholds = []
+        prev = 0.0
+        for limit, role, _label in FUND_TIERS:
+            is_board = role == "board_human"
+            thresholds.append(
+                {
+                    "min_amount": prev,
+                    "max_amount": None if limit == float("inf") else limit,
+                    "approver_role": role,
+                    "require_human": is_board,
+                    "require_board": is_board,
+                }
+            )
+            prev = limit
+        return {"roles": roles, "thresholds": thresholds}
 
     def hornet_stats(self) -> dict:
         return {
