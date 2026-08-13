@@ -408,6 +408,7 @@ def build_engine(
         model_settings=model_settings,
         messages=messages,
         audit_sink=audit_sink,
+        usage_sink=usage_sink,
         context_provider=context_provider,
         directory_requester=directory_requester,
         plan_approver=plan_approver,

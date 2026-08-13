@@ -572,3 +572,29 @@ def test_estimate_usage_cjk_vs_latin():
     # 30 CJK / 1.5 ≈ 20 tokens; 120 Latin / 4 = 30 tokens
     assert cjk["completion_tokens"] == 20
     assert latin["completion_tokens"] == 30
+
+
+# -- usage_sink 透传回归 (build_engine → TurnEngine) ---------------------------
+
+def test_build_engine_wires_usage_sink(tmp_path):
+    """build_engine 必须把 usage_sink 传给 TurnEngine — 否则主会话/自动化
+    的用量永不上报(用户反馈: 用量面板数据一直没变)。"""
+    from coworker.agent import build_engine
+    from coworker.agents import chat_agent
+
+    calls: list[dict] = []
+
+    def _sink(entry):
+        calls.append(entry)
+
+    engine = build_engine(
+        agent=chat_agent(),
+        workspace=str(tmp_path / "ws"),
+        provider=ScriptedProvider([_text_turn("hi")]),
+        usage_sink=_sink,
+    )
+    assert engine.usage_sink is _sink  # 透传成功
+    # 跑一轮 → _record_usage 实际调用 sink
+    _collect(engine, "hello")
+    assert len(calls) >= 1
+    assert "prompt_tokens" in calls[0]
