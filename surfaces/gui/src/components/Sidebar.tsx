@@ -9,8 +9,10 @@ import {
   getCloudStatus,
   getPersonas,
   getSettings,
+  getSyncStatus,
   INBOX_UNLOCK,
   PERSONAS_CHANGED,
+  runTeamSync,
   setNavLayout,
   waitForCloudSignIn,
   type Automation,
@@ -18,6 +20,7 @@ import {
   type Persona,
   type RecentWorkspace,
   type SurfaceVisibility,
+  type SyncStatus,
 } from "../api";
 import type { SessionInfo } from "../types";
 import { isProjectScoped, shortPersonaName } from "../personaScope";
@@ -231,6 +234,36 @@ export function Sidebar(props: Props) {
       window.removeEventListener(AUTOMATIONS_CHANGED, load);
     };
   }, []);
+
+  // P2P 团队同步 (设计方案第六章): 顶栏同步状态指示器 — 15s 轮询 + 点击手动同步。
+  const [sync, setSync] = useState<SyncStatus | null>(null);
+  const [syncing, setSyncing] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    const load = () =>
+      getSyncStatus().then((s) => { if (alive) setSync(s); }).catch(() => {});
+    load();
+    const t = setInterval(load, 15_000);
+    return () => { alive = false; clearInterval(t); };
+  }, []);
+  const syncNow = async () => {
+    setSyncing(true);
+    try {
+      await runTeamSync();
+      const s = await getSyncStatus();
+      setSync(s);
+    } finally {
+      setSyncing(false);
+    }
+  };
+  const syncTitleText = (s: SyncStatus | null): string => {
+    if (!s || s.status === "single") return t("Standalone — no team sync configured");
+    if (s.status === "connected") {
+      const last = s.last_sync ? new Date(s.last_sync * 1000).toLocaleString() : t("never");
+      return t("Connected · {n} pending · last sync {time}", { n: s.pending_changes, time: last });
+    }
+    return t("Sync: {st}", { st: s.status });
+  };
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editValue, setEditValue] = useState("");
   // Two-step delete inside the row's ⋮ menu: Delete arms (t("Delete?")), a second click deletes.
@@ -1052,6 +1085,22 @@ export function Sidebar(props: Props) {
           </div>
           <div className="brand-slogan">{t("QunWork — collaboration, naturally.")}</div>
         </div>
+        <div className="flex-1" />
+        {/* P2P 团队同步状态 (设计方案第六章): 单机/已连接 + 待同步数, 点击手动同步。 */}
+        <button
+          className="nav-pin-btn w-7 h-7 grid place-items-center rounded-md text-faint hover:text-ink hover:bg-paper shrink-0"
+          title={syncTitleText(sync)}
+          aria-label={t("Team sync status — click to sync")}
+          onClick={() => void syncNow()}
+          data-testid="sidebar-sync"
+        >
+          <span className={"relative text-[13px] " + (syncing ? "animate-spin inline-block" : "")}>🔄</span>
+          {(sync?.pending_changes ?? 0) > 0 && (
+            <span className="absolute -top-0.5 -right-0.5 text-[8px] bg-accent text-white rounded-full w-3.5 h-3.5 grid place-items-center">
+              {Math.min(9, sync?.pending_changes ?? 0)}
+            </span>
+          )}
+        </button>
       </div>
 
       {/* New session: split button — primary starts the last-used persona; ▾ picks a specific one. */}

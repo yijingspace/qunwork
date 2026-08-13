@@ -4172,6 +4172,7 @@ class SessionManager:
             "peer_url": peer,
             "pending_changes": pending,
             "last_sync": float(last) if last else None,
+            "peers_online": 1 if peer else 0,
             "public_key": self.team_sync.secrets.public_key_hex,
         }
 

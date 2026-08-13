@@ -2673,6 +2673,36 @@ export interface SyncStatus {
   peers_online: number;
 }
 
+// P2P 团队同步 (设计方案第六章): 顶栏同步状态指示器数据源。
+export async function getSyncStatus(): Promise<SyncStatus> {
+  try {
+    const res = await fetch(`${httpBase()}/v1/team/sync/status`);
+    if (!res.ok) return { status: "single", last_sync: null, pending_changes: 0, peers_online: 0 };
+    const d = await res.json();
+    return {
+      status: d.status === "connected" ? "connected" : d.status === "connecting" ? "connecting" : d.status === "offline" ? "offline" : "single",
+      last_sync: d.last_sync ?? null,
+      pending_changes: d.pending_changes ?? 0,
+      peers_online: d.peers_online ?? 0,
+    };
+  } catch {
+    return { status: "single", last_sync: null, pending_changes: 0, peers_online: 0 };
+  }
+}
+
+export async function runTeamSync(): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const res = await fetch(`${httpBase()}/v1/team/sync/run`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    });
+    return await res.json();
+  } catch (e) {
+    return { ok: false, error: String(e) };
+  }
+}
+
 // Phase 0: these gracefully return empty/null when the team module isn't loaded yet.
 // Phase 1 will wire them to real /v1/team/* endpoints.
 
@@ -2813,16 +2843,6 @@ export async function dissolveTaskGroup(id: string): Promise<{ ok: boolean }> {
 export async function getPermissions(): Promise<PermissionMatrix | null> {
   try {
     const res = await fetch(`${httpBase()}/v1/team/permissions`);
-    if (!res.ok) return null;
-    return await res.json();
-  } catch {
-    return null;
-  }
-}
-
-export async function getSyncStatus(): Promise<SyncStatus | null> {
-  try {
-    const res = await fetch(`${httpBase()}/v1/team/sync/status`);
     if (!res.ok) return null;
     return await res.json();
   } catch {
