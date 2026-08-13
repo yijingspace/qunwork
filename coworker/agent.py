@@ -170,6 +170,8 @@ def build_engine(
     knowledge_db_path: Optional[str | Path] = None,
     usage_sink: Optional[Callable[[dict, None]]] = None,
     persist_callback: Optional[Callable[[], None]] = None,
+    # P1-5 零信任能力袋: persona scope 检查器 (可选)。
+    scope_store: Optional[Any] = None,
 ) -> TurnEngine:
     ws = Path(workspace).expanduser().resolve() if workspace else None
     if agent.needs_workspace and ws is None:
@@ -412,6 +414,7 @@ def build_engine(
         question_asker=question_asker,
         skill_loader=skill_loader,
         persist_callback=persist_callback,
+        scope_store=scope_store,
     )
     engine.executor = executor  # type: ignore[attr-defined]
     engine.todo = todo  # type: ignore[attr-defined]

@@ -230,6 +230,11 @@ async def _run_engine_async(
             status = event.data.get("status", "unknown")
         elif event.type == EventType.ERROR:
             return report, f"error: {event.data.get('error', '')}"
+    # 13 Agent 影子模式: 把 engine 累积的 decision_trace 转发给 orchestrator,
+    # 让 SwarmView 的「决策回放时间轴」能逐 worker 拖动回放。
+    if on_event is not None:
+        for entry in engine.get_decision_trace():
+            on_event("decision_trace", entry)
     return report, status
 
 

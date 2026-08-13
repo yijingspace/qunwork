@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useT } from "../i18n";
 import {
   hornetBuild,
+  hornetEmergenceToSkill,
   hornetEvolve,
   hornetGraph,
   hornetHealth,
@@ -139,6 +140,8 @@ export function HornetHive({ onResume }: HornetHiveProps) {
   const [selEmergent, setSelEmergent] = useState<{ id: number; kind: string; title: string; detail?: string; kbId?: number } | null>(null);
   const [health, setHealth] = useState<{ score: number; rating: string; dimensions: { structure: number; dynamics: number; evolution: number } } | null>(null);
   const [soundOn, setSoundOn] = useState(false);
+  const [genSkillIdx, setGenSkillIdx] = useState<number | null>(null); // P1-8: 正在转技能的 emergence 索引
+  const [genSkillMsg, setGenSkillMsg] = useState(""); // P1-8: 转技能的反馈消息
   const svgRef = useRef<SVGSVGElement | null>(null);
   const { playResonance } = useHornetAudio();
 
@@ -239,6 +242,25 @@ export function HornetHive({ onResume }: HornetHiveProps) {
       }
     } catch {
       setError(t("Resonance failed — check the engine connection."));
+    }
+  };
+
+  // P1-8: 把指定涌现条目转化为 Draft Skill
+  const handleEmergenceToSkill = async (idx: number, title: string) => {
+    setGenSkillIdx(idx);
+    setGenSkillMsg("");
+    try {
+      const r = await hornetEmergenceToSkill(idx);
+      if (r.ok && r.skill) {
+        setGenSkillMsg(t("Generated draft skill") + `: ${r.skill}  (${t("review it on the Skills page")})`);
+      } else {
+        setGenSkillMsg(t("Generation failed") + (r.error ? `: ${r.error}` : ` (${title})`));
+      }
+    } catch (e) {
+      setGenSkillMsg(t("Generation failed") + `: ${String(e)}`);
+    } finally {
+      setGenSkillIdx(null);
+      window.setTimeout(() => setGenSkillMsg(""), 6000);
     }
   };
 
@@ -425,9 +447,19 @@ export function HornetHive({ onResume }: HornetHiveProps) {
 
       {emergents.length > 0 && (
         <div className="mt-3 border-t border-line pt-3" data-testid="hornet-emergent">
-          <div className="text-[12px] font-medium text-ink mb-1.5">{t("Emerged structure")}</div>
+          <div className="flex items-center gap-2 mb-1.5">
+            <span className="text-[12px] font-medium text-ink">{t("Emerged structure")}</span>
+            <span className="text-[10.5px] text-faint">
+              {t("Convert findings to skills — draft skills surface in the Skills page")}
+            </span>
+          </div>
+          {genSkillMsg && (
+            <div className="mb-1.5 px-2 py-1 rounded-md border border-line bg-surface text-[11px] text-ink" role="status">
+              {genSkillMsg}
+            </div>
+          )}
           <div className="flex flex-col gap-1">
-            {emergents.slice(0, 8).map((e) => (
+            {emergents.slice(0, 8).map((e, idx) => (
               <div key={e.id} className="flex items-center gap-2 text-[12px]">
                 <span className="text-[11px]">
                   {e.kind === "hypernode" ? "🧬" : e.kind === "attractor" ? "⚠️" : e.kind === "fission" ? "🌱" : e.kind === "cavity" ? "🌀" : e.kind === "conflict" ? "⚡" : "🕳"}
@@ -462,6 +494,15 @@ ${t("Auto-surfaced by the hive")}`;
                   {e.title}
                 </button>
                 <span className="text-[10px] text-faint shrink-0">{e.kind}</span>
+                <button
+                  className="text-[10.5px] px-1.5 py-0.5 rounded-md border border-line text-faint hover:text-accent hover:border-accent shrink-0"
+                  disabled={genSkillIdx !== null}
+                  onClick={() => handleEmergenceToSkill(idx, e.title)}
+                  title={t("Convert this emergence into a draft skill")}
+                  data-testid={`emergent-to-skill-${e.id}`}
+                >
+                  {genSkillIdx === idx ? t("Generating…") : `🧬 ${t("Skill")}`}
+                </button>
               </div>
             ))}
           </div>

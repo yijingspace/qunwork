@@ -1440,6 +1440,94 @@ DESCRIPTORS: list[ConnectorDescriptor] = [
         brand_color="#06ac38",
         logo="pagerduty",
     ),
+    # -- 国内连接器 (P1-5 适配国内) ------------------------------------------
+    ConnectorDescriptor(
+        name="wecom",
+        title="企业微信",
+        icon="💬",
+        blurb="企业微信群机器人, 推送消息到群聊 (webhook 方式)。",
+        auth="bot_token",
+        two_way=False,
+        channels=False,
+        brand_color="#07c160",
+        logo="wecom",
+        fields=[
+            Field(
+                "bot_token",
+                "Webhook URL",
+                secret=True,
+                help="企业微信群聊 → 添加群机器人 → 复制 Webhook 地址。",
+                placeholder="https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=…",
+            ),
+        ],
+        instructions=[
+            "在企业微信群里, 右键 → 添加群机器人。",
+            "选择「自定义机器人」, 命名后创建。",
+            "复制 Webhook 地址, 粘贴到下方。",
+        ],
+        validate=lambda c: ValidationResult(
+            True, identity="企业微信群机器人"
+        ) if c.get("bot_token", "").startswith("https://qyapi.weixin.qq.com/")
+        else ValidationResult(False, error="请粘贴完整的企业微信 Webhook URL"),
+    ),
+    ConnectorDescriptor(
+        name="dingtalk",
+        title="钉钉",
+        icon="💬",
+        blurb="钉钉群机器人, 推送消息到群聊 (webhook 方式, 支持加签)。",
+        auth="bot_token",
+        two_way=False,
+        channels=False,
+        brand_color="#0089ff",
+        logo="dingtalk",
+        fields=[
+            Field(
+                "bot_token",
+                "Webhook URL",
+                secret=True,
+                help="钉钉群 → 群设置 → 智能群助手 → 添加机器人 → 自定义 → 复制 Webhook。",
+                placeholder="https://oapi.dingtalk.com/robot/send?access_token=…",
+            ),
+        ],
+        instructions=[
+            "在钉钉群里, 点右上角 → 群设置 → 智能群助手。",
+            "添加「自定义」机器人, 选择安全设置 (加签推荐)。",
+            "复制 Webhook 地址, 粘贴到下方。",
+        ],
+        validate=lambda c: ValidationResult(
+            True, identity="钉钉群机器人"
+        ) if "oapi.dingtalk.com" in c.get("bot_token", "")
+        else ValidationResult(False, error="请粘贴完整的钉钉 Webhook URL"),
+    ),
+    ConnectorDescriptor(
+        name="feishu",
+        title="飞书",
+        icon="💬",
+        blurb="飞书/Lark 群机器人, 推送消息到群聊 (webhook 方式)。",
+        auth="bot_token",
+        two_way=False,
+        channels=False,
+        brand_color="#3370ff",
+        logo="feishu",
+        fields=[
+            Field(
+                "bot_token",
+                "Webhook URL",
+                secret=True,
+                help="飞书群 → 设置 → 群机器人 → 添加机器人 → 自定义机器人 → 复制 Webhook。",
+                placeholder="https://open.feishu.cn/open-apis/bot/v2/hook/…",
+            ),
+        ],
+        instructions=[
+            "在飞书群里, 点右上角 → 设置 → 群机器人。",
+            "添加「自定义机器人 - 通过 Webhook」。",
+            "复制 Webhook 地址, 粘贴到下方。",
+        ],
+        validate=lambda c: ValidationResult(
+            True, identity="飞书群机器人"
+        ) if "open.feishu.cn" in c.get("bot_token", "")
+        else ValidationResult(False, error="请粘贴完整的飞书 Webhook URL"),
+    ),
 ]
 
 _BY_NAME = {d.name: d for d in DESCRIPTORS}

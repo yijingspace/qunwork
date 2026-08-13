@@ -283,6 +283,16 @@ class Orchestrator:
                         "text": clean_thought(str(payload.get("text", "")), worker),
                     },
                 )
+            elif kind == "decision_trace":
+                # 13 影子模式: 把 worker engine 的决策轨迹透传给 SwarmView。
+                self._emit(
+                    "decision_trace",
+                    {
+                        "worker": worker,
+                        "task_id": task_id,
+                        "entry": payload,
+                    },
+                )
 
         return feed
 
@@ -389,6 +399,17 @@ class Orchestrator:
                             "task_id": task.id,
                             "agent_id": acquired_agent_id,
                             "text": clean_thought(raw, "executor"),
+                        },
+                    )
+                elif kind == "decision_trace":
+                    # 13 影子模式: executor 的决策轨迹透传给 SwarmView。
+                    self._emit(
+                        "decision_trace",
+                        {
+                            "worker": "executor",
+                            "task_id": task.id,
+                            "agent_id": acquired_agent_id,
+                            "entry": payload,
                         },
                     )
                 if acquired_agent_id is not None and self.agent_pool is not None:

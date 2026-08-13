@@ -148,6 +148,9 @@ class SessionManager:
         from ..usage import UsageStore
 
         self.usage_store = UsageStore(base / "usage.db")
+        # P1-5 零信任能力袋: persona scope 持久化 (连接器工具级权限)
+        from ..connector_scopes import PersonaScopeStore
+        self.scope_store = PersonaScopeStore(base / "persona_scopes.db")
         self.session_store = ConversationStore(base)
         self.session_store.canonicalize_workspaces()  # collapse /tmp vs /private/tmp etc.
         from ..skills.base import SkillLoader
@@ -583,6 +586,7 @@ class SessionManager:
                 if session_id
                 else None
             ),
+            scope_store=self.scope_store,  # P1-5 零信任能力袋
             roots=roots,
             # WS sessions pass mode-aware callbacks (attended → live prompt, unattended → Inbox).
             # Background / self-wake / durable-resume runs have no live socket → default to the
@@ -3774,6 +3778,38 @@ class SessionManager:
                 pass  # a stale/foreign path must not fail the delete
         return {"ok": ok, "session_id": session_id}
 
+    # -- 13 Agent 影子模式: 决策回放 -------------------------------------------
+    def session_decision_trace(self, session_id: str) -> dict[str, Any]:
+        """GET /v1/sessions/{id}/decision-trace — 返回该会话 engine 累积的决策轨迹。
+
+        决策轨迹是 engine 实例内存中的列表 (engine 销毁后通过 audit_events 表的
+        stage='decision_trace' 行仍可离线查询)。对运行中的会话, 这里返回实时数据。
+        """
+        engine = self._engines.get(session_id)
+        if engine is None:
+            # engine 已被销毁 → 回退到 audit_events 表查 stage=decision_trace
+            try:
+                rows = self.audit_store.query(limit=5000)
+            except Exception:
+                rows = []
+            traces = []
+            for r in rows:
+                if r.get("stage") != "decision_trace":
+                    continue
+                if r.get("session_id") and r["session_id"] != session_id:
+                    continue
+                entry = r.get("entry") or {}
+                if not entry:
+                    # 旧版本可能没有 entry 字段, 从顶层字段重建
+                    entry = {k: v for k, v in r.items() if k not in ("stage",)}
+                traces.append(entry)
+            return {"session_id": session_id, "trace": traces, "source": "audit_store"}
+        return {
+            "session_id": session_id,
+            "trace": engine.get_decision_trace(),
+            "source": "live_engine",
+        }
+
     # -- provider proxy ---------------------------------------------------------
     def provider_complete(self, model, messages, tools=None):
         return self.provider.complete(model=model, messages=messages, tools=tools)
@@ -4117,6 +4153,125 @@ class SessionManager:
             "by_session": self.usage_store.by_session(),
         }
 
+    # -- P1-5 零信任能力袋: 权限矩阵 + scope 配置 + 审计热力图 ----------------
+    def connector_scope_matrix(self) -> dict[str, Any]:
+        """GET /v1/permissions/scopes — 全量连接器工具 scope 声明表。
+        前端权限矩阵 UI 用这个渲染「角色 × 连接器 × scope」三维表。"""
+        from ..connector_scopes import all_connector_scopes
+        return {"connectors": all_connector_scopes()}
+
+    def persona_scopes_get(self, persona_id: str) -> dict[str, Any]:
+        """GET /v1/permissions/persona-scopes?persona_id=xx — 读取某角色的 scope 配置。"""
+        return {
+            "persona_id": persona_id,
+            "scopes": self.scope_store.get_all_scopes(persona_id),
+        }
+
+    def persona_scopes_set(
+        self, persona_id: str, connector: str, scopes: list[str]
+    ) -> dict[str, Any]:
+        """PUT /v1/permissions/persona-scopes — 设置某角色在某连接器上的 scope。"""
+        self.scope_store.set_scopes(persona_id, connector, scopes)
+        return {
+            "ok": True,
+            "persona_id": persona_id,
+            "connector": connector,
+            "scopes": scopes,
+        }
+
+    def permissions_heatmap(self) -> dict[str, Any]:
+        """GET /v1/permissions/heatmap — 权限审计热力图。
+
+        复用 audit_events 表, 按 persona × connector × tool 聚合:
+        - 实际调用次数
+        - 实际需要的最高 scope 级别
+        - 是否有越权审批记录 (scope_escalation)
+        帮管理员收紧权限 (企业合规视角)。
+        """
+        from ..connector_scopes import get_tool_scopes, scope_level, parse_connector_from_tool
+        # 从 audit_events 表聚合 tool 调用次数
+        rows = self.audit_store.query(
+            limit=5000
+        )
+        # 按 (persona, connector, tool) 聚合
+        agg: dict[tuple, dict] = {}
+        for r in rows:
+            tool = r.get("tool") or ""
+            if "__" not in tool:
+                continue  # 内置工具无 scope
+            persona = r.get("agent") or r.get("session_id") or "unknown"
+            connector = parse_connector_from_tool(tool) or "unknown"
+            key = (persona, connector, tool)
+            if key not in agg:
+                agg[key] = {
+                    "persona": persona,
+                    "connector": connector,
+                    "tool": tool,
+                    "call_count": 0,
+                    "required_scopes": get_tool_scopes(tool),
+                    "max_scope_level": 0,
+                    "scope_escalations": 0,
+                }
+            agg[key]["call_count"] += 1
+            # 更新最高 scope 级别
+            for s in agg[key]["required_scopes"]:
+                agg[key]["max_scope_level"] = max(
+                    agg[key]["max_scope_level"], scope_level(s)
+                )
+            # scope 越权审批记录
+            if r.get("stage") == "scope_escalation":
+                agg[key]["scope_escalations"] += 1
+        return {
+            "matrix": list(agg.values()),
+            "total_tools_tracked": len(agg),
+        }
+
+    # -- P1-6 Skill 版本化 + 兼容性测试 + 安全评分 ---------------------------
+    def skill_generate_lock(self, skill_name: str) -> dict[str, Any]:
+        """POST /v1/skills/{name}/lock — 为 skill 生成 skill.lock 文件。"""
+        from ..skills.lock import generate_lock, save_lock, load_lock
+        skill = self.skill_loader.get(skill_name)
+        if not skill:
+            return {"ok": False, "error": f"skill '{skill_name}' not found"}
+        # 从 registry 收集该 skill 依赖的工具签名
+        tools = []
+        for tool_name in skill.allowed_tools:
+            spec = self.tool_registry.get(tool_name) if hasattr(self, "tool_registry") else None
+            params = {}
+            if spec and spec.metadata:
+                params = getattr(spec.metadata, "parameters", {}) or {}
+            tools.append({"name": tool_name, "params": params})
+        lock_data = generate_lock(skill.name, skill.version, tools)
+        lock_path = save_lock(skill.path or ".", lock_data)
+        return {"ok": True, "lock_path": str(lock_path), "lock": lock_data}
+
+    def skill_security_score(self, skill_name: str) -> dict[str, Any]:
+        """GET /v1/skills/{name}/security — 静态分析 skill 安全评分。"""
+        from ..skills.security import analyze_skill_dir
+        skill = self.skill_loader.get(skill_name)
+        if not skill:
+            return {"ok": False, "error": f"skill '{skill_name}' not found"}
+        report = analyze_skill_dir(skill.path or ".")
+        return {"ok": True, "skill_name": skill_name, **report}
+
+    def skill_compatibility_check(self, skill_name: str) -> dict[str, Any]:
+        """GET /v1/skills/{name}/compatibility — 检查 skill 兼容性。"""
+        from ..skills.compatibility import check_skill_compatibility
+        skill = self.skill_loader.get(skill_name)
+        if not skill:
+            return {"ok": False, "error": f"skill '{skill_name}' not found"}
+        # 收集当前 registry 中所有工具
+        registry_tools = []
+        if hasattr(self, "tool_registry"):
+            for name in self.tool_registry.names():
+                spec = self.tool_registry.get(name)
+                params = {}
+                if spec and spec.metadata:
+                    params = getattr(spec.metadata, "parameters", {}) or {}
+                registry_tools.append({"name": name, "params": params})
+        report = check_skill_compatibility(skill.path or ".", registry_tools)
+        return {"ok": True, **report}
+
     # -- P0 建议1: cache warm-up (HORNET coldness × usage hit-rate) ------------
     def cache_warm_status(self) -> dict[str, Any]:
         return self.cache_warmer.status()
@@ -4444,7 +4599,7 @@ class SessionManager:
         - fission   → log the child cell to the knowledge store
         """
         actions: dict[str, list[str]] = {
-            "task": [], "inbox": [], "probe": [], "knowledge": [],
+            "task": [], "inbox": [], "probe": [], "knowledge": [], "skill": [],
         }
         ws = self.default_workspace
         for em in emerged:
@@ -4469,6 +4624,10 @@ class SessionManager:
                     self._hornet_act_hypernode(title, detail, ws, actions)
                 elif kind == "fission":
                     self._hornet_act_fission(title, detail, ws, actions)
+                # P1-8: 涌现 → 自动生成 Draft Skill
+                # 当涌现条目满足「共振强度 ≥ 3 (co_occurrences) 或 load_factor ≥ 0.5」
+                # 时, 尝试自动生成 Draft Skill
+                self._hornet_try_emergence_to_skill(em, ws, actions)
             except Exception:
                 pass
         return actions
@@ -4593,6 +4752,167 @@ class SessionManager:
             workspace=ws,
         )
         actions["knowledge"].append(title)
+
+    # -- P1-8: HORNET 涌现 → 自动生成 Draft Skill ----------------------------
+    def _hornet_try_emergence_to_skill(
+        self, em: dict, ws: str, actions: dict
+    ) -> None:
+        """检查涌现条目是否满足「自动生成 Draft Skill」的条件:
+
+        条件 (任一满足):
+        - hypernode: co_occurrences ≥ 3 (同一语义子图被连续命中 ≥ 3 次)
+        - fission: load_factor ≥ 0.5 (高共振温度, 频繁触发)
+        - attractor: body_similarity ≥ 0.7 (强关联)
+
+        满足时调用 _hornet_act_to_skill 生成 Draft Skill。
+        """
+        kind = em.get("kind", "")
+        detail = em.get("detail", {})
+        title = em.get("title", "")
+        should_generate = False
+
+        if kind == "hypernode":
+            co = detail.get("co_occurrences", 0)
+            if co >= 3:
+                should_generate = True
+        elif kind == "fission":
+            load = detail.get("load_factor", 0.0)
+            if load >= 0.5:
+                should_generate = True
+        elif kind == "attractor":
+            sim = detail.get("body_similarity", 0.0)
+            if isinstance(sim, (int, float)) and sim >= 0.7:
+                should_generate = True
+
+        if should_generate:
+            self._hornet_act_to_skill(title, detail, kind, ws, actions)
+
+    def _hornet_act_to_skill(
+        self, title: str, detail: dict, kind: str, ws: str, actions: dict
+    ) -> None:
+        """把涌现条目转化为 Draft Skill。
+
+        生成 SKILL.md 初稿:
+        - name: 从 title 清洗 (去掉 ⊕ / · 等特殊字符)
+        - description: 涌现类型 + 标题
+        - body: 包含涌现详情 + 相关知识片段 + 操作步骤建议
+        - draft: true (等待用户审核)
+        - source: hornet_emergence
+        """
+        import re as _re
+
+        # 清洗 skill name: 只保留字母数字中文和连字符
+        raw_name = title.replace("⊕", "-").replace("·", "-").replace(":", "-")
+        raw_name = _re.sub(r"[^\w\u4e00-\u9fff\-]", "-", raw_name).strip("-")
+        skill_name = f"emergence-{raw_name}"[:60].lower()
+
+        # 检查是否已存在同名 draft skill (避免重复生成)
+        existing = self.skill_loader.get(skill_name)
+        if existing:
+            return
+
+        # 构造 SKILL.md body
+        kind_label = {
+            "hypernode": "共现模式压缩",
+            "fission": "高频蜂胞分裂",
+            "attractor": "奇异吸引子",
+        }.get(kind, kind)
+
+        body_parts = [
+            f"# {title}",
+            "",
+            f"> 此技能由 HORNET 蜂巢涌现自动生成 (类型: {kind_label})。",
+            f"> 来源: 知识库自组织演化, 共振强度达到阈值后自动提取。",
+            f"> 状态: **草稿** — 请审核后接受或删除。",
+            "",
+            "## 涌现详情",
+            "",
+        ]
+
+        # 根据 kind 添加不同的详情
+        if kind == "hypernode":
+            members = detail.get("members", [])
+            co = detail.get("co_occurrences", 0)
+            summary = detail.get("summary", "")
+            body_parts.append(f"- 共现节点: {members}")
+            body_parts.append(f"- 共现次数: {co}")
+            if summary:
+                body_parts.append(f"- 模式摘要: {summary[:500]}")
+        elif kind == "fission":
+            mother = detail.get("mother", "?")
+            child = detail.get("child", "?")
+            load = detail.get("load_factor", 0.0)
+            body_parts.append(f"- 母胞: #{mother}")
+            body_parts.append(f"- 子胞: #{child}")
+            body_parts.append(f"- 负载因子: {load:.2f}")
+        elif kind == "attractor":
+            sim = detail.get("body_similarity", 0)
+            body_parts.append(f"- 体相似度: {sim}")
+
+        body_parts.extend([
+            "",
+            "## 建议操作步骤",
+            "",
+            "1. 审核上方涌现详情是否反映真实业务模式。",
+            "2. 如有价值, 补充具体的操作步骤和工具调用约定。",
+            "3. 点击「接受」后将此技能转为正式技能。",
+            "4. 后续同类任务将自动调用此技能。",
+            "",
+            "## 自动生成的测试用例",
+            "",
+            "```yaml",
+            f"- name: test_{skill_name}_basic",
+            "  input: \"与 {title[:30]} 相关的任务\"",
+            "  expect: \"技能被加载并执行\"",
+            "```",
+        ])
+
+        body = "\n".join(body_parts)
+
+        try:
+            self.skill_loader.save_skill(
+                name=skill_name,
+                description=f"[涌现-{kind_label}] {title[:60]}",
+                body=body,
+                version="0.0.1",  # draft 版本号
+                category="emergence",
+                tags=["hornet", "emergence", kind, "draft"],
+                draft=True,
+                source="hornet_emergence",
+            )
+            actions["skill"].append(skill_name)
+        except Exception:
+            import logging as _log
+            _log.getLogger(__name__).exception(
+                "hornet emergence-to-skill failed: %s", title
+            )
+
+    def hornet_emergence_to_skill(self, emergence_index: int = -1) -> dict[str, Any]:
+        """POST /v1/hornet/emergence-to-skill — 手动触发涌现转技能。
+
+        不带参数时尝试最近一条涌现; 带索引时指定具体涌现条目。
+        """
+        # 获取最近的涌现结果
+        result = self._hornet_observer.evolve(limit=20)
+        emerged = result.get("emerged", [])
+        if not emerged:
+            return {"ok": False, "error": "no emergence available"}
+        try:
+            em = emerged[emergence_index]
+        except IndexError:
+            return {"ok": False, "error": "emergence index out of range"}
+
+        actions: dict[str, list[str]] = {"task": [], "inbox": [], "probe": [], "knowledge": [], "skill": []}
+        self._hornet_act_to_skill(
+            em.get("title", ""),
+            em.get("detail", {}),
+            em.get("kind", ""),
+            self.default_workspace,
+            actions,
+        )
+        if actions["skill"]:
+            return {"ok": True, "skill": actions["skill"][0], "emergence": em}
+        return {"ok": False, "error": "skill generation failed (may already exist)"}
 
     def knowledge_get(self, item_id: int) -> Optional[dict]:
         """Full knowledge detail: content + source link, for the detail view

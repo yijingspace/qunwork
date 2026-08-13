@@ -277,3 +277,120 @@ def _send_slack_file(
 DEFAULT_FILE_SENDERS: dict[str, FileSender] = {
     "slack": _send_slack_file,
 }
+
+
+# -- 国内连接器 senders (企业微信/钉钉/飞书) -----------------------------------
+# P1-5 适配国内: 三个主流办公平台的出站消息 sender, 用 webhook + token 模式,
+# 同步 httpx 调用, 与 Telegram/Slack sender 保持一致的签名。
+
+def _send_wecom(
+    token: str, chat_id: str, text: str, thread_id: Optional[str] = None
+) -> SendResult:
+    """企业微信群机器人 webhook 发消息.
+
+    token = webhook URL (含 key 参数); chat_id 在企业微信里无意义, 忽略;
+    text 支持 markdown 格式。thread_id 用于 @指定成员 (userid 列表)。
+    """
+    import httpx
+
+    payload: dict = {
+        "msgtype": "markdown",
+        "markdown": {"content": text},
+    }
+    if thread_id:
+        payload["markdown"]["mentioned_list"] = [
+            u.strip() for u in thread_id.split(",") if u.strip()
+        ]
+    try:
+        resp = httpx.post(token, json=payload, timeout=_TIMEOUT)
+        data = resp.json()
+    except Exception as exc:
+        return SendResult(False, error=str(exc))
+    if data.get("errcode") == 0:
+        return SendResult(True, message_id=str(data.get("msgid", "")))
+    return SendResult(
+        False, error=data.get("errmsg") or "wecom send failed"
+    )
+
+
+def _send_dingtalk(
+    token: str, chat_id: str, text: str, thread_id: Optional[str] = None
+) -> SendResult:
+    """钉钉群机器人 webhook 发消息.
+
+    token = webhook URL (含 access_token); chat_id 忽略;
+    text 支持 markdown; thread_id 用于 @指定手机号。
+    """
+    import httpx
+    import time
+    import hmac
+    import hashlib
+    import base64
+    import urllib.parse
+
+    url = token
+    # 钉钉加签验证 (如果 token 含 secret 参数)
+    if "?secret=" in url or "&secret=" in url:
+        parts = url.split("secret=", 1)
+        url = parts[0].rstrip("&?")
+        secret = parts[1]
+        timestamp = str(round(time.time() * 1000))
+        string_to_sign = f"{timestamp}\n{secret}"
+        hmac_code = hmac.new(
+            secret.encode("utf-8"),
+            string_to_sign.encode("utf-8"),
+            digestmod=hashlib.sha256,
+        ).digest()
+        sign = urllib.parse.quote_plus(base64.b64encode(hmac_code))
+        url = f"{url}&timestamp={timestamp}&sign={sign}"
+
+    payload: dict = {
+        "msgtype": "markdown",
+        "markdown": {"title": text[:20], "text": text},
+    }
+    if thread_id:
+        payload["at"] = {
+            "atMobiles": [m.strip() for m in thread_id.split(",") if m.strip()],
+            "isAtAll": False,
+        }
+    try:
+        resp = httpx.post(url, json=payload, timeout=_TIMEOUT)
+        data = resp.json()
+    except Exception as exc:
+        return SendResult(False, error=str(exc))
+    if data.get("errcode") == 0:
+        return SendResult(True)
+    return SendResult(
+        False, error=data.get("errmsg") or "dingtalk send failed"
+    )
+
+
+def _send_feishu(
+    token: str, chat_id: str, text: str, thread_id: Optional[str] = None
+) -> SendResult:
+    """飞书/Lark 机器人 webhook 发消息.
+
+    token = webhook URL; chat_id 忽略; text 发为 text 消息。
+    """
+    import httpx
+
+    payload: dict = {
+        "msg_type": "text",
+        "content": {"text": text},
+    }
+    try:
+        resp = httpx.post(token, json=payload, timeout=_TIMEOUT)
+        data = resp.json()
+    except Exception as exc:
+        return SendResult(False, error=str(exc))
+    if data.get("code") == 0 or data.get("StatusCode") == 0:
+        return SendResult(True)
+    return SendResult(
+        False, error=data.get("msg") or data.get("StatusMessage") or "feishu send failed"
+    )
+
+
+# 注册国内连接器 sender (P1-5 适配国内)
+DEFAULT_SENDERS["wecom"] = _send_wecom
+DEFAULT_SENDERS["dingtalk"] = _send_dingtalk
+DEFAULT_SENDERS["feishu"] = _send_feishu

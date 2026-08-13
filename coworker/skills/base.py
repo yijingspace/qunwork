@@ -29,6 +29,12 @@ class Skill:
     author: str = ""
     tags: list[str] = field(default_factory=list)
     updated_at: Optional[str] = None  # ISO timestamp from frontmatter
+    # P1-6: draft 状态 (来自 HORNET 涌现自动生成, 等待用户审核)
+    draft: bool = False
+    # P1-6: 安全评分 (0-100, 由 skills/security.py 静态分析得出)
+    security_score: Optional[int] = None
+    # P1-8: 来源标记 ("manual" / "hornet_emergence")
+    source: str = "manual"
 
     def catalog_row(self) -> dict:
         return {
@@ -39,6 +45,9 @@ class Skill:
             "author": self.author,
             "tags": self.tags,
             "updated_at": self.updated_at,
+            "draft": self.draft,
+            "security_score": self.security_score,
+            "source": self.source,
         }
 
 
@@ -66,6 +75,8 @@ class SkillLoader:
         author: str = "",
         tags: Optional[list[str]] = None,
         allowed_tools: Optional[list[str]] = None,
+        draft: bool = False,
+        source: str = "manual",
     ) -> Path:
         """Write a new skill to the FIRST writable dir (workspace-local preferred)
         and refresh the catalog so it is immediately loadable."""
@@ -85,6 +96,10 @@ class SkillLoader:
             lines.append("tags: " + ", ".join(tags))
         if allowed_tools:
             lines.append("allowed-tools: " + ", ".join(allowed_tools))
+        if draft:
+            lines.append("draft: true")
+        if source != "manual":
+            lines.append(f"source: {source}")
         md.write_text(f"---\n" + "\n".join(lines) + "\n---\n\n" + body + "\n", encoding="utf-8")
         self.refresh()
         return md
@@ -269,6 +284,7 @@ def _parse_skill(md: Path) -> Skill:
     text = md.read_text(encoding="utf-8")
     name, description, allowed, body = md.parent.name, "", [], text
     version, category, author, tags, updated_at = "0.1.0", "general", "", [], None
+    draft, source = False, "manual"
     if text.startswith("---"):
         end = text.find("\n---", 3)
         if end != -1:
@@ -297,6 +313,10 @@ def _parse_skill(md: Path) -> Skill:
                     tags = [t.strip() for t in value.split(",") if t.strip()]
                 elif key in ("updated_at", "updated-at"):
                     updated_at = value or None
+                elif key == "draft":
+                    draft = value.lower() in ("true", "yes", "1")
+                elif key == "source":
+                    source = value or "manual"
     return Skill(
         name=name,
         description=description,
@@ -308,6 +328,8 @@ def _parse_skill(md: Path) -> Skill:
         author=author,
         tags=tags,
         updated_at=updated_at,
+        draft=draft,
+        source=source,
     )
 
 

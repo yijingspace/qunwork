@@ -87,6 +87,9 @@ class TurnEngine:
         # FULL transcript, the provider's prefix cache stays warm, and the next
         # round hits instead of rebuilding. Optional.
         persist_callback: Optional[Callable[[], None]] = None,
+        # P1-5 零信任能力袋: persona scope 检查器 (可选)。传入后 _authorize 会在
+        # 工具调用前检查 scope, 越权自动升级为审批。
+        scope_store: Optional[Any] = None,
     ) -> None:
         self.provider = provider
         self.registry = registry
@@ -102,6 +105,7 @@ class TurnEngine:
         # "cached_tokens", "cache_miss_tokens"} when the provider reports usage.
         self.usage_sink = usage_sink
         self.persist_callback = persist_callback
+        self.scope_store = scope_store  # P1-5 PersonaScopeStore or None
         # Returns an ephemeral `<system-context>` block appended to the LAST user message at
         # send-time only (never persisted). We can't reliably inject system messages mid-thread
         # across providers, so dynamic per-turn context (e.g. the live directory list) rides on
@@ -132,6 +136,11 @@ class TurnEngine:
         # TOOL_FINISHED event can carry the note to the tool card (§25).
         self._standing_notes: dict[str, str] = {}
         self._interrupt_hooks: list[Callable[[], None]] = list(interrupt_hooks or [])
+        # 13 Agent 影子模式: 决策回放轨迹。每次工具选择/权限审批/scope 升级/路由抉择
+        # 都追加一条 entry, 前端时间轴 UI 可拖动滑块回放「AI 在每一步看到了什么、
+        # 考虑了哪些选项、为什么选了这个」。_iterations 由 run() 递增。
+        self.decision_trace: list[dict[str, Any]] = []
+        self._iterations = 0
 
     # -- external controls ------------------------------------------------------
     def request_interrupt(self) -> None:
@@ -328,6 +337,7 @@ class TurnEngine:
                 )
                 return
             iterations += 1
+            self._iterations = iterations  # 13 影子模式: 同步给 _record_decision
 
             turn: Optional[AssistantTurn] = None
             streamed: list[str] = []
@@ -498,6 +508,18 @@ class TurnEngine:
         """Run one assistant turn's tool calls: authorize all of them first (sequentially —
         approval prompts are interactive), then execute. Low-risk calls (reads, searches)
         run concurrently; everything else runs one at a time in call order."""
+        # 13 影子模式: 记录「工具选择」决策 — 模型本轮可选的全部工具 + 它实际选的 Top-K
+        # + 选择理由 (来自 assistant 的 reasoning)。这是企业合规回放的核心证据。
+        self._record_decision(
+            "tool_selection",
+            available_tools=list(self.registry.names()),
+            candidates=[
+                {"name": tc.name, "arguments": tc.arguments}
+                for tc in tool_calls
+            ],
+            choice=[tc.name for tc in tool_calls],
+            reason="model emitted these tool_calls in this assistant turn",
+        )
         cleared: list[ToolCall] = []
         for tool_call in tool_calls:
             if self._cancel.is_set():
@@ -595,6 +617,46 @@ class TurnEngine:
         )
         allowed = decision.allowed
         reason = decision.reason
+        scope_needs_approval = False  # P1-5: scope 越权 → 升级审批
+
+        # 13 影子模式: 记录权限评估决策 (RBAC 层)。
+        self._record_decision(
+            "permission",
+            tool=tool_call.name,
+            allowed=allowed,
+            reason=reason,
+            needs_user=decision.needs_user,
+            rule=decision.rule or "",
+        )
+
+        # P1-5 零信任能力袋: 在常规权限通过后, 再检查 connector scope。
+        # 如果 persona 没有被授予该工具所需的 scope, 自动升级为审批。
+        if allowed and not decision.needs_user and self.scope_store is not None:
+            from .connector_scopes import check_scope
+            persona_id = self.audit_context.get("agent") or "default"
+            scope_dec = check_scope(persona_id, tool_call.name, self.scope_store)
+            if not scope_dec.allowed and scope_dec.needs_approval:
+                allowed = False
+                reason = f"[scope] {scope_dec.reason}"
+                scope_needs_approval = True
+                self._audit(
+                    tool_call,
+                    stage="scope_escalation",
+                    status="needs_approval",
+                    reason=scope_dec.reason,
+                    connector=scope_dec.connector or "",
+                    required_scopes=",".join(scope_dec.required_scopes),
+                )
+                # 13 影子模式: 记录 scope 越权升级 (零信任层)。
+                self._record_decision(
+                    "scope_escalation",
+                    tool=tool_call.name,
+                    persona=persona_id,
+                    connector=scope_dec.connector or "",
+                    required_scopes=scope_dec.required_scopes,
+                    granted_scopes=scope_dec.granted_scopes,
+                    reason=scope_dec.reason,
+                )
 
         if allowed and decision.rule:
             # A task-scoped standing rule auto-allowed this call: audit the exact rule
@@ -605,13 +667,13 @@ class TurnEngine:
                 tool_call, stage="auto_allowed", status="allowed", reason=reason
             )
 
-        if not allowed and decision.needs_user:
+        if not allowed and (decision.needs_user or scope_needs_approval):
             yield Event(
                 EventType.PERMISSION_REQUIRED,
                 {
                     "name": tool_call.name,
                     "arguments": tool_call.arguments,
-                    "reason": decision.reason,
+                    "reason": reason,
                     "category": getattr(metadata, "category", ""),
                     # The exact target a standing rule could pin, or None when the call
                     # isn't eligible (no declared target arg / exec risk). Surfaces use it
@@ -624,14 +686,14 @@ class TurnEngine:
                     ),
                 },
             )
-            self._audit(tool_call, stage="approval_requested", reason=decision.reason)
+            self._audit(tool_call, stage="approval_requested", reason=reason)
             outcome = await self._interruptible(
                 self.approver(
                     PermissionRequest(
                         tool_name=tool_call.name,
                         arguments=tool_call.arguments,
                         metadata=metadata,
-                        reason=decision.reason,
+                        reason=reason,
                         tool_call_id=tool_call.id,
                     )
                 ),
@@ -649,6 +711,14 @@ class TurnEngine:
                     approval=outcome.value,
                     reason=reason,
                 )
+                # 13 影子模式: 记录审批解决 (拒绝/中断)。
+                self._record_decision(
+                    "approval_resolution",
+                    tool=tool_call.name,
+                    outcome=outcome.value,
+                    allowed=False,
+                    reason=reason,
+                )
             else:
                 if outcome is ApprovalOutcome.ALWAYS_TOOL:
                     self.permissions.allow_tool_for_session(tool_call.name)
@@ -662,6 +732,14 @@ class TurnEngine:
                     stage="approval_resolved",
                     status="approved",
                     approval=outcome.value,
+                    reason=reason,
+                )
+                # 13 影子模式: 记录审批解决 (批准)。
+                self._record_decision(
+                    "approval_resolution",
+                    tool=tool_call.name,
+                    outcome=outcome.value,
+                    allowed=True,
                     reason=reason,
                 )
 
@@ -821,6 +899,47 @@ class TurnEngine:
             self.audit_sink(payload)
         except Exception:
             pass
+
+    # -- 13 Agent 影子模式: 决策回放 -------------------------------------------
+    def _record_decision(self, kind: str, **fields: Any) -> None:
+        """追加一条决策轨迹 entry。
+
+        kind:
+          - tool_selection: 模型本轮选择调用的工具 (含可选工具清单 + 实际选择 + 候选)
+          - permission: RBAC 权限评估结果
+          - scope_escalation: 零信任 scope 越权 → 升级审批
+          - approval_resolution: 用户审批结果 (once/always_tool/always_command/deny)
+          - plan_decision / directory_decision / question_decision: 交互式工具结果
+
+        每条 entry 含: ts / iteration / kind / agent / session_id (来自 audit_context)
+        + 调用方提供的 fields。同时镜像写入 audit_sink (stage=decision_trace) 以便
+        离线审计 (engine 实例销毁后仍可查询)。
+        """
+        entry: dict[str, Any] = {
+            "ts": time.time(),
+            "iteration": self._iterations,
+            "kind": kind,
+            "agent": self.audit_context.get("agent", ""),
+            "session_id": self.audit_context.get("session_id", ""),
+            **fields,
+        }
+        self.decision_trace.append(entry)
+        # 镜像到 audit_events 表 (stage=decision_trace) — 离线审计与 engine 解耦。
+        if self.audit_sink is not None:
+            try:
+                self.audit_sink({
+                    **self.audit_context,
+                    "stage": "decision_trace",
+                    "decision_kind": kind,
+                    "iteration": self._iterations,
+                    "entry": entry,
+                })
+            except Exception:
+                pass  # 审计失败不能阻断主流程
+
+    def get_decision_trace(self) -> list[dict[str, Any]]:
+        """返回本 engine 实例累积的完整决策轨迹 (按时间顺序)。"""
+        return list(self.decision_trace)
 
     async def _handle_plan_proposal(self, tool_call: ToolCall) -> AsyncIterator[Event]:
         """Emit the plan for review, await the user's out-of-band decision, and apply it:

@@ -1152,6 +1152,22 @@ def create_app(manager: SessionManager) -> FastAPI:
         removed = manager.skill_delete(name)
         return {"ok": removed, "name": name} if removed else {"ok": False, "error": f"unknown skill: {name}"}
 
+    # -- P1-6 Skill 版本化 + 兼容性测试 + 安全评分 ---------------------------
+    @app.post("/v1/skills/{name}/lock")
+    def skill_generate_lock(name: str) -> dict[str, Any]:
+        """为 skill 生成 skill.lock 文件 (依赖工具签名哈希)。"""
+        return manager.skill_generate_lock(name)
+
+    @app.get("/v1/skills/{name}/security")
+    def skill_security(name: str) -> dict[str, Any]:
+        """静态分析 skill 安全评分。"""
+        return manager.skill_security_score(name)
+
+    @app.get("/v1/skills/{name}/compatibility")
+    def skill_compatibility(name: str) -> dict[str, Any]:
+        """检查 skill 与当前 registry 的兼容性。"""
+        return manager.skill_compatibility_check(name)
+
     # -- knowledge file library --------------------------------------------
     @app.get("/v1/knowledge")
     def knowledge_list(request: Request) -> dict[str, Any]:
@@ -1245,6 +1261,52 @@ def create_app(manager: SessionManager) -> FastAPI:
     @app.get("/v1/usage")
     def usage_summary(days: int = 14) -> dict[str, Any]:
         return manager.usage_summary(days=days)
+
+    # -- P1-5 零信任能力袋: 权限 scope API ------------------------------------
+    @app.get("/v1/permissions/scopes")
+    def permissions_scopes() -> dict[str, Any]:
+        """全量连接器工具 scope 声明表 (供前端权限矩阵渲染)。"""
+        return manager.connector_scope_matrix()
+
+    @app.get("/v1/permissions/persona-scopes")
+    def permissions_persona_scopes(persona_id: str = "default") -> dict[str, Any]:
+        """读取某角色的 scope 配置。"""
+        return manager.persona_scopes_get(persona_id)
+
+    @app.put("/v1/permissions/persona-scopes")
+    def permissions_persona_scopes_set(body: dict) -> dict[str, Any]:
+        """设置某角色在某连接器上的 scope。"""
+        return manager.persona_scopes_set(
+            persona_id=body.get("persona_id", "default"),
+            connector=body.get("connector", ""),
+            scopes=body.get("scopes", []),
+        )
+
+    @app.get("/v1/permissions/heatmap")
+    def permissions_heatmap() -> dict[str, Any]:
+        """权限审计热力图 (persona × connector × tool 聚合)。"""
+        return manager.permissions_heatmap()
+
+    # -- P1-8 HORNET 涌现 → 自动生成 Draft Skill ------------------------------
+    @app.post("/v1/hornet/emergence-to-skill")
+    def hornet_emergence_to_skill(body: dict = None) -> dict[str, Any]:
+        """手动触发: 把最近的 HORNET 涌现转化为 Draft Skill。
+
+        body 可选 emergence_index (int, 默认 -1 = 最近一条)。
+        """
+        body = body or {}
+        idx = int(body.get("emergence_index", -1))
+        return manager.hornet_emergence_to_skill(emergence_index=idx)
+
+    # -- 13 Agent 影子模式: 决策回放 ------------------------------------------
+    @app.get("/v1/sessions/{session_id}/decision-trace")
+    def session_decision_trace(session_id: str) -> dict[str, Any]:
+        """返回该会话 engine 累积的决策轨迹 (工具选择/权限/scope/审批)。
+
+        前端 SwarmView 的「决策回放时间轴」用这个渲染每一步 AI 看到了什么、
+        考虑了哪些选项、为什么选了这个。engine 销毁后回退到 audit_events 表。
+        """
+        return manager.session_decision_trace(session_id)
 
     # -- cache warm-up (P0 建议1) ---------------------------------------------
     @app.get("/v1/cache/warm")

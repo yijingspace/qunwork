@@ -641,6 +641,12 @@ export interface SkillInfo {
   install_count: number;
   rating: number | null;
   rating_count: number;
+  // P1-6: 是否为草稿 (来自 HORNET 涌现自动生成, 待审核)
+  draft?: boolean;
+  // P1-6: 安全评分 0-100 (静态分析得出)
+  security_score?: number | null;
+  // P1-8: 来源 ("manual" / "hornet_emergence")
+  source?: string;
 }
 
 export async function listSkills(): Promise<{ skills: SkillInfo[] }> {
@@ -684,6 +690,69 @@ export async function deleteSkill(name: string): Promise<{ ok: boolean; error?: 
   const res = await fetch(`${httpBase()}/v1/skills/${encodeURIComponent(name)}`, {
     method: "DELETE",
   });
+  return await res.json();
+}
+
+// -- P1-6: skill 版本化 / 安全评分 / 兼容性 ----------------------------------
+
+export interface SkillLockTool {
+  name: string;
+  schema_hash: string;
+  params: string[];
+}
+
+export interface SkillLock {
+  skill_name: string;
+  skill_version: string;
+  generated_at: number;
+  tools: SkillLockTool[];
+}
+
+export async function generateSkillLock(
+  name: string,
+): Promise<{ ok: boolean; lock_path?: string; lock?: SkillLock; error?: string }> {
+  const res = await fetch(`${httpBase()}/v1/skills/${encodeURIComponent(name)}/lock`, {
+    method: "POST",
+  });
+  return await res.json();
+}
+
+export interface SkillSecurityFinding {
+  pattern: string;
+  weight: number;
+  label: string;
+  count: number;
+}
+
+export interface SkillSecurityReport {
+  ok: boolean;
+  skill_name?: string;
+  score: number;
+  level: "low" | "medium" | "high" | "critical";
+  findings: SkillSecurityFinding[];
+  recommendation: string;
+  error?: string;
+}
+
+export async function getSkillSecurity(name: string): Promise<SkillSecurityReport> {
+  const res = await fetch(`${httpBase()}/v1/skills/${encodeURIComponent(name)}/security`);
+  return await res.json();
+}
+
+export interface SkillCompatibilityReport {
+  ok: boolean;
+  skill_name?: string;
+  has_lock: boolean;
+  compatible: boolean;
+  missing_tools?: string[];
+  changed_tools?: string[];
+  new_tools?: string[];
+  recommendation?: string;
+  error?: string;
+}
+
+export async function checkSkillCompatibility(name: string): Promise<SkillCompatibilityReport> {
+  const res = await fetch(`${httpBase()}/v1/skills/${encodeURIComponent(name)}/compatibility`);
   return await res.json();
 }
 
@@ -2493,6 +2562,129 @@ export async function hornetHealth(): Promise<{
 
 export async function hornetHealthReport(): Promise<{ ok: boolean; path?: string; score?: number }> {
   const res = await fetch(`${httpBase()}/v1/hornet/health-report`, { method: "POST" });
+  return await res.json();
+}
+
+// -- P1-8: HORNET 涌现 → 自动生成 Draft Skill --------------------------------
+
+export async function hornetEmergenceToSkill(
+  emergenceIndex = -1,
+): Promise<{
+  ok: boolean;
+  skill?: string;
+  emergence?: { id: number; kind: string; title: string; detail: unknown };
+  error?: string;
+}> {
+  const res = await fetch(`${httpBase()}/v1/hornet/emergence-to-skill`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ emergence_index: emergenceIndex }),
+  });
+  return await res.json();
+}
+
+// -- P1-5: 零信任能力袋 (scope 配置 + 权限审计热力图) ------------------------
+
+/** 全量连接器 scope 声明表: { connector: { tool: [scope, ...] } } */
+export type ConnectorScopeMatrix = Record<string, Record<string, string[]>>;
+
+export async function getConnectorScopes(): Promise<{ connectors: ConnectorScopeMatrix }> {
+  const res = await fetch(`${httpBase()}/v1/permissions/scopes`);
+  return await res.json();
+}
+
+export async function getPersonaScopes(
+  personaId: string,
+): Promise<{ persona_id: string; scopes: Record<string, string[]> }> {
+  const res = await fetch(
+    `${httpBase()}/v1/permissions/persona-scopes?persona_id=${encodeURIComponent(personaId)}`,
+  );
+  return await res.json();
+}
+
+export async function setPersonaScopes(
+  personaId: string,
+  connector: string,
+  scopes: string[],
+): Promise<{ ok: boolean; persona_id: string; connector: string; scopes: string[] }> {
+  const res = await fetch(`${httpBase()}/v1/permissions/persona-scopes`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ persona_id: personaId, connector, scopes }),
+  });
+  return await res.json();
+}
+
+export interface PermissionHeatmapCell {
+  persona: string;
+  connector: string;
+  tool: string;
+  call_count: number;
+  required_scopes: string[];
+  max_scope_level: number;
+  scope_escalations: number;
+}
+
+export async function getPermissionsHeatmap(): Promise<{
+  matrix: PermissionHeatmapCell[];
+  total_tools_tracked: number;
+}> {
+  const res = await fetch(`${httpBase()}/v1/permissions/heatmap`);
+  return await res.json();
+}
+
+// -- 13 Agent 影子模式: 决策回放轨迹 ----------------------------------------
+
+/** 单条决策轨迹 entry — 由 engine._record_decision 写入。 */
+export interface DecisionTraceEntry {
+  ts: number;
+  iteration: number;
+  kind:
+    | "tool_selection"
+    | "permission"
+    | "scope_escalation"
+    | "approval_resolution"
+    | "plan_decision"
+    | "directory_decision"
+    | "question_decision";
+  agent: string;
+  session_id: string;
+  // tool_selection
+  available_tools?: string[];
+  candidates?: Array<{ name: string; arguments: Record<string, unknown> }>;
+  choice?: string[];
+  reason?: string;
+  // permission / approval_resolution
+  tool?: string;
+  allowed?: boolean;
+  needs_user?: boolean;
+  rule?: string;
+  outcome?: string;
+  // scope_escalation
+  persona?: string;
+  connector?: string;
+  required_scopes?: string[];
+  granted_scopes?: string[];
+}
+
+/** SwarmView 通过 orchestration 事件流收到的 decision_trace 包装。 */
+export interface SwarmDecisionEvent {
+  worker: string;
+  task_id: string;
+  agent_id?: string;
+  entry: DecisionTraceEntry;
+}
+
+export async function getDecisionTrace(
+  sessionId: string,
+): Promise<{
+  session_id: string;
+  trace: DecisionTraceEntry[];
+  source: "live_engine" | "audit_store";
+}> {
+  const res = await fetch(
+    `${httpBase()}/v1/sessions/${encodeURIComponent(sessionId)}/decision-trace`,
+  );
   return await res.json();
 }
 
