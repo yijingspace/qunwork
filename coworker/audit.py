@@ -47,6 +47,10 @@ class AuditStore:
                 resource TEXT
             )
             """)
+        # 13 影子模式: 决策轨迹 entry 持久化列 (engine 销毁后离线可查)。
+        cols = [r[1] for r in self._conn.execute("PRAGMA table_info(audit_events)")]
+        if "payload" not in cols:
+            self._conn.execute("ALTER TABLE audit_events ADD COLUMN payload TEXT")
         self._conn.commit()
 
     def append(self, event: dict[str, Any]) -> None:
@@ -56,12 +60,19 @@ class AuditStore:
         resource = _resource(
             tool, event.get("arguments") or {}, event.get("result") or {}
         )
+        # 13 影子模式: 决策轨迹 entry 原样持久化 (engine 销毁后离线回放)。
+        payload = event.get("payload") or event.get("entry")
+        payload_json = (
+            json.dumps(payload, ensure_ascii=False, default=str)
+            if isinstance(payload, dict)
+            else (str(payload) if payload else "")
+        )
         with self._lock:
             self._conn.execute(
                 """
                 INSERT INTO audit_events
-                    (session_id, agent, workspace, connector, tool, stage, status, approval, args, result_preview, reason, resource)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    (session_id, agent, workspace, connector, tool, stage, status, approval, args, result_preview, reason, resource, payload)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     event.get("session_id") or "",
@@ -76,6 +87,7 @@ class AuditStore:
                     _truncate(str(event.get("result_preview") or "")),
                     _truncate(str(event.get("reason") or "")),
                     _truncate(str(resource or "")),
+                    payload_json,
                 ),
             )
             self._conn.commit()
@@ -116,8 +128,20 @@ class AuditStore:
             out.append(item)
         return out
 
-    def close(self) -> None:
-        self._conn.close()
+    def query(self, *, limit: int = 100, session_id: Optional[str] = None) -> list[dict[str, Any]]:
+        """Alias of list() used by the decision-trace offline fallback. Parses the
+        persisted `payload` (decision-trace entry) back into a dict."""
+        rows = self.list(limit=limit, session_id=session_id)
+        for r in rows:
+            raw = r.get("payload")
+            if raw:
+                try:
+                    r["payload"] = json.loads(raw)
+                except (json.JSONDecodeError, TypeError):
+                    pass
+        return rows
+
+    def close(self) -> None:        self._conn.close()
 
 
 def _sanitize_args(tool: str, args: dict[str, Any]) -> dict[str, Any]:

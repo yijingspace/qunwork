@@ -3798,7 +3798,7 @@ class SessionManager:
                     continue
                 if r.get("session_id") and r["session_id"] != session_id:
                     continue
-                entry = r.get("entry") or {}
+                entry = r.get("payload") or r.get("entry") or {}
                 if not entry:
                     # 旧版本可能没有 entry 字段, 从顶层字段重建
                     entry = {k: v for k, v in r.items() if k not in ("stage",)}

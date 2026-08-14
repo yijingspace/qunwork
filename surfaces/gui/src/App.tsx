@@ -1599,6 +1599,8 @@ export function App() {
                     onApprove={approve}
                     running={running}
                     onRetry={retry}
+                    // 13 影子模式: 主会话决策回放入口。
+                    decisionSessionId={sessionId}
                     // §33 ref #3: sub-threshold streamed text renders INSIDE the live turn
                     // group (header when collapsed, quiet line when expanded) — never as a
                     // floating paragraph.

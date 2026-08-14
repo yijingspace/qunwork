@@ -1,5 +1,7 @@
 import { useState } from "react";
 import type { ApprovalDecision, Item } from "../types";
+import { getDecisionTrace, type DecisionTraceEntry } from "../api";
+import { DecisionReplayTimeline, type SwarmDecisionRow } from "./DecisionReplay";
 import { shortArgs } from "./ApprovalCard";
 import { humanizeAsk, humanizeTool, type HumanLine } from "../humanize";
 import { Markdown } from "./Markdown";
@@ -313,6 +315,9 @@ interface Props {
   // Re-run the failed turn (no new user message). Offered only on a retriable notice that
   // is the transcript tail of an idle session — anywhere else the error is history.
   onRetry?: () => void;
+  // 13 影子模式: 主会话决策回放入口 — 传 session_id 后顶部出现「决策回放」按钮,
+  // 读取 /v1/sessions/{id}/decision-trace 时间轴。
+  decisionSessionId?: string;
 }
 
 // The transcript index whose notice gets the Retry button: the tail error notice, looking
@@ -328,7 +333,29 @@ export function retryAnchor(items: Item[]): number {
   return -1;
 }
 
-export function Transcript({ items, running, streamingText, onRetry }: Props) {
+export function Transcript({ items, running, streamingText, onRetry, decisionSessionId }: Props) {
+  const t = useT();
+  // 13 影子模式: 主会话决策回放入口 — 拉取当前会话的 decision_trace 时间轴。
+  const [showDecisions, setShowDecisions] = useState(false);
+  const [trace, setTrace] = useState<SwarmDecisionRow[] | null>(null);
+
+  const openDecisions = async () => {
+    if (!decisionSessionId) return;
+    setShowDecisions(true);
+    try {
+      const d = await getDecisionTrace(decisionSessionId);
+      setTrace(
+        (d.trace ?? []).map((entry: DecisionTraceEntry) => ({
+          worker: entry.agent || "",
+          task_id: "",
+          entry,
+        })),
+      );
+    } catch {
+      setTrace([]);
+    }
+  };
+
   // §33 grouping: a turn = the maximal run of assistant/tool/resolved-approval items between
   // breakers (user, connector, notices, plan/dir requests…). Trailing assistant texts are the
   // ANSWER and render as bubbles after the group; interior assistant texts are narration and
@@ -371,6 +398,29 @@ export function Transcript({ items, running, streamingText, onRetry }: Props) {
   const lastTurnIndex = blocks.reduce((acc, b, i) => ("turn" in b ? i : acc), -1);
   return (
     <div className="transcript">
+      {decisionSessionId && (
+        <div className="flex items-center gap-2 mb-2">
+          <button
+            className="text-[11px] px-2.5 py-1 rounded-lg border border-line bg-panel text-faint hover:text-ink hover:border-lineStrong inline-flex items-center gap-1.5"
+            onClick={() => void openDecisions()}
+            data-testid="transcript-decision-replay"
+            title={t("See what the agent saw, considered, and chose at each step")}
+          >
+            🧠 {t("Decision replay")}
+          </button>
+          {showDecisions && (
+            <button
+              className="text-[10.5px] text-faint hover:text-ink"
+              onClick={() => setShowDecisions(false)}
+            >
+              ✕ {t("Close")}
+            </button>
+          )}
+        </div>
+      )}
+      {showDecisions && trace !== null && (
+        <DecisionReplayTimeline decisions={trace} />
+      )}
       {blocks.map((block, bi) => {
         if ("turn" in block)
           return (
