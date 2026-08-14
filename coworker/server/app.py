@@ -1152,21 +1152,66 @@ def create_app(manager: SessionManager) -> FastAPI:
         removed = manager.skill_delete(name)
         return {"ok": removed, "name": name} if removed else {"ok": False, "error": f"unknown skill: {name}"}
 
-    # -- P1-6 Skill 版本化 + 兼容性测试 + 安全评分 ---------------------------
+    # -- Skill 信任基础 (版本市场 + lock + 安全 + 兼容 + 自动修复) --------
+    @app.get("/v1/skills/{name}/versions")
+    def skill_versions(name: str) -> dict[str, Any]:
+        """某 skill 所有版本的安装量/评分 (含 per-name 聚合 + per-version 拆分)。"""
+        return {"ok": True, **manager.skill_versions(name)}
+
     @app.post("/v1/skills/{name}/lock")
     def skill_generate_lock(name: str) -> dict[str, Any]:
-        """为 skill 生成 skill.lock 文件 (依赖工具签名哈希)。"""
-        return manager.skill_generate_lock(name)
+        """(重新) 生成 skill.lock 并刷新所有 live 引擎。返回 lock data。"""
+        data = manager.skill_generate_lock(name)
+        if data is None:
+            return {"ok": False, "error": f"unknown skill: {name}"}
+        return {"ok": True, "lock": data}
+
+    @app.get("/v1/skills/{name}/lock")
+    def skill_lock_info(name: str) -> dict[str, Any]:
+        """获取 skill.lock + 脚本完整性检查结果。"""
+        info = manager.skill_lock_info(name)
+        if info is None:
+            return {"ok": False, "error": f"unknown skill: {name}"}
+        return {"ok": True, **info}
 
     @app.get("/v1/skills/{name}/security")
-    def skill_security(name: str) -> dict[str, Any]:
-        """静态分析 skill 安全评分。"""
-        return manager.skill_security_score(name)
+    def skill_security(name: str, request: Request) -> dict[str, Any]:
+        """完整安全报告: score + level + findings + recommendation。rescan=1 强制重扫。"""
+        rescan = (request.query_params.get("rescan") or "").lower() in ("1", "true", "yes")
+        rep = manager.skill_security_report(name, rescan=rescan)
+        if rep is None:
+            return {"ok": False, "error": f"unknown skill: {name}"}
+        return {"ok": True, **rep}
+
+    @app.post("/v1/skills/{name}/security/rescan")
+    def skill_security_rescan(name: str) -> dict[str, Any]:
+        """强制重新扫描 (POST 快捷)。"""
+        rep = manager.skill_security_report(name, rescan=True)
+        if rep is None:
+            return {"ok": False, "error": f"unknown skill: {name}"}
+        return {"ok": True, **rep}
 
     @app.get("/v1/skills/{name}/compatibility")
     def skill_compatibility(name: str) -> dict[str, Any]:
-        """检查 skill 与当前 registry 的兼容性。"""
-        return manager.skill_compatibility_check(name)
+        """检查某 skill 兼容性报告 (含 autofix_plan, severity)。"""
+        rep = manager.skill_check_compatibility(name)
+        if rep is None:
+            return {"ok": False, "error": f"unknown skill: {name}"}
+        return {"ok": True, **rep}
+
+    @app.get("/v1/skills/compatibility/all")
+    def skill_compatibility_all() -> dict[str, Any]:
+        """批量兼容性扫描 (所有 skill, severity 排序)。"""
+        return {"ok": True, "reports": manager.skill_check_all_compatibility()}
+
+    @app.post("/v1/skills/autofix")
+    def skill_build_autofix(body: dict) -> dict[str, Any]:
+        """构建 Swarm reviewer 批量自动修复计划。
+        body.skill_names: [string] (可选, 否则所有不兼容的)。
+        """
+        names = body.get("skill_names") if isinstance(body, dict) else None
+        result = manager.skill_build_autofix(names)
+        return {"ok": True, **result}
 
     # -- knowledge file library --------------------------------------------
     @app.get("/v1/knowledge")
@@ -1483,6 +1528,54 @@ def create_app(manager: SessionManager) -> FastAPI:
             return {"ok": True, "received": len(envelopes), "applied": 0}
         result = manager.team_sync.merge_changes(changes)
         return {"ok": True, "received": len(changes), **result}
+
+    # -- ROI 价值归因 (建议10: AI 团队账本) ------------------------------------
+    @app.get("/v1/roi/config")
+    def roi_config() -> dict[str, Any]:
+        return manager.roi_config_get()
+
+    @app.post("/v1/roi/config")
+    def roi_config_set(body: dict) -> dict[str, Any]:
+        body = body or {}
+        return manager.roi_config_set(body.get("rates"), body.get("hourly_rate"))
+
+    @app.get("/v1/roi/report")
+    def roi_report(month: str = "") -> dict[str, Any]:
+        """月度 ROI 账本(成本/缓存节省/人工节省/技能复用, 按价值标签分组)。
+        month 格式 YYYY-MM, 缺省用当前月。"""
+        import re as _re
+
+        if not month:
+            from datetime import date as _date
+
+            month = _date.today().strftime("%Y-%m")
+        if not _re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])", month):
+            return {"ok": False, "error": "month must be YYYY-MM"}
+        return manager.roi_report(month)
+
+    @app.post("/v1/roi/report/html")
+    def roi_report_html(body: dict) -> dict[str, Any]:
+        """生成 HTML 价值报告并落盘(浏览器可打印为 PDF)。"""
+        from datetime import date as _date
+
+        from ..roi import render_html
+
+        body = body or {}
+        month = str(body.get("month") or _date.today().strftime("%Y-%m"))
+        report = manager.roi_report(month)
+        skill = report.pop("skill_reuse", {})
+        html_text = render_html(report, skill)
+        out = Path(manager.default_workspace or ".") / f"roi-report-{month}.html"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(html_text, encoding="utf-8")
+        return {"ok": True, "path": str(out), "month": month}
+
+    @app.post("/v1/orchestrate/{run_id}/tag")
+    def orchestrate_tag(run_id: str, body: dict) -> dict[str, Any]:
+        """ROI 价值标签: 给蜂群运行打业务标签(如「Q3 客户报告」)。"""
+        return manager.orchestrate_tag(
+            run_id, str((body or {}).get("value_tag") or "").strip()
+        )
 
     @app.get("/v1/hornet/stats")
     def hornet_stats() -> dict[str, Any]:

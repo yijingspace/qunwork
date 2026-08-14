@@ -3866,19 +3866,27 @@ class SessionManager:
         return _list_agents()
 
     def list_skills(self) -> list[dict[str, Any]]:
-        """Catalog with extended metadata + marketplace stats, newest first."""
+        """Catalog with extended metadata + marketplace stats + per-skill version list."""
         stats = self.skill_market.all_stats()
-        rows = [
-            {**row, **stats.get(row["name"], {"install_count": 0, "rating": None, "rating_count": 0})}
-            for row in self.skill_loader.catalog()
-        ]
+        all_versions = self.skill_market.all_versions_by_name()
+        rows = []
+        for row in self.skill_loader.catalog():
+            merged = {**row, **stats.get(row["name"], {"install_count": 0, "rating": None, "rating_count": 0})}
+            vs = all_versions.get(row["name"], [])
+            merged["available_versions"] = [v["version"] for v in vs] if vs else [row["version"]]
+            rows.append(merged)
         return sorted(rows, key=lambda r: (-(r.get("install_count") or 0), r["name"]))
 
     def skill_detail(self, name: str) -> Optional[dict[str, Any]]:
         row = self.skill_loader.detail(name)
         if row is None:
             return None
-        return {**row, **self.skill_market.stats(name)}
+        vs_rows = self.skill_market.versions(name)
+        merged = {**row, **self.skill_market.stats(name)}
+        merged["available_versions"] = (
+            [v["version"] for v in vs_rows] if vs_rows else [row.get("version") or "0.1.0"]
+        )
+        return merged
 
     def skill_export_zip(self, name: str) -> Optional[Path]:
         import tempfile
@@ -3917,6 +3925,81 @@ class SessionManager:
                     loader.refresh()
                 except Exception:
                     pass
+
+    # -- Skill 信任基础 (lock + 安全 + 兼容 + 版本市场) -------------------
+    def skill_versions(self, name: str) -> list[dict[str, Any]]:
+        """某 skill 所有版本的市场统计 (聚合 + 拆分)。"""
+        version_rows = self.skill_market.versions(name)
+        aggregate = self.skill_market.aggregate_stats(name)
+        return {
+            "aggregate": aggregate,
+            "versions": version_rows,
+        }  # type: ignore[return-value]
+
+    def skill_generate_lock(self, name: str) -> Optional[dict[str, Any]]:
+        """重新生成指定 skill 的 skill.lock。"""
+        data = self.skill_loader.generate_lock_for(name)
+        self._refresh_engine_skill_loaders()
+        return data
+
+    def skill_lock_info(self, name: str) -> Optional[dict[str, Any]]:
+        """某 skill 的 lock 内容 + 脚本完整性检查结果。"""
+        return self.skill_loader.lock_info(name)
+
+    def skill_security_report(self, name: str, *, rescan: bool = False) -> Optional[dict[str, Any]]:
+        """某 skill 的完整安全报告 (findings + recommendation + score + level)。"""
+        if rescan:
+            rep = self.skill_loader.rescan_security(name)
+            self._refresh_engine_skill_loaders()
+            return rep
+        return self.skill_loader.security_report(name)
+
+    def _registry_tool_schemas_list(self) -> list[dict[str, Any]]:
+        """把全局 ToolRegistry 的所有工具拉平为 [{name, params}] 列表用于兼容性检查。"""
+        tools: list[dict[str, Any]] = []
+        if not self.registry:
+            return tools
+        for name in self.registry.names():
+            try:
+                spec = self.registry.get(name)
+            except Exception:
+                spec = None
+            params: dict[str, Any] = {}
+            if spec is not None and hasattr(spec, "metadata"):
+                md = spec.metadata or {}
+                if isinstance(md, dict) and "parameters" in md:
+                    params = md["parameters"]
+            tools.append({"name": name, "params": params or {}})
+        return tools
+
+    def skill_check_compatibility(self, name: str) -> Optional[dict[str, Any]]:
+        """检查某 skill 与当前 registry 工具签名的兼容性 (含 autofix plan)。"""
+        skill = self.skill_loader.get(name)
+        if skill is None or skill.path is None:
+            return None
+        from coworker.skills.compatibility import check_skill_compatibility
+
+        return check_skill_compatibility(skill.path, self._registry_tool_schemas_list())
+
+    def skill_check_all_compatibility(self) -> list[dict[str, Any]]:
+        """对所有 skill 目录跑兼容性检查 (返回 severity 排序后的列表)。"""
+        from coworker.skills.compatibility import check_all_skills
+
+        return check_all_skills(
+            [Path(p) for p in getattr(self.skill_loader, "_dirs", [])],
+            self._registry_tool_schemas_list(),
+        )
+
+    def skill_build_autofix(self, skill_names: Optional[list[str]] = None) -> dict[str, Any]:
+        """构建 Swarm reviewer 自动修复计划。skill_names=None 表示所有不兼容的。"""
+        reports = self.skill_check_all_compatibility()
+        if skill_names:
+            reports = [r for r in reports if r["skill_name"] in set(skill_names)]
+        else:
+            reports = [r for r in reports if r.get("severity") in ("medium", "high")]
+        from coworker.skills.compatibility import build_batch_autofix
+
+        return build_batch_autofix(reports)
 
     # -- knowledge file library --------------------------------------------
     def list_swarm_templates(self) -> list[dict[str, Any]]:
@@ -4308,7 +4391,6 @@ class SessionManager:
                 content=content,
                 kind=str(payload.get("kind") or "synced"),
             )
-
     def team_sync_config(self, peer_url: str) -> dict[str, Any]:
         peer_url = (peer_url or "").strip().rstrip("/")
         if not peer_url:
@@ -4338,6 +4420,70 @@ class SessionManager:
         if result.get("ok"):
             result["status"] = self.team_sync_status()
         return result
+
+    # -- ROI 价值归因 (建议10: AI 团队账本) ------------------------------------
+    def roi_config_get(self) -> dict[str, Any]:
+        p = self._prefs
+        return {
+            "rates": p.get("roi_rates") or {},
+            "hourly_rate": float(p.get("roi_hourly_rate") or 0.0),
+        }
+
+    def roi_config_set(self, rates: Optional[dict], hourly_rate: Optional[float]) -> dict[str, Any]:
+        import math
+
+        # 输入校验: 拒绝非数值/NaN/Inf/负数 — 错误输入不得写入 prefs。
+        if not isinstance(rates, dict):
+            return {"ok": False, "error": "rates must be an object"}
+        try:
+            hr = float(hourly_rate or 0.0)
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "hourly_rate must be a number"}
+        if not math.isfinite(hr) or hr < 0:
+            return {"ok": False, "error": "hourly_rate must be a non-negative finite number"}
+        clean = {}
+        for model, v in rates.items():
+            if not isinstance(v, dict):
+                continue
+            try:
+                pp = float(v.get("prompt_ppm") or 0)
+                cp = float(v.get("completion_ppm") or 0)
+            except (TypeError, ValueError):
+                continue
+            if not (math.isfinite(pp) and math.isfinite(cp) and pp >= 0 and cp >= 0):
+                continue
+            clean[str(model)] = {"prompt_ppm": pp, "completion_ppm": cp}
+        self._prefs["roi_rates"] = clean
+        self._prefs["roi_hourly_rate"] = hr
+        self._save_prefs()
+        return {"ok": True, **self.roi_config_get()}
+
+    def roi_report(self, month: str) -> dict[str, Any]:
+        """One month's ROI ledger + skill-reuse savings (本地计算, 无外部依赖)."""
+        from ..roi import compute_monthly, compute_skill_reuse
+
+        cfg = self.roi_config_get()
+        tag_of_run = {
+            r["run_id"]: r.get("value_tag")
+            for r in self.orchestration_store.list_runs(limit=10_000)
+            if r.get("value_tag")
+        }
+        report = compute_monthly(
+            self.usage_store, self.orchestration_store,
+            month=month, rates=cfg["rates"],
+            hourly_rate=cfg["hourly_rate"], tag_of_run=tag_of_run,
+        )
+        skill = compute_skill_reuse(
+            self.usage_store, self.orchestration_store,
+            month=month, rates=cfg["rates"],
+        )
+        return {**report, "skill_reuse": skill}
+
+    def orchestrate_tag(self, run_id: str, value_tag: str) -> dict[str, Any]:
+        ok = self.orchestration_store.set_value_tag(run_id, value_tag)
+        if not ok:
+            return {"ok": False, "error": "run not found"}
+        return {"ok": True, "run_id": run_id, "value_tag": value_tag}
 
     # -- P1 团队 / AgentPool API 面 -------------------------------------------
     def _team_ingest_group_assets(self, group_id: str) -> None:

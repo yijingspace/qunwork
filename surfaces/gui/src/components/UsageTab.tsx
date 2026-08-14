@@ -4,8 +4,13 @@ import {
   getCacheWarmStatus,
   setCacheWarmEnabled,
   triggerCacheWarm,
+  getRoiConfig,
+  setRoiConfig,
+  getRoiReport,
+  generateRoiReport,
   type CacheWarmStatus,
   type SteadyStats,
+  type RoiReport,
 } from "../api";
 import { useT } from "../i18n";
 import { Toggle } from "./Toggle";
@@ -68,6 +73,7 @@ function shortSession(id: string) {
 
 export function UsageTab() {
   const t = useT();
+  const [tab, setTab] = useState<"usage" | "roi">("usage");
   const [totals, setTotals] = useState<UsageAgg | null>(null);
   const [steady, setSteady] = useState<SteadyStats | null>(null);
   const [days, setDays] = useState<DayRow[]>([]);
@@ -151,6 +157,22 @@ export function UsageTab() {
 
   return (
     <section>
+      <div className="flex items-center gap-1 mb-3">
+        {(["usage", "roi"] as const).map((tb) => (
+          <button
+            key={tb}
+            className={"px-3 py-1.5 rounded-lg text-[12.5px] border " +
+              (tab === tb ? "bg-panel border-lineStrong text-ink" : "border-transparent text-faint hover:text-ink")}
+            onClick={() => setTab(tb)}
+            data-testid={`usage-tab-${tb}`}
+          >
+            {tb === "usage" ? t("Usage") : t("ROI")}
+          </button>
+        ))}
+      </div>
+
+      {tab === "usage" ? (
+        <>
       <div className="flex items-center gap-2 mb-3">
         <h3 className="text-[15px] font-semibold">{t("Token usage")}</h3>
         <span className="text-[11px] text-muted">· {t("Cache hit rate")}: </span>
@@ -279,6 +301,151 @@ export function UsageTab() {
           </table>
         </div>
       ) : null}
+        </>
+      ) : (
+        <RoiPanel />
+      )}
     </section>
+  );
+}
+
+// -- ROI 价值归因 (建议10: AI 团队账本) --------------------------------------
+function RoiPanel() {
+  const t = useT();
+  const [report, setReport] = useState<RoiReport | null>(null);
+  const [month, setMonth] = useState(() => new Date().toISOString().slice(0, 7));
+  const [ratesText, setRatesText] = useState("");
+  const [hourly, setHourly] = useState("");
+  const [msg, setMsg] = useState("");
+
+  const fmtMoney = (n: number) => `¥${n.toFixed(2)}`;
+
+  useEffect(() => {
+    getRoiConfig().then((c) => {
+      setRatesText(JSON.stringify(c.rates ?? {}, null, 1));
+      setHourly(String(c.hourly_rate ?? 0));
+    }).catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    getRoiReport(month).then(setReport).catch(() => setReport(null));
+  }, [month]);
+
+  const saveConfig = async () => {
+    try {
+      const rates = JSON.parse(ratesText || "{}");
+      await setRoiConfig(rates, Number(hourly) || 0);
+      setMsg(t("Rates saved."));
+    } catch {
+      setMsg(t("Invalid rates JSON."));
+    }
+  };
+
+  const genHtml = async () => {
+    const r = await generateRoiReport(month);
+    setMsg(r.ok ? t("Report written to {path}", { path: r.path ?? "" }) : t("Report failed."));
+  };
+
+  return (
+    <div data-testid="roi-panel">
+      <div className="flex items-center gap-2 mb-3">
+        <h3 className="text-[15px] font-semibold">{t("AI team ledger · ROI")}</h3>
+        <span className="text-[11px] text-faint">{t("本地计算, 数据不出机器")}</span>
+      </div>
+
+      {/* 费率配置 */}
+      <div className="rounded-xl border border-line bg-panel/60 px-4 py-3 mb-4">
+        <div className="text-[12px] font-semibold mb-1">{t("API rate config (per-million tokens)")}</div>
+        <div className="text-[11px] text-faint mb-2">
+          {t('JSON: {"model": {"prompt_ppm": 2, "completion_ppm": 8}}')}
+        </div>
+        <textarea
+          className="w-full h-20 rounded-lg border border-line bg-paper px-2.5 py-1.5 text-[12px] font-mono outline-none focus:border-lineStrong"
+          value={ratesText}
+          onChange={(e) => setRatesText(e.target.value)}
+          data-testid="roi-rates"
+        />
+        <div className="flex items-center gap-2 mt-2">
+          <label className="text-[12px] text-faint">{t("Hourly rate (¥)")}</label>
+          <input
+            type="number" value={hourly}
+            onChange={(e) => setHourly(e.target.value)}
+            className="w-28 rounded-lg border border-line bg-paper px-2 py-1 text-[12px] outline-none focus:border-lineStrong"
+            data-testid="roi-hourly"
+          />
+          <button className="btn-primary sm" onClick={() => void saveConfig()} data-testid="roi-save">
+            {t("Save rates")}
+          </button>
+          <span className="text-[11.5px] text-muted">{msg}</span>
+        </div>
+      </div>
+
+      {/* 月度报告 */}
+      <div className="flex items-center gap-2 mb-2">
+        <input
+          type="month" value={month}
+          onChange={(e) => setMonth(e.target.value)}
+          className="rounded-lg border border-line bg-paper px-2 py-1 text-[12px] outline-none focus:border-lineStrong"
+          data-testid="roi-month"
+        />
+        <button className="text-[11.5px] px-2.5 py-1 rounded-lg border border-lineStrong bg-panel hover:border-accent hover:text-accent"
+          onClick={() => void genHtml()} data-testid="roi-html">
+          {t("Generate HTML report")}
+        </button>
+      </div>
+
+      {!report ? (
+        <div className="text-[12px] text-muted">{t("Loading…")}</div>
+      ) : (
+        <div className="space-y-3">
+          <div className="flex flex-wrap gap-2.5">
+            <Stat label={t("Total cost")} value={fmtMoney(report.total_cost)} sub={report.missing_rates.length ? `${t("missing rates")}: ${report.missing_rates.join(", ")}` : undefined} />
+            <Stat label={t("Cache savings")} value={fmtMoney(report.cache_saved)} />
+            <Stat label={t("Labor saved")} value={`${report.labor_hours.toFixed(1)}h`} sub={fmtMoney(report.labor_saved)} />
+          </div>
+          {report.per_model.length > 0 && (
+            <div className="rounded-xl border border-line bg-panel/60 px-4 py-3">
+              <div className="text-[12px] font-semibold mb-1.5">{t("By model")}</div>
+              <table className="w-full text-[12px]">
+                <thead><tr className="text-faint text-left">
+                  <th className="py-1">{t("Model")}</th><th>{t("Prompt")}</th>
+                  <th>{t("Completion")}</th><th>{t("Cached")}</th>
+                  <th>{t("Cost")}</th><th>{t("Cache saved")}</th>
+                </tr></thead>
+                <tbody>
+                  {report.per_model.map((m) => (
+                    <tr key={m.model} className="border-t border-line/60">
+                      <td className="py-1">{m.model}</td>
+                      <td className="tabular-nums">{m.prompt_tokens.toLocaleString()}</td>
+                      <td className="tabular-nums">{m.completion_tokens.toLocaleString()}</td>
+                      <td className="tabular-nums">{m.cached_tokens.toLocaleString()}</td>
+                      <td className="tabular-nums">{fmtMoney(m.cost)}</td>
+                      <td className="tabular-nums">{fmtMoney(m.cache_saved)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+          {Object.keys(report.by_tag).length > 0 && (
+            <div className="rounded-xl border border-line bg-panel/60 px-4 py-3">
+              <div className="text-[12px] font-semibold mb-1.5">{t("By value tag")}</div>
+              <div className="space-y-1">
+                {Object.entries(report.by_tag).map(([tag, b]) => (
+                  <div key={tag} className="flex items-center gap-2 text-[12px]">
+                    <span className="text-ink flex-1 truncate">{tag}</span>
+                    <span className="text-faint">{b.runs} {t("runs")} · {b.hours.toFixed(1)}h</span>
+                    <span className="tabular-nums">{fmtMoney(b.cost)}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+          <div className="text-[11.5px] text-faint">
+            {t("Skill reuse saved {s} minutes this month.", { s: ((report.skill_reuse?.total_saved_seconds ?? 0) / 60).toFixed(1) })}
+          </div>
+        </div>
+      )}
+    </div>
   );
 }

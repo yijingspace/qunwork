@@ -641,12 +641,19 @@ export interface SkillInfo {
   install_count: number;
   rating: number | null;
   rating_count: number;
+  // 信任基础元数据
+  security_score?: number | null;
+  security_level?: "low" | "medium" | "high" | "critical";
+  lock_exists?: boolean;
+  lock_generated_at?: number | null;
+  compatible?: boolean;
+  compat_severity?: "none" | "low" | "medium" | "high";
   // P1-6: 是否为草稿 (来自 HORNET 涌现自动生成, 待审核)
   draft?: boolean;
-  // P1-6: 安全评分 0-100 (静态分析得出)
-  security_score?: number | null;
   // P1-8: 来源 ("manual" / "hornet_emergence")
   source?: string;
+  // 可用版本列表 (来自后端 aggregate_stats / versions)
+  available_versions?: string[];
 }
 
 export async function listSkills(): Promise<{ skills: SkillInfo[] }> {
@@ -693,27 +700,81 @@ export async function deleteSkill(name: string): Promise<{ ok: boolean; error?: 
   return await res.json();
 }
 
-// -- P1-6: skill 版本化 / 安全评分 / 兼容性 ----------------------------------
+// -- Skill 信任基础 (版本市场 + lock + 安全 + 兼容 + 自动修复) ---------------
 
 export interface SkillLockTool {
   name: string;
   schema_hash: string;
   params: string[];
+  required?: boolean;
+  source?: "allowed_tools" | "heuristic";
+}
+
+export interface SkillLockScript {
+  path: string;
+  integrity: string;
+  size: number;
 }
 
 export interface SkillLock {
   skill_name: string;
   skill_version: string;
   generated_at: number;
+  lock_version: number;
   tools: SkillLockTool[];
+  scripts?: SkillLockScript[];
+  lock_hash?: string;
+  note?: string;
+}
+
+export interface SkillVersionRow {
+  version: string;
+  install_count: number;
+  rating: number | null;
+  rating_count: number;
+  last_installed_at: number | null;
+}
+
+export interface SkillVersions {
+  ok: boolean;
+  aggregate: {
+    name: string;
+    total_install_count: number;
+    weighted_rating: number | null;
+    total_rating_count: number;
+    latest_version: string | null;
+    versions_count: number;
+  };
+  versions: SkillVersionRow[];
+}
+
+export async function getSkillVersions(name: string): Promise<SkillVersions> {
+  const res = await fetch(`${httpBase()}/v1/skills/${encodeURIComponent(name)}/versions`);
+  return await res.json();
 }
 
 export async function generateSkillLock(
   name: string,
-): Promise<{ ok: boolean; lock_path?: string; lock?: SkillLock; error?: string }> {
+): Promise<{ ok: boolean; lock?: SkillLock; lock_path?: string; error?: string }> {
   const res = await fetch(`${httpBase()}/v1/skills/${encodeURIComponent(name)}/lock`, {
     method: "POST",
   });
+  return await res.json();
+}
+
+export interface SkillLockInfo {
+  ok: boolean;
+  lock?: SkillLock | null;
+  lock_exists: boolean;
+  lock_path?: string;
+  integrity_ok?: boolean;
+  mismatched_scripts?: Array<{ path: string; expected: string; actual: string }>;
+  missing_scripts?: string[];
+  error?: string;
+}
+
+export async function getSkillLock(name: string): Promise<SkillLockInfo> {
+  const res = await fetch(`${httpBase()}/v1/skills/${encodeURIComponent(name)}/lock`);
   return await res.json();
 }
 
@@ -722,6 +783,9 @@ export interface SkillSecurityFinding {
   weight: number;
   label: string;
   count: number;
+  file?: string;
+  lines?: number[];
+  category?: "shell" | "path" | "network" | "data" | "process" | "secret" | "privilege" | "other";
 }
 
 export interface SkillSecurityReport {
@@ -731,28 +795,79 @@ export interface SkillSecurityReport {
   level: "low" | "medium" | "high" | "critical";
   findings: SkillSecurityFinding[];
   recommendation: string;
+  breakdown?: Record<string, number>;
+  scanned_files?: number;
+  scan_time_ms?: number;
   error?: string;
 }
 
-export async function getSkillSecurity(name: string): Promise<SkillSecurityReport> {
-  const res = await fetch(`${httpBase()}/v1/skills/${encodeURIComponent(name)}/security`);
+export async function getSkillSecurity(name: string, rescan = false): Promise<SkillSecurityReport> {
+  const q = rescan ? "?rescan=1" : "";
+  const res = await fetch(`${httpBase()}/v1/skills/${encodeURIComponent(name)}/security${q}`);
+  return await res.json();
+}
+
+export async function rescanSkillSecurity(name: string): Promise<SkillSecurityReport> {
+  const res = await fetch(`${httpBase()}/v1/skills/${encodeURIComponent(name)}/security/rescan`, {
+    method: "POST",
+  });
   return await res.json();
 }
 
 export interface SkillCompatibilityReport {
   ok: boolean;
   skill_name?: string;
+  skill_version?: string;
   has_lock: boolean;
   compatible: boolean;
-  missing_tools?: string[];
-  changed_tools?: string[];
-  new_tools?: string[];
+  severity: "none" | "low" | "medium" | "high";
+  missing_tools?: Array<{ name: string; schema_hash?: string; params?: string[] }>;
+  changed_tools?: Array<{
+    name: string;
+    before_hash?: string;
+    after_hash?: string;
+    params_added?: string[];
+    params_removed?: string[];
+  }>;
+  new_tools?: Array<{ name: string; schema_hash?: string }>;
+  summary?: string;
+  autofix_plan?: {
+    title?: string;
+    intent?: string;
+    reviewer_rubric?: Array<[string, string]>;
+    step_plan?: Array<{ skill_name: string; action: string; note?: string }>;
+    affected_skills?: string[];
+  };
   recommendation?: string;
   error?: string;
 }
 
 export async function checkSkillCompatibility(name: string): Promise<SkillCompatibilityReport> {
   const res = await fetch(`${httpBase()}/v1/skills/${encodeURIComponent(name)}/compatibility`);
+  return await res.json();
+}
+
+export async function checkAllSkillsCompatibility(): Promise<{
+  ok: boolean;
+  reports: SkillCompatibilityReport[];
+}> {
+  const res = await fetch(`${httpBase()}/v1/skills/compatibility/all`);
+  return await res.json();
+}
+
+export async function buildSkillAutofix(skillNames?: string[]): Promise<{
+  ok: boolean;
+  title?: string;
+  intent?: string;
+  reviewer_rubric?: Array<[string, string]>;
+  step_plan?: Array<{ skill_name: string; action: string; note?: string }>;
+  affected_skills?: string[];
+}> {
+  const res = await fetch(`${httpBase()}/v1/skills/autofix`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ skill_names: skillNames ?? null }),
+  });
   return await res.json();
 }
 
@@ -3040,4 +3155,64 @@ export async function getPermissions(): Promise<PermissionMatrix | null> {
   } catch {
     return null;
   }
+}
+
+// ── ROI 价值归因 (建议10: AI 团队账本) ──────────────────────────────────────
+export interface RoiConfig {
+  rates: Record<string, { prompt_ppm: number; completion_ppm: number }>;
+  hourly_rate: number;
+}
+
+export interface RoiReport {
+  month: string;
+  total_cost: number;
+  cache_saved: number;
+  labor_hours: number;
+  labor_saved: number;
+  per_model: Array<{
+    model: string; prompt_tokens: number; completion_tokens: number;
+    cached_tokens: number; cost: number; cache_saved: number;
+  }>;
+  by_tag: Record<string, { runs: number; hours: number; cost: number }>;
+  missing_rates: string[];
+  rates_configured: boolean;
+  hourly_rate: number;
+  skill_reuse: { total_saved_seconds: number; per_template: Array<{ template_id: string; runs: number; reuse_count: number; saved_seconds: number }> };
+}
+
+export async function getRoiConfig(): Promise<RoiConfig> {
+  const res = await fetch(`${httpBase()}/v1/roi/config`);
+  return await res.json();
+}
+
+export async function setRoiConfig(rates: RoiConfig["rates"], hourlyRate: number): Promise<{ ok: boolean }> {
+  const res = await fetch(`${httpBase()}/v1/roi/config`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ rates, hourly_rate: hourlyRate }),
+  });
+  return await res.json();
+}
+
+export async function getRoiReport(month: string): Promise<RoiReport> {
+  const res = await fetch(`${httpBase()}/v1/roi/report?month=${encodeURIComponent(month)}`);
+  return await res.json();
+}
+
+export async function generateRoiReport(month: string): Promise<{ ok: boolean; path?: string }> {
+  const res = await fetch(`${httpBase()}/v1/roi/report/html`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ month }),
+  });
+  return await res.json();
+}
+
+export async function tagOrchestrateRun(runId: string, valueTag: string): Promise<{ ok: boolean; error?: string }> {
+  const res = await fetch(`${httpBase()}/v1/orchestrate/${encodeURIComponent(runId)}/tag`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ value_tag: valueTag }),
+  });
+  return await res.json();
 }

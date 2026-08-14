@@ -48,6 +48,12 @@ class OrchestrationRunStore:
             self._db.execute(
                 "ALTER TABLE orchestration_runs ADD COLUMN parent_run_id TEXT"
             )
+        # ROI 价值标签 (建议10): 每次蜂群运行可打业务标签, 报告按标签分组。
+        cols = [r[1] for r in self._db.execute("PRAGMA table_info(orchestration_runs)")]
+        if "value_tag" not in cols:
+            self._db.execute(
+                "ALTER TABLE orchestration_runs ADD COLUMN value_tag TEXT"
+            )
         self._db.execute(
             """CREATE TABLE IF NOT EXISTS orchestration_events (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -83,6 +89,16 @@ class OrchestrationRunStore:
             )
             self._db.commit()
 
+    def set_value_tag(self, run_id: str, value_tag: str) -> bool:
+        """ROI 价值标签 (建议10): tag a finished run with a business label."""
+        with self._lock:
+            cur = self._db.execute(
+                "UPDATE orchestration_runs SET value_tag = ? WHERE run_id = ?",
+                (value_tag or None, run_id),
+            )
+            self._db.commit()
+            return cur.rowcount > 0
+
     # -- events -------------------------------------------------------------
     def append_event(self, run_id: str, kind: str, payload: dict[str, Any]) -> int:
         with self._lock:
@@ -112,7 +128,7 @@ class OrchestrationRunStore:
     def get_run(self, run_id: str) -> Optional[dict[str, Any]]:
         with self._lock:
             row = self._db.execute(
-                "SELECT run_id, intent, status, created_at, updated_at, final, parent_run_id FROM orchestration_runs WHERE run_id = ?",
+                "SELECT run_id, intent, status, created_at, updated_at, final, parent_run_id, value_tag FROM orchestration_runs WHERE run_id = ?",
                 (run_id,),
             ).fetchone()
             if not row:
@@ -129,6 +145,7 @@ class OrchestrationRunStore:
             "updated_at": row[4],
             "final": row[5],
             "parent_run_id": row[6],
+            "value_tag": row[7],
             "events": [
                 {"kind": k, "payload": json.loads(p)} for k, p in events
             ],
@@ -137,7 +154,7 @@ class OrchestrationRunStore:
     def list_runs(self, limit: int = 20) -> list[dict[str, Any]]:
         with self._lock:
             rows = self._db.execute(
-                "SELECT run_id, intent, status, created_at, updated_at, parent_run_id FROM orchestration_runs ORDER BY created_at DESC LIMIT ?",
+                "SELECT run_id, intent, status, created_at, updated_at, parent_run_id, value_tag FROM orchestration_runs ORDER BY created_at DESC LIMIT ?",
                 (limit,),
             ).fetchall()
         return [
@@ -148,6 +165,7 @@ class OrchestrationRunStore:
                 "created_at": r[3],
                 "updated_at": r[4],
                 "parent_run_id": r[5],
+                "value_tag": r[6],
             }
             for r in rows
         ]
