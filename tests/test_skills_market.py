@@ -67,7 +67,8 @@ def test_delete_skill_removes_folder(loader: SkillLoader, tmp_path: Path):
 def test_catalog_contains_extended_fields(loader: SkillLoader):
     loader.save_skill("a", "desc A", "body", version="2.0.0", category="dev", author="me")
     row = loader.catalog()[0]
-    assert row == {
+    # 核心字段 (兼容老 API)
+    for k, v in {
         "name": "a",
         "description": "desc A",
         "version": "2.0.0",
@@ -75,7 +76,16 @@ def test_catalog_contains_extended_fields(loader: SkillLoader):
         "author": "me",
         "tags": [],
         "updated_at": None,
-    }
+    }.items():
+        assert row[k] == v
+    # 信任基础: lock_exists / locked 双别名一致性, security_level 推导与 score 对应
+    assert row["lock_exists"] == row["locked"]
+    assert isinstance(row["security_level"], str) or row["security_level"] is None
+    if row["security_score"] is not None:
+        assert row["security_level"] in {"low", "medium", "high", "critical"}
+    # compatibility / versions 占位存在
+    for k in ("compatible", "compat_severity", "available_versions"):
+        assert k in row
 
 
 # -- export / import --------------------------------------------------------

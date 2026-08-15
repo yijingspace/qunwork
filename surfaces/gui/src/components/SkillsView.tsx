@@ -1,17 +1,24 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  buildSkillAutofix,
+  checkAllSkillsCompatibility,
   checkSkillCompatibility,
   deleteSkill,
   exportSkill,
   generateSkillLock,
+  getSkillLock,
   getSkillSecurity,
+  getSkillVersions,
   hornetEmergenceToSkill,
   importSkill,
   listSkills,
   rateSkill,
+  rescanSkillSecurity,
   type SkillCompatibilityReport,
   type SkillInfo,
+  type SkillLockInfo,
   type SkillSecurityReport,
+  type SkillVersions,
 } from "../api";
 import { useT } from "../i18n";
 
@@ -24,8 +31,26 @@ export default function SkillsView() {
   const fileRef = useRef<HTMLInputElement>(null);
 
   const [skillsError, setSkillsError] = useState(false);
+  // 批量兼容扫描 / 自动修复
+  const [scanningAll, setScanningAll] = useState(false);
+  const [allReports, setAllReports] = useState<SkillCompatibilityReport[]>([]);
+  const [autofixPanel, setAutofixPanel] = useState<{
+    title?: string;
+    intent?: string;
+    rubric?: Array<[string, string]>;
+    steps?: Array<{ skill_name: string; action: string; note?: string }>;
+  } | null>(null);
   // P1-8: 正在调用 emergence → skill
   const [generating, setGenerating] = useState(false);
+
+  const flashRef = useRef<(msg: string) => void>(() => {});
+  const flash = useCallback((msg: string) => {
+    setNotice(msg);
+    window.setTimeout(() => setNotice(""), 4000);
+  }, []);
+  useEffect(() => {
+    flashRef.current = flash;
+  }, [flash]);
 
   const refresh = useCallback(async () => {
     try {
@@ -40,14 +65,45 @@ export default function SkillsView() {
     }
   }, []);
 
+  const runBatchCompat = useCallback(async () => {
+    setScanningAll(true);
+    try {
+      const r = await checkAllSkillsCompatibility();
+      if (r.ok) {
+        setAllReports(r.reports ?? []);
+        flashRef.current(
+          t("{count} skills scanned", { count: r.reports?.length ?? 0 }) +
+            " · " +
+            t("{count} incompatible", {
+              count: (r.reports ?? []).filter((x) => !x.compatible).length,
+            }),
+        );
+      }
+    } finally {
+      setScanningAll(false);
+    }
+  }, [t]);
+
+  const runAutofix = useCallback(async (names?: string[]) => {
+    const r = await buildSkillAutofix(names);
+    if (r.ok) {
+      setAutofixPanel({
+        title: r.title,
+        intent: r.intent,
+        rubric: r.reviewer_rubric,
+        steps: r.step_plan,
+      });
+      flashRef.current(
+        t("Autofix plan built") + (r.affected_skills?.length ? ` · ${r.affected_skills.length}` : ""),
+      );
+    } else {
+      flashRef.current(t("Autofix failed"));
+    }
+  }, [t]);
+
   useEffect(() => {
     refresh();
   }, [refresh]);
-
-  const flash = (msg: string) => {
-    setNotice(msg);
-    window.setTimeout(() => setNotice(""), 4000);
-  };
 
   const handleRate = async (name: string, score: number) => {
     const res = await rateSkill(name, score);
@@ -148,7 +204,7 @@ export default function SkillsView() {
             )}
           </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
           <input
             ref={fileRef}
             type="file"
@@ -174,6 +230,21 @@ export default function SkillsView() {
           >
             {t("Import skill")}
           </button>
+          <button
+            className="btn-secondary"
+            disabled={scanningAll}
+            onClick={runBatchCompat}
+            title={t("Run compatibility check for every installed skill")}
+          >
+            {scanningAll ? t("Scanning…") : `🛡 ${t("Scan compatibility")}`}
+          </button>
+          <button
+            className="btn-secondary"
+            onClick={() => runAutofix(undefined)}
+            title={t("Build a Swarm reviewer autofix plan for all incompatible skills")}
+          >
+            🔧 {t("Autofix plan")}
+          </button>
           <button className="btn-primary" onClick={() => flash(t("Tip: ask the swarm to create_skill during a chat, then export it here"))}>
             {t("How to create skills")}
           </button>
@@ -181,6 +252,86 @@ export default function SkillsView() {
       </div>
 
       {notice && <div className="mb-3 px-3 py-2 rounded-lg bg-surface border border-line text-[12.5px]">{notice}</div>}
+
+      {/* 批量兼容扫描摘要 */}
+      {allReports.length > 0 && (
+        <div className="mb-3 rounded-xl border border-line bg-panel px-3 py-2.5" data-testid="compat-summary">
+          <div className="flex items-center justify-between mb-1.5">
+            <div className="text-[12.5px] font-semibold">
+              {t("Compatibility summary")}: {allReports.length}
+            </div>
+            <button className="text-[11px] text-faint hover:text-ink" onClick={() => setAllReports([])}>
+              {t("Hide")}
+            </button>
+          </div>
+          <div className="flex flex-wrap gap-1.5">
+            {allReports
+              .filter((r) => !r.compatible)
+              .map((r) => (
+                <span
+                  key={r.skill_name}
+                  className={
+                    "px-2 py-0.5 rounded text-[11px] border " +
+                    (r.severity === "high"
+                      ? "bg-rose-500/15 text-rose-100 border-rose-500/40"
+                      : "bg-amber-500/15 text-amber-100 border-amber-500/40")
+                  }
+                >
+                  {r.skill_name} · {r.severity}
+                </span>
+              ))}
+            {allReports.every((r) => r.compatible) && (
+              <span className="text-[11.5px] text-emerald-200">✓ {t("All compatible")}</span>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Swarm reviewer autofix plan */}
+      {autofixPanel && (
+        <div className="mb-3 rounded-xl border border-violet-600/40 bg-violet-600/10 px-3.5 py-3 text-[12.5px]" data-testid="autofix-plan">
+          <div className="flex items-start justify-between mb-2">
+            <div className="font-semibold text-violet-100">
+              🧐 {autofixPanel.title ?? t("Reviewer autofix plan")}
+            </div>
+            <button className="text-[11px] text-faint hover:text-ink" onClick={() => setAutofixPanel(null)}>
+              {t("Hide")}
+            </button>
+          </div>
+          {autofixPanel.intent && (
+            <p className="text-[12px] text-faint whitespace-pre-wrap mb-2 max-h-28 overflow-y-auto">
+              {autofixPanel.intent}
+            </p>
+          )}
+          {autofixPanel.rubric && autofixPanel.rubric.length > 0 && (
+            <div className="mb-2">
+              <div className="text-[11px] font-semibold text-faint mb-1">{t("Reviewer rubric")}</div>
+              <ul className="space-y-0.5 ml-3">
+                {autofixPanel.rubric.map((r, i) => (
+                  <li key={i} className="text-[11.5px]">
+                    <span className="text-violet-200">• {r[0]}</span>
+                    <span className="text-faint"> — {r[1]}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+          {autofixPanel.steps && autofixPanel.steps.length > 0 && (
+            <div>
+              <div className="text-[11px] font-semibold text-faint mb-1">{t("Step plan")}</div>
+              <ol className="space-y-0.5 ml-4 list-decimal">
+                {autofixPanel.steps.map((s, i) => (
+                  <li key={i} className="text-[11.5px]">
+                    <span className="font-mono">{s.skill_name}</span>:{" "}
+                    <span>{s.action}</span>
+                    {s.note && <span className="text-faint"> · {s.note}</span>}
+                  </li>
+                ))}
+              </ol>
+            </div>
+          )}
+        </div>
+      )}
 
       {loading ? (
         <div className="text-[13px] text-muted">{t("Loading…")}</div>
@@ -276,19 +427,30 @@ interface SkillCardProps {
   flash: (msg: string) => void;
 }
 
+const COMPAT_SEVERITY_STYLE: Record<string, string> = {
+  none: "bg-emerald-600/15 text-emerald-200 border-emerald-600/30",
+  low: "bg-sky-600/15 text-sky-200 border-sky-600/30",
+  medium: "bg-amber-500/20 text-amber-100 border-amber-500/40",
+  high: "bg-rose-500/20 text-rose-100 border-rose-500/40",
+};
+
 function SkillCard({ skill, onRate, onExport, onDelete, flash }: SkillCardProps) {
   const t = useT();
   const [sec, setSec] = useState<SkillSecurityReport | null>(null);
   const [compat, setCompat] = useState<SkillCompatibilityReport | null>(null);
+  const [lockInfo, setLockInfo] = useState<SkillLockInfo | null>(null);
+  const [versions, setVersions] = useState<SkillVersions | null>(null);
   const [showDetail, setShowDetail] = useState(false);
-  const [busy, setBusy] = useState<"lock" | "sec" | "compat" | null>(null);
+  const [busy, setBusy] = useState<"lock" | "sec" | "compat" | "versions" | null>(null);
 
   const handleLock = async () => {
     setBusy("lock");
     try {
       const r = await generateSkillLock(skill.name);
       if (r.ok) {
-        flash(t("Lock generated") + (r.lock_path ?? ""));
+        flash(t("Lock generated"));
+        const li = await getSkillLock(skill.name);
+        setLockInfo(li);
       } else {
         flash(t("Lock failed") + (r.error ? `: ${r.error}` : ""));
       }
@@ -297,10 +459,10 @@ function SkillCard({ skill, onRate, onExport, onDelete, flash }: SkillCardProps)
     }
   };
 
-  const handleSec = async () => {
+  const handleSec = async (forceRescan = false) => {
     setBusy("sec");
     try {
-      const r = await getSkillSecurity(skill.name);
+      const r = forceRescan ? await rescanSkillSecurity(skill.name) : await getSkillSecurity(skill.name);
       setSec(r);
       setShowDetail(true);
     } finally {
@@ -319,13 +481,26 @@ function SkillCard({ skill, onRate, onExport, onDelete, flash }: SkillCardProps)
     }
   };
 
+  const handleVersions = async () => {
+    setBusy("versions");
+    try {
+      const v = await getSkillVersions(skill.name);
+      setVersions(v);
+      setShowDetail(true);
+    } finally {
+      setBusy(null);
+    }
+  };
+
   const isEmergence = skill.source === "hornet_emergence";
+  const hasSecurity = typeof skill.security_score === "number";
+  const hasCompatBadge = skill.compatible === true || (skill.compat_severity && skill.compat_severity !== "none");
 
   return (
     <div className="rounded-xl border border-line bg-surface p-3.5 flex flex-col gap-2">
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0">
-          <div className="flex items-center gap-1.5">
+          <div className="flex items-center gap-1.5 flex-wrap">
             <span className="font-semibold text-[13.5px] truncate">{skill.name}</span>
             {skill.draft && (
               <span className="text-[10px] px-1.5 py-px rounded-full bg-amber-600/30 text-amber-100 border border-amber-500/40">
@@ -333,13 +508,61 @@ function SkillCard({ skill, onRate, onExport, onDelete, flash }: SkillCardProps)
               </span>
             )}
             {isEmergence && (
-              <span className="text-[10px] px-1.5 py-px rounded-full bg-violet-600/30 text-violet-100 border border-violet-500/40" title={t("Auto-generated from HORNET emergence")}>
+              <span
+                className="text-[10px] px-1.5 py-px rounded-full bg-violet-600/30 text-violet-100 border border-violet-500/40"
+                title={t("Auto-generated from HORNET emergence")}
+              >
                 🧬
+              </span>
+            )}
+            {/* 信任徽章: lock */}
+            {skill.lock_exists ? (
+              <span
+                className="text-[10px] px-1.5 py-px rounded-full bg-emerald-600/20 text-emerald-200 border border-emerald-600/30"
+                title={t("Skill.lock present")}
+              >
+                🔒 lock
+              </span>
+            ) : (
+              <span
+                className="text-[10px] px-1.5 py-px rounded-full bg-slate-500/20 text-slate-200 border border-slate-500/30 opacity-70"
+                title={t("No skill.lock — run Lock first")}
+              >
+                ⊘ lock
+              </span>
+            )}
+            {/* 信任徽章: 安全评分 */}
+            {hasSecurity && (
+              <span
+                className={
+                  "text-[10px] px-1.5 py-px rounded-full border font-mono " +
+                  (SECURITY_LEVEL_STYLE[skill.security_level ?? "low"] ?? "")
+                }
+                title={`${t("Security score")} ${skill.security_score}/100 (${skill.security_level})`}
+              >
+                🛡 {skill.security_score}
+              </span>
+            )}
+            {/* 信任徽章: 兼容性 severity */}
+            {hasCompatBadge && (
+              <span
+                className={
+                  "text-[10px] px-1.5 py-px rounded-full border " +
+                  (skill.compatible
+                    ? COMPAT_SEVERITY_STYLE.none
+                    : COMPAT_SEVERITY_STYLE[skill.compat_severity ?? "medium"])
+                }
+                title={skill.compatible ? t("Compatible") : t(`Severity: ${skill.compat_severity}`)}
+              >
+                {skill.compatible ? "✓ compat" : `⚠ ${skill.compat_severity}`}
               </span>
             )}
           </div>
           <div className="text-[12px] text-faint">
             v{skill.version}
+            {skill.available_versions && skill.available_versions.length > 1 && (
+              <> · {t("{count} versions", { count: skill.available_versions.length })}</>
+            )}
             {skill.category ? ` · ${skill.category}` : ""}
             {skill.author ? ` · ${skill.author}` : ""}
           </div>
@@ -366,7 +589,7 @@ function SkillCard({ skill, onRate, onExport, onDelete, flash }: SkillCardProps)
         </div>
       )}
 
-      {/* P1-6: 安全评分徽章 (有数据时显示) */}
+      {/* 点击按钮后的详细诊断 (安全评分 / 兼容 / lock / 版本市场) */}
       {sec && sec.ok && (
         <div
           className={
@@ -375,71 +598,135 @@ function SkillCard({ skill, onRate, onExport, onDelete, flash }: SkillCardProps)
           }
           data-testid={`skill-security-${skill.name}`}
         >
-          <span className="font-mono">{t("Security")}: {sec.score}/100 · {sec.level}</span>
-          {sec.findings.length > 0 && (
-            <span className="opacity-80">· {sec.findings.length} {t("findings")}</span>
-          )}
+          <span className="font-mono">
+            {t("Security")}: {sec.score}/100 · {sec.level}
+          </span>
+          {sec.findings.length > 0 && <span className="opacity-80">· {sec.findings.length} {t("findings")}</span>}
+          {sec.scanned_files != null && <span className="opacity-70">· {sec.scanned_files} {t("files")}</span>}
         </div>
       )}
 
-      {/* P1-6: 兼容性徽章 (有数据时显示) */}
       {compat && compat.ok && (
         <div
           className={
             "rounded-md border px-2 py-1 text-[11px] flex items-center gap-2 " +
-            (compat.compatible
-              ? "bg-emerald-600/15 text-emerald-200 border-emerald-600/30"
-              : "bg-rose-500/20 text-rose-100 border-rose-500/40")
+            (compat.compatible ? COMPAT_SEVERITY_STYLE.none : COMPAT_SEVERITY_STYLE[compat.severity] ?? "")
           }
           data-testid={`skill-compat-${skill.name}`}
         >
           {compat.compatible
             ? `✓ ${t("Compatible")}`
-            : `✗ ${t("Incompatible")}: ${(compat.missing_tools ?? []).length + (compat.changed_tools ?? []).length} ${t("issues")}`}
-          {!compat.has_lock && (
-            <span className="opacity-70">· {t("no lock")}</span>
-          )}
+            : `⚠ ${t("Severity")}: ${compat.severity} · ${
+                (compat.missing_tools ?? []).length + (compat.changed_tools ?? []).length
+              } ${t("issues")}`}
+          {!compat.has_lock && <span className="opacity-70">· {t("no lock")}</span>}
         </div>
       )}
 
-      {/* P1-6: 详细诊断 (折叠区) */}
-      {showDetail && (sec || compat) && (
-        <div className="rounded-md border border-line bg-panel p-2 text-[11.5px] space-y-1.5" data-testid={`skill-detail-${skill.name}`}>
+      {lockInfo && lockInfo.ok && (
+        <div
+          className={
+            "rounded-md border px-2 py-1 text-[11px] flex items-center gap-2 " +
+            (lockInfo.lock_exists
+              ? lockInfo.integrity_ok
+                ? "bg-emerald-600/15 text-emerald-200 border-emerald-600/30"
+                : "bg-rose-500/20 text-rose-100 border-rose-500/40"
+              : "bg-slate-500/15 text-slate-200 border-slate-500/30")
+          }
+        >
+          {lockInfo.lock_exists
+            ? lockInfo.integrity_ok
+              ? `🔒 ${t("Lock integrity OK")} · ${t("{count} tools", { count: lockInfo.lock?.tools?.length ?? 0 })}`
+              : `✗ ${t("Lock integrity mismatch")}`
+            : `⊘ ${t("No lock file")}`}
+        </div>
+      )}
+
+      {/* 详细诊断折叠区 */}
+      {showDetail && (sec || compat || versions) && (
+        <div
+          className="rounded-md border border-line bg-panel p-2 text-[11.5px] space-y-2"
+          data-testid={`skill-detail-${skill.name}`}
+        >
           {sec && sec.ok && sec.findings.length > 0 && (
             <div>
-              <div className="font-semibold text-[11px] mb-1">{t("Security findings")}</div>
+              <div className="font-semibold text-[11px] mb-1">
+                {t("Security findings")} ({sec.score}/100 · {sec.level})
+              </div>
               <ul className="space-y-0.5 ml-3">
-                {sec.findings.slice(0, 5).map((f, i) => (
+                {sec.findings.slice(0, 8).map((f, i) => (
                   <li key={i} className="text-faint">
-                    <span className="text-ink">{f.label}</span> ×{f.count} (w{f.weight})
+                    <span className="text-ink">{f.label}</span>
+                    {f.file && <span className="opacity-70"> ({f.file})</span>}
+                    <span className="opacity-70"> ×{f.count} · w{f.weight}</span>
                   </li>
                 ))}
               </ul>
+              {sec.breakdown && Object.keys(sec.breakdown).length > 0 && (
+                <div className="mt-1 text-[10.5px] text-faint">
+                  {Object.entries(sec.breakdown).map(([k, v]) => (
+                    <span key={k} className="mr-2">
+                      {k}: {v}
+                    </span>
+                  ))}
+                </div>
+              )}
               <p className="text-[10.5px] text-faint mt-1">{sec.recommendation}</p>
             </div>
           )}
+
           {compat && compat.ok && !compat.compatible && (
             <div>
               <div className="font-semibold text-[11px] mb-1">{t("Compatibility issues")}</div>
               {(compat.missing_tools ?? []).length > 0 && (
                 <div className="text-faint">
-                  {t("Missing")}: <span className="font-mono">{(compat.missing_tools ?? []).join(", ")}</span>
+                  <span className="text-rose-200">{t("Missing")}:</span>{" "}
+                  {(compat.missing_tools ?? [])
+                    .map((x) => (typeof x === "string" ? x : x.name))
+                    .join(", ")}
                 </div>
               )}
               {(compat.changed_tools ?? []).length > 0 && (
                 <div className="text-faint">
-                  {t("Changed")}: <span className="font-mono">{(compat.changed_tools ?? []).join(", ")}</span>
+                  <span className="text-amber-200">{t("Changed")}:</span>{" "}
+                  {(compat.changed_tools ?? []).map((x) => x.name).join(", ")}
                 </div>
               )}
-              {compat.recommendation && (
-                <p className="text-[10.5px] text-faint mt-1">{compat.recommendation}</p>
+              {(compat.new_tools ?? []).length > 0 && (
+                <div className="text-faint">
+                  <span className="text-sky-200">{t("New available")}:</span>{" "}
+                  {(compat.new_tools ?? []).map((x) => x.name).join(", ")}
+                </div>
               )}
+              {compat.summary && <p className="text-[10.5px] text-ink mt-1">{compat.summary}</p>}
+              {compat.recommendation && <p className="text-[10.5px] text-faint mt-1">{compat.recommendation}</p>}
             </div>
           )}
-          <button
-            className="text-[10.5px] text-faint hover:text-ink"
-            onClick={() => setShowDetail(false)}
-          >
+
+          {versions && versions.ok && (
+            <div>
+              <div className="font-semibold text-[11px] mb-1">
+                {t("Version marketplace stats")} · {t("total installs")}: {versions.aggregate.total_install_count}
+                {versions.aggregate.weighted_rating != null && (
+                  <> · ★ {versions.aggregate.weighted_rating}</>
+                )}
+              </div>
+              <ul className="space-y-0.5 ml-3">
+                {versions.versions.map((v) => (
+                  <li key={v.version} className="text-[11px] text-faint">
+                    <span className="font-mono text-ink">v{v.version}</span> ·{" "}
+                    {t("Installs")} {v.install_count}
+                    {v.rating != null ? ` · ★ ${v.rating} (${v.rating_count})` : ""}
+                  </li>
+                ))}
+                {versions.versions.length === 0 && (
+                  <li className="text-[11px] text-faint">{t("Only this version recorded")}</li>
+                )}
+              </ul>
+            </div>
+          )}
+
+          <button className="text-[10.5px] text-faint hover:text-ink" onClick={() => setShowDetail(false)}>
             {t("Hide")}
           </button>
         </div>
@@ -457,7 +744,14 @@ function SkillCard({ skill, onRate, onExport, onDelete, flash }: SkillCardProps)
           </button>
         ))}
         <span className="flex-1" />
-        {/* P1-6: 版本化/安全/兼容性 按钮 */}
+        <button
+          className="btn-secondary text-[11px] py-1 px-2"
+          disabled={busy !== null}
+          onClick={handleVersions}
+          title={t("See install/rating stats across versions")}
+        >
+          {busy === "versions" ? "…" : t("Versions")}
+        </button>
         <button
           className="btn-secondary text-[11px] py-1 px-2"
           disabled={busy !== null}
@@ -469,8 +763,12 @@ function SkillCard({ skill, onRate, onExport, onDelete, flash }: SkillCardProps)
         <button
           className="btn-secondary text-[11px] py-1 px-2"
           disabled={busy !== null}
-          onClick={handleSec}
-          title={t("Static security analysis")}
+          onClick={() => handleSec(false)}
+          onContextMenu={(e) => {
+            e.preventDefault();
+            void handleSec(true);
+          }}
+          title={t("Static security analysis (right-click to rescan)")}
         >
           {busy === "sec" ? "…" : t("Security")}
         </button>
