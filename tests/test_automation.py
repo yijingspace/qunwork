@@ -595,3 +595,35 @@ def test_rhythm_recommendations_picks_valley_hour(tmp_path, monkeypatch):
     assert r["current_hour"] == 9
     assert 0.0 < r["valley_share"] <= 1.0
     assert r["runs"] == 20
+
+
+def test_compute_next_run_once_accepts_epoch_float():
+    """_hornet_act_gap 曾传 epoch 浮点 fire_at → fromisoformat ValueError →
+    next_run=None 永不运行 (2026-08 修复: 兼容浮点/数字字符串)。"""
+    t = _task(schedule=Schedule(kind="once", fire_at=1_800_000_000.0))
+    assert compute_next_run(t, after=1_700_000_000.0) == 1_800_000_000.0
+    t2 = _task(schedule=Schedule(kind="once", fire_at="1800000000"))
+    assert compute_next_run(t2, after=1_700_000_000.0) == 1_800_000_000.0
+    # 无效 fire_at 仍安全返回 None
+    t3 = _task(schedule=Schedule(kind="once", fire_at="not-a-date"))
+    assert compute_next_run(t3, after=1_700_000_000.0) is None
+
+
+def test_hornet_gap_task_gets_valid_next_run(tmp_path, monkeypatch):
+    """_hornet_act_gap 创建的补全任务必须有有效 next_run(修复前 once+epoch/now
+    → next_run=None → 永不运行)。"""
+    monkeypatch.setenv("COWORKER_STATE_DIR", str(tmp_path / "state"))
+    from coworker.server.manager import SessionManager
+
+    mgr = SessionManager(data_dir=tmp_path / "data")
+    actions: dict = {"task": []}
+    mgr._hornet_act_gap(
+        "知识空洞: graph", {"hint": "补充关联或合并"}, str(tmp_path / "ws"), actions
+    )
+    assert actions["task"] == ["知识空洞: graph"]
+    hornet_tasks = [t for t in mgr.task_store.list() if t.title.startswith("[HORNET]")]
+    assert len(hornet_tasks) == 1
+    t = hornet_tasks[0]
+    assert t.schedule.kind == "once"
+    assert t.next_run is not None, "补全任务 next_run 必须非 None — 否则 scheduler 永不触发"
+    assert t.next_run > 0

@@ -28,13 +28,21 @@ def compute_next_run(
     if sched.kind == "once":
         if not sched.fire_at:
             return None
-        try:
-            dt = datetime.fromisoformat(sched.fire_at)
-        except ValueError:
-            return None
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=_tz(sched.timezone))
-        ts = dt.timestamp()
+        # fire_at 兼容 ISO 字符串与 epoch 秒(浮点/数字字符串) —
+        # _hornet_act_gap 曾误传 epoch 浮点, fromisoformat 抛 ValueError → 永不运行。
+        raw = sched.fire_at
+        if isinstance(raw, (int, float)):
+            ts = float(raw)
+        elif isinstance(raw, str) and raw.replace(".", "", 1).isdigit():
+            ts = float(raw)
+        else:
+            try:
+                dt = datetime.fromisoformat(raw)
+            except ValueError:
+                return None
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=_tz(sched.timezone))
+            ts = dt.timestamp()
         return ts if (task.run_count == 0 and ts > now) else None
     # cron
     from croniter import croniter

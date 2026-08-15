@@ -4792,7 +4792,9 @@ class SessionManager:
                 f"知识库检测到空洞: {title}\n{hint}\n"
                 f"请搜索相关资料并补充该知识领域的关联内容。"
             ),
-            schedule=Schedule(kind="once", fire_at=_time.time()),  # fire now (review fix: once+None never runs)
+            # fire_at 必须是 ISO 字符串且在未来(compute_next_run 要求 ts > now) —
+            # 曾误传 epoch 浮点 / now 导致 next_run=None、任务永不运行 (2026-08 修复)。
+            schedule=Schedule(kind="once", fire_at=_dt_now_iso(offset_seconds=6)),
             workspace=ws,
             origin_surface="hornet",
             agent="cowork",
@@ -5569,6 +5571,15 @@ def _epoch() -> float:
     import time
 
     return time.time()
+
+
+def _dt_now_iso(offset_seconds: float = 0.0) -> str:
+    """Now (+optional offset) as ISO-8601 string — once-schedule fire_at 的正确格式。
+    compute_next_run 用 datetime.fromisoformat 解析且要求 ts > now: 曾因传入 epoch
+    浮点或 now(保存瞬间即过期)导致 HORNET 补全任务 next_run=None、永不运行。"""
+    from datetime import datetime, timedelta
+
+    return (datetime.now() + timedelta(seconds=offset_seconds)).isoformat()
 
 
 # A Slack message ts looks like "1700000001.000001" (epoch seconds + microseconds). Other
