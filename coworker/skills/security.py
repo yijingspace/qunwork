@@ -26,25 +26,47 @@ _RISK_PATTERNS: list[tuple[str, int, str]] = [
     (r"\bexec\s*\(", 30, "exec() 动态执行"),
     (r"\bcompile\s*\(", 20, "compile() 动态编译"),
     (r"__import__\s*\(", 25, "__import__() 动态导入"),
-    # -- Shell 执行 --
+    # -- Shell 执行 (POSIX + Windows) --
     (r"\bos\.system\s*\(", 25, "os.system() shell 执行"),
     (r"\bsubprocess\.(run|call|Popen|check_output|check_call)\s*\(", 20, "subprocess shell 执行"),
     (r"\bos\.popen\s*\(", 20, "os.popen() shell 执行"),
     (r"\bcommands\.(getoutput|getstatusoutput)\s*\(", 20, "commands 模块 shell 执行"),
+    (r"(?i)powershell\s+(?:-Command|-c|-F)", 22, "PowerShell 子进程调用"),
+    (r"(?i)cmd\.(exe)?\s*/[cCkK]", 22, "cmd.exe shell 执行"),
+    (r"(?i)\bStart-Process\b", 18, "Start-Process 子进程启动"),
+    (r"(?i)&\s*['\"][^\n]{3,}['\"]\s*['\"]?[A-Z]:[\\/]", 18, "& 调用符执行 Windows 路径脚本"),
     # -- 网络请求 --
     (r"\brequests\.(get|post|put|delete|patch|head)\s*\(", 15, "requests 网络请求"),
     (r"\bhttpx\.(get|post|put|delete|patch)\s*\(", 15, "httpx 网络请求"),
     (r"\burllib\.request\s*\(", 15, "urllib 网络请求"),
     (r"\bsocket\.connect\s*\(", 15, "socket 网络连接"),
     (r"\bhttp\.client\s*\(", 12, "http.client 网络请求"),
-    # -- 文件系统 (绝对路径写) --
-    (r'\bopen\s*\(\s*["\']/[A-Z]:', 10, "绝对路径文件写入"),
-    (r"\bPath\s*\(\s*['\"]/", 8, "绝对路径 Path 操作"),
-    (r"\bshutil\.(rmtree|move|copy)\s*\(", 12, "shutil 文件操作"),
-    (r"\bos\.(remove|unlink|rmdir|rename)\s*\(", 10, "os 文件删除/重命名"),
-    # -- 环境变量/密钥 --
+    (r"(?i)\bInvoke-WebRequest\b", 15, "Invoke-WebRequest 网络请求"),
+    (r"(?i)\bInvoke-RestMethod\b", 15, "Invoke-RestMethod 网络请求"),
+    (r"(?i)\bcurl(\.exe)?\b", 12, "curl 网络请求"),
+    (r"(?i)\bwget\b", 12, "wget 网络请求"),
+    # -- 文件系统 (绝对路径写) — Unix + Windows --
+    (r'\bopen\s*\(\s*["\'][A-Za-z]:[\\/]', 12, "Windows 绝对路径文件操作"),
+    (r'\bopen\s*\(\s*["\']/', 10, "Unix 绝对路径文件操作"),
+    (r'\bopen\s*\(\s*["\']\\\\', 12, "UNC 网络路径文件操作"),
+    (r"\bPath\s*\(\s*['\"][A-Za-z]:[\\/]", 10, "Windows 绝对路径 Path 操作"),
+    (r"\bPath\s*\(\s*['\"]/", 8, "Unix 绝对路径 Path 操作"),
+    (r"\bPath\s*\(\s*['\"]\\\\", 10, "UNC 网络路径 Path 操作"),
+    (r"\bshutil\.(rmtree|move|copy|copy2)\s*\(", 12, "shutil 高危文件操作"),
+    (r"\bos\.(remove|unlink|rmdir|rename|replace)\s*\(", 10, "os 文件删除/重命名"),
+    (r"\bos\.(makedirs|mkdir)\s*\(", 6, "os 创建目录"),
+    (r"(?i)(?:Remove|Move|Copy|New)-(?:Item|ItemProperty)\s+-", 10, "PowerShell 文件系统修改"),
+    # -- 环境变量/密钥/凭据 --
     (r"\bos\.environ\s*\[", 8, "环境变量访问"),
     (r"\bgetpass\.(getpass|getuser)\s*\(", 5, "密码/用户获取"),
+    (r"(?i)\bGet-Content\b.*(?:secrets?|\.env|token|key|password)", 10, "读取敏感文件"),
+    (r"(?i)(?:api[_-]?key|secret|token|password)\s*[=:]\s*['\"]", 8, "硬编码凭据"),
+    # -- 代码下载执行 (supply-chain 最高危) --
+    (r"(?i)\b(?:pip|uv|conda)\s+install\b", 18, "包管理器安装新依赖"),
+    (r"(?i)(?:npm|pnpm|yarn|bun)\s+(?:add|install)\b", 15, "前端包管理器安装新依赖"),
+    (r"\bexec\(open\(", 25, "exec+open 直接执行外部脚本"),
+    (r"(?i)\bDownloadString\b.*\bInvoke-Expression\b", 30, "下载并执行 (PowerShell 高危)"),
+    (r"(?i)\bcurl[^(\n]{0,200}\|\s*(?:bash|sh|zsh|python|powershell)", 30, "管道执行远程脚本"),
 ]
 
 

@@ -12,9 +12,12 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Any, Callable, Optional
 
 import aisuite as ai
+
+from . import lock as _skill_lock
+from . import security as _skill_security
 
 
 @dataclass
@@ -35,8 +38,24 @@ class Skill:
     security_score: Optional[int] = None
     # P1-8: 来源标记 ("manual" / "hornet_emergence")
     source: str = "manual"
+    # Skill.lock 信息 (加载时填入, None = 未锁定)
+    lock_meta: Optional[dict[str, Any]] = None
+    # 脚本完整性 (verify_scripts_integrity 结果, None = 未检查)
+    scripts_integrity: Optional[list[dict[str, Any]]] = None
 
     def catalog_row(self) -> dict:
+        # 安全评分 -> 级别 (与 security.py 保持一致)
+        level: Optional[str] = None
+        if self.security_score is not None:
+            if self.security_score >= 85:
+                level = "low"
+            elif self.security_score >= 60:
+                level = "medium"
+            elif self.security_score >= 35:
+                level = "high"
+            else:
+                level = "critical"
+        lock_exists = self.lock_meta is not None
         return {
             "name": self.name,
             "description": self.description,
@@ -47,14 +66,45 @@ class Skill:
             "updated_at": self.updated_at,
             "draft": self.draft,
             "security_score": self.security_score,
+            "security_level": level,
             "source": self.source,
+            # Skill.lock 摘要 (双字段: 前端友好 + 老 API 兼容)
+            "lock_exists": lock_exists,
+            "locked": lock_exists,
+            "lock_version": self.lock_meta.get("schema_version") if self.lock_meta else None,
+            "lock_generated_at": self.lock_meta.get("generated_at") if self.lock_meta else None,
+            "tool_count_locked": len(self.lock_meta.get("tools", [])) if self.lock_meta else 0,
+            # 脚本完整性
+            "scripts_tampered": (
+                len(self.scripts_integrity) if self.scripts_integrity is not None else None
+            ),
+            # 兼容性占位 (由 manager / detail 级别动态查询填入)
+            "compatible": None,
+            "compat_severity": None,
+            # 可用版本列表 (由 manager 级别聚合填入)
+            "available_versions": None,
         }
 
 
 class SkillLoader:
-    def __init__(self, dirs: list[str | Path]) -> None:
+    def __init__(
+        self,
+        dirs: list[str | Path],
+        *,
+        registry_tool_schemas: Optional[Callable[[], dict[str, dict | list]]] = None,
+    ) -> None:
+        """Load skills from directories.
+
+        Args:
+            dirs: skill 搜索目录。
+            registry_tool_schemas: 可选的回调, 返回 {tool_name: schema}。
+                生成 skill.lock 时能把真实工具 schema 算入签名哈希, 兼容性
+                检测更准确。如果为 None, lock 里记录空 schema (参数列表仅
+                记录提取到的名字)。
+        """
         self._dirs = [Path(d) for d in dirs]
         self._skills: dict[str, Skill] = {}
+        self._registry_tool_schemas = registry_tool_schemas
         self.refresh()
 
     def refresh(self) -> None:
@@ -101,6 +151,17 @@ class SkillLoader:
         if source != "manual":
             lines.append(f"source: {source}")
         md.write_text(f"---\n" + "\n".join(lines) + "\n---\n\n" + body + "\n", encoding="utf-8")
+        # 13 Skill 信任基础: 保存后自动生成 skill.lock + 计算安全评分
+        try:
+            schemas = self._registry_tool_schemas() if self._registry_tool_schemas else None
+            _skill_lock.auto_generate_lock(
+                skill_dir,
+                skill_name=name,
+                skill_version=version,
+                registry_tool_schemas=schemas,
+            )
+        except Exception:
+            pass  # lock 失败不阻断主流程
         self.refresh()
         return md
 
@@ -147,6 +208,18 @@ class SkillLoader:
         if body is not None:
             body_text = body
         md.write_text(f"---\n{front.lstrip(chr(10))}\n---\n\n{body_text}\n", encoding="utf-8")
+        # 更新后重新生成 lock (schema 可能变化, 版本号可能变化)
+        try:
+            s = self.get(name)
+            schemas = self._registry_tool_schemas() if self._registry_tool_schemas else None
+            _skill_lock.auto_generate_lock(
+                Path(skill.path),
+                skill_name=s.name if s else None,
+                skill_version=s.version if s else version,
+                registry_tool_schemas=schemas,
+            )
+        except Exception:
+            pass
         self.refresh()
         return md
 
@@ -227,6 +300,19 @@ class SkillLoader:
                     target.parent.mkdir(parents=True, exist_ok=True)
                     target.write_bytes(zf.read(name))
         self.refresh()
+        installed = self.get(skill_name)
+        # 导入外部 skill 后: 1) 重新生成 lock (防止 zip 自带 lock 有后门)  2) 安全评分 + 脚本完整性检查
+        if installed is not None and installed.path is not None:
+            try:
+                schemas = self._registry_tool_schemas() if self._registry_tool_schemas else None
+                _skill_lock.auto_generate_lock(
+                    installed.path,
+                    skill_name=installed.name,
+                    skill_version=installed.version,
+                    registry_tool_schemas=schemas,
+                )
+            except Exception:
+                pass
         return self.get(skill_name)
 
     @staticmethod
@@ -247,6 +333,26 @@ class SkillLoader:
             md = sub / "SKILL.md"
             if md.is_file():
                 skill = _parse_skill(md)
+                # lock 信息 + 脚本完整性
+                try:
+                    skill.lock_meta = _skill_lock.load_lock(sub)
+                    if skill.lock_meta is not None:
+                        skill.scripts_integrity = _skill_lock.verify_scripts_integrity(
+                            skill.lock_meta, sub
+                        )
+                except Exception:
+                    skill.lock_meta = None
+                    skill.scripts_integrity = None
+                # 安全评分 (磁盘无缓存时实时算)
+                if skill.security_score is None:
+                    try:
+                        rep = _skill_security.analyze_skill_dir(sub)
+                        skill.security_score = rep["score"]
+                        # 把 findings/recommendation 作为 transient 附加 (方便详情页读取)
+                        # 注意: catalog_row 只返回 score, 详细信息通过 loader.security_report(name) 获取
+                        skill._security_report_cache = rep  # type: ignore[attr-defined]
+                    except Exception:
+                        skill.security_score = None
                 self._skills[skill.name] = skill
 
     def names(self) -> list[str]:
@@ -262,6 +368,105 @@ class SkillLoader:
         """Full catalog row (metadata only — no instructions body)."""
         skill = self.get(name)
         return skill.catalog_row() if skill else None
+
+    # -- Skill.lock 辅助 --------------------------------------------------
+    def generate_lock_for(self, name: str) -> Optional[dict]:
+        """对已存在的 skill (重新) 生成 skill.lock。返回 lock data。"""
+        skill = self.get(name)
+        if skill is None or skill.path is None:
+            return None
+        schemas = self._registry_tool_schemas() if self._registry_tool_schemas else None
+        _, data = _skill_lock.auto_generate_lock(
+            skill.path,
+            skill_name=skill.name,
+            skill_version=skill.version,
+            registry_tool_schemas=schemas,
+        )
+        self.refresh()
+        return data
+
+    def lock_info(self, name: str) -> Optional[dict]:
+        """某 skill 的 skill.lock 详情: {lock_exists, lock, integrity_ok, mismatched/missing_scripts, lock_path}。"""
+        skill = self.get(name)
+        if skill is None:
+            return None
+        lock_meta = skill.lock_meta
+        lock_exists = lock_meta is not None
+        lock_path = None
+        if skill.path is not None:
+            p = skill.path / "skill.lock"
+            if p.exists():
+                lock_path = str(p)
+        mismatched: list[dict] = []
+        missing: list[str] = []
+        integrity_ok = True
+        if skill.scripts_integrity is not None and lock_exists:
+            for item in skill.scripts_integrity:
+                if item.get("status") == "mismatch":
+                    mismatched.append({
+                        "path": item.get("path", ""),
+                        "expected": item.get("expected", ""),
+                        "actual": item.get("actual", ""),
+                    })
+                    integrity_ok = False
+                elif item.get("status") == "missing":
+                    missing.append(item.get("path", ""))
+                    integrity_ok = False
+        return {
+            "lock": lock_meta,
+            "lock_exists": lock_exists,
+            "lock_path": lock_path,
+            "integrity_ok": integrity_ok if (skill.scripts_integrity is not None and lock_exists) else None,
+            "mismatched_scripts": mismatched,
+            "missing_scripts": missing,
+            "scripts_integrity": skill.scripts_integrity,
+        }
+
+    # -- 安全评分 辅助 ----------------------------------------------------
+    def security_report(self, name: str) -> Optional[dict]:
+        """返回某 skill 的完整安全报告 (score + level + findings + recommendation)。"""
+        skill = self.get(name)
+        if skill is None or skill.path is None:
+            return None
+        try:
+            cached = getattr(skill, "_security_report_cache", None)
+            if cached is not None:
+                return cached
+        except Exception:
+            pass
+        report = _skill_security.analyze_skill_dir(skill.path)
+        try:
+            skill._security_report_cache = report  # type: ignore[attr-defined]
+        except Exception:
+            pass
+        return report
+
+    def rescan_security(self, name: str) -> Optional[dict]:
+        """强制重新扫描安全评分。"""
+        skill = self.get(name)
+        if skill is None or skill.path is None:
+            return None
+        try:
+            delattr(skill, "_security_report_cache")
+        except Exception:
+            pass
+        rep = _skill_security.analyze_skill_dir(skill.path)
+        skill.security_score = rep["score"]
+        try:
+            skill._security_report_cache = rep  # type: ignore[attr-defined]
+        except Exception:
+            pass
+        return rep
+
+    # -- 兼容性测试 辅助 --------------------------------------------------
+    def verify_compatibility(self, name: str, current_tools: list[dict]) -> Optional[dict]:
+        """对比 lock 和当前工具签名, 返回 {has_lock, compatible, missing/changed/new, recommendation}。"""
+        from .compatibility import check_skill_compatibility
+
+        skill = self.get(name)
+        if skill is None or skill.path is None:
+            return None
+        return check_skill_compatibility(skill.path, current_tools)
 
 
 def _zip_root(names: list[str]) -> str:
