@@ -34,6 +34,28 @@ class SkillMarketStore:
                 PRIMARY KEY (name, version)
             )"""
         )
+        # 迁移: 旧 schema (name 主键, 无 version 列) → (name, version) 复合主键。
+        # 缺失迁移会导致 list_skills 等查 version 列报 500 (技能市场「无法连接本地引擎」)。
+        cols = [r[1] for r in self._con.execute("PRAGMA table_info(skill_meta)").fetchall()]
+        if "version" not in cols:
+            self._con.executescript(
+                """
+                ALTER TABLE skill_meta RENAME TO skill_meta_legacy;
+                CREATE TABLE skill_meta (
+                    name TEXT NOT NULL,
+                    version TEXT NOT NULL DEFAULT '0.1.0',
+                    install_count INTEGER NOT NULL DEFAULT 0,
+                    rating_sum REAL NOT NULL DEFAULT 0,
+                    rating_count INTEGER NOT NULL DEFAULT 0,
+                    last_installed_at REAL,
+                    PRIMARY KEY (name, version)
+                );
+                INSERT INTO skill_meta (name, version, install_count, rating_sum, rating_count, last_installed_at)
+                    SELECT name, '0.1.0', install_count, rating_sum, rating_count, last_installed_at
+                    FROM skill_meta_legacy;
+                DROP TABLE skill_meta_legacy;
+                """
+            )
         self._con.commit()
 
     # -- installs ----------------------------------------------------------

@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:server": "python -m coworker.server.run --port 8765",
     "build": "tsc && vite build",
     "preview": "vite preview",
     "test": "vitest run",

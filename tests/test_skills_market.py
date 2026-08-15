@@ -224,3 +224,42 @@ def test_market_store_install_and_rating(tmp_path: Path):
     all_stats = store.all_stats()
     assert "tool-a" in all_stats
     store.close()
+
+
+def test_migrates_legacy_skill_meta_schema(tmp_path):
+    """旧 schema (name 主键, 无 version 列) → 打开时自动迁移到 (name, version)
+    复合主键 — 否则 list_skills 查 version 报 500 (技能市场「无法连接本地引擎」)。"""
+    import sqlite3
+    from coworker.skills.market import SkillMarketStore
+
+    db = tmp_path / "market.db"
+    # 构造旧 schema (无 version 列, name 主键)
+    con = sqlite3.connect(str(db))
+    con.execute(
+        """CREATE TABLE skill_meta (
+            name TEXT PRIMARY KEY,
+            install_count INTEGER NOT NULL DEFAULT 0,
+            rating_sum REAL NOT NULL DEFAULT 0,
+            rating_count INTEGER NOT NULL DEFAULT 0,
+            last_installed_at REAL
+        )"""
+    )
+    con.execute(
+        "INSERT INTO skill_meta (name, install_count) VALUES ('legacy-skill', 3)"
+    )
+    con.commit()
+    con.close()
+
+    # 打开触发迁移
+    store = SkillMarketStore(db)
+    cols = [r[1] for r in store._con.execute("PRAGMA table_info(skill_meta)").fetchall()]
+    assert "version" in cols
+    # 旧数据以 version=0.1.0 保留
+    rows = store._con.execute(
+        "SELECT name, version, install_count FROM skill_meta"
+    ).fetchall()
+    assert ("legacy-skill", "0.1.0", 3) in rows
+    # 新写入按 (name, version) 复合主键可用
+    store.record_install("legacy-skill", "1.1.0")
+    versions = store.all_versions_by_name().get("legacy-skill")
+    assert versions and len(versions) == 2  # 0.1.0 + 1.1.0
