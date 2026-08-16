@@ -277,6 +277,8 @@ class Orchestrator:
     # 自造工具蒸馏: 本次 run 中 executor 调用的工具 (tool_used 事件捕获),
     # run 结束时传给 refine_run 做经验蒸馏。
     _tool_uses: list = field(default_factory=list, init=False)
+    # S12 临时文件治理: run 开始时间, 结束时清理此期间产生的临时文件。
+    _run_started_at: float = field(default=0.0, init=False)
 
     def _emit(self, kind: str, payload: dict[str, Any]) -> None:
         if self.event_sink is not None:
@@ -590,6 +592,8 @@ class Orchestrator:
 
     # -- main loop ----------------------------------------------------------
     async def run(self, intent: str) -> OrchestrationResult:
+        # S12: 记录 run 开始时间 — 结束时清理此期间产生的临时文件。
+        self._run_started_at = time.time()
         # Soft budget: the deadline lives inside the scheduling loop, so a timeout
         # stops NEW batches instead of truncating tasks that are ready or in
         # flight (previously a 300s budget could kill the consolidation task t4
@@ -604,6 +608,24 @@ class Orchestrator:
             report = result.final_report()
             if report.strip() and not report.startswith(_TASK_TIMEOUT_PREFIX):
                 result.status = "completed"
+        # S12 临时文件治理: 清理本次 run 产生的临时/中间产物 (白名单保护
+        # 正式报告/自造工具/状态库), best-effort, 不影响结果。显式豁免
+        # 本次 run 的正式输出报告 (名字再像临时也不删)。
+        try:
+            from .temp_cleanup import cleanup_workspace_temp_files
+
+            cleaned = cleanup_workspace_temp_files(
+                self.workspace,
+                since=self._run_started_at or None,
+                keep=[result.report_path] if result.report_path else None,
+            )
+            if cleaned["count"]:
+                logger.info(
+                    "temp cleanup removed %d workspace temp file(s) (S12)",
+                    cleaned["count"],
+                )
+        except Exception:
+            logger.debug("temp cleanup skipped (best-effort)", exc_info=True)
         return result
 
     async def _run(self, intent: str, deadline: Optional[float] = None) -> OrchestrationResult:

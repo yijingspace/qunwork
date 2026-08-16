@@ -154,6 +154,14 @@ class KnowledgeStore:
             self._con.commit()
         except sqlite3.OperationalError:
             pass
+        try:
+            # S11 版本控制: 当前版本号 (更新/重索引时 +1, 旧内容快照历史)。
+            self._con.execute(
+                "ALTER TABLE knowledge_items ADD COLUMN version INTEGER NOT NULL DEFAULT 1"
+            )
+            self._con.commit()
+        except sqlite3.OperationalError:
+            pass
         self._con.execute(
             """CREATE TABLE IF NOT EXISTS knowledge_chunks (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -164,6 +172,21 @@ class KnowledgeStore:
             )"""
         )
         self._con.execute("CREATE INDEX IF NOT EXISTS ix_chunks_item ON knowledge_chunks(item_id)")
+        # S11 知识资产版本控制 (蜂群审计报告 G5): 每次更新/重索引把旧内容
+        # 快照进 knowledge_history, 支持审计与回滚 (rollback), 误删可回退。
+        self._con.execute(
+            """CREATE TABLE IF NOT EXISTS knowledge_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                item_id INTEGER NOT NULL,
+                version INTEGER NOT NULL,
+                title TEXT,
+                content TEXT NOT NULL,
+                created_at REAL NOT NULL
+            )"""
+        )
+        self._con.execute(
+            "CREATE INDEX IF NOT EXISTS ix_kh_item ON knowledge_history(item_id, version)"
+        )
         self._con.commit()
 
     # -- embed -----------------------------------------------------------------
@@ -229,18 +252,30 @@ class KnowledgeStore:
         fp = f"{p.stat().st_mtime_ns}:{p.stat().st_size}"
         with self._lock:
             row = self._con.execute(
-                "SELECT id, fingerprint FROM knowledge_items WHERE workspace=? AND source_path=?",
+                "SELECT id, fingerprint, COALESCE(version, 1) FROM knowledge_items "
+                "WHERE workspace=? AND source_path=?",
                 (ws, str(p)),
             ).fetchone()
             if row and row[1] == fp and not force:
                 return row[0]
             if row:
+                # S11: 更新前把旧内容快照进历史版本链 (误删可回退)。
+                old_chunks = self._con.execute(
+                    "SELECT content FROM knowledge_chunks WHERE item_id=? ORDER BY chunk_index",
+                    (row[0],),
+                ).fetchall()
+                old_content = "\n".join(c[0] for c in old_chunks) if old_chunks else ""
+                old_version = int(row[2]) if len(row) > 2 and row[2] else 1
+                if old_content:
+                    self._snapshot_history(row[0], p.stem, old_content, old_version)
                 self._con.execute("DELETE FROM knowledge_chunks WHERE item_id=?", (row[0],))
                 item_id = row[0]
                 self._con.execute(
-                    "UPDATE knowledge_items SET title=?, fingerprint=?, updated_at=? WHERE id=?",
+                    "UPDATE knowledge_items SET title=?, fingerprint=?, updated_at=?, version=version+1 WHERE id=?",
                     (p.stem, fp, time.time(), item_id),
                 )
+                self._index_chunks(item_id, p.stem, content)
+                self._con.commit()
             else:
                 cur = self._con.execute(
                     "INSERT INTO knowledge_items (workspace, kind, source_path, title, fingerprint, created_at, updated_at) VALUES (?,?,?,?,?,?,?)",
@@ -590,6 +625,122 @@ class KnowledgeStore:
                 "INSERT INTO knowledge_chunks (item_id, chunk_index, content, vector) VALUES (?,?,?,?)",
                 (item_id, i, chunk, json.dumps(vec)),
             )
+
+    # -- S11 知识资产版本控制 (蜂群审计报告 G5) ------------------------------
+    def _snapshot_history(self, item_id: int, title: str, content: str, version: int) -> None:
+        """把当前内容快照进 knowledge_history (更新/重索引前调用)。"""
+        chunks = _chunk_text(content)
+        snapshot = "\n".join(chunks) if chunks else content
+        self._con.execute(
+            "INSERT INTO knowledge_history (item_id, version, title, content, created_at) "
+            "VALUES (?,?,?,?,?)",
+            (item_id, version, title, snapshot, time.time()),
+        )
+
+    def history(self, item_id: int, limit: int = 50) -> list[dict]:
+        """版本链: 该知识条目的历史版本 (旧->新, 含当前版本标记)。"""
+        with self._lock:
+            rows = self._con.execute(
+                "SELECT version, title, content, created_at FROM knowledge_history "
+                "WHERE item_id=? ORDER BY version DESC LIMIT ?",
+                (item_id, limit),
+            ).fetchall()
+            cur = self._con.execute(
+                "SELECT version, title FROM knowledge_items WHERE id=?",
+                (item_id,),
+            ).fetchone()
+        out = [
+            {"version": r[0], "title": r[1], "content": r[2], "created_at": r[3], "current": False}
+            for r in rows
+        ]
+        if cur is not None:
+            out.insert(
+                0,
+                {
+                    "version": cur[0],
+                    "title": cur[1],
+                    "content": "（当前版本内容, 见 knowledge_chunks）",
+                    "created_at": None,
+                    "current": True,
+                },
+            )
+        return out
+
+    def rollback(self, item_id: int, version: int) -> bool:
+        """回滚到指定历史版本: 恢复该版本内容并快照当前内容, 版本 +1。
+        返回是否成功; 目标版本不存在返回 False (不改动)。"""
+        with self._lock:
+            cur = self._con.execute(
+                "SELECT version, title FROM knowledge_items WHERE id=?", (item_id,)
+            ).fetchone()
+            if cur is None:
+                return False
+            hist = self._con.execute(
+                "SELECT title, content FROM knowledge_history "
+                "WHERE item_id=? AND version=?",
+                (item_id, version),
+            ).fetchone()
+            if hist is None:
+                return False
+            # 快照当前内容 → 历史, 然后恢复目标版本
+            current_title = cur[1]
+            chunks = self._con.execute(
+                "SELECT content FROM knowledge_chunks WHERE item_id=? ORDER BY chunk_index",
+                (item_id,),
+            ).fetchall()
+            current_content = "\n".join(c[0] for c in chunks)
+            self._snapshot_history(item_id, current_title, current_content, cur[0])
+            self._con.execute(
+                "DELETE FROM knowledge_chunks WHERE item_id=?", (item_id,)
+            )
+            new_title = hist[0] or current_title
+            self._con.execute(
+                "UPDATE knowledge_items SET title=?, version=version+1, updated_at=? WHERE id=?",
+                (new_title, time.time(), item_id),
+            )
+            self._index_chunks(item_id, new_title, hist[1])
+            self._con.commit()
+        return True
+
+    def dedupe(self, *, dry_run: bool = False) -> dict:
+        """S5 知识去重: 跨 workspace 的重复条目 (同 title + 首 chunk 内容完全
+        一致) — 知识库多工作区扫描常产生同源副本 (G5: 全局检索+副本清理)。
+
+        保守规则: 仅当两条记录 title 相同 AND 内容指纹 (首个 chunk 内容)
+        完全一致时视为重复; 保留 id 较小的一条, 其余 retired (不物理删除,
+        保审计)。不同 workspace 的同内容条目也会去重 (跨工作区副本)。
+        返回 {"retired": [ids], "dry_run": bool}。
+        """
+        with self._lock:
+            rows = self._con.execute(
+                "SELECT id, title FROM knowledge_items WHERE retired=0 ORDER BY id"
+            ).fetchall()
+            # 首 chunk 内容 (内容指纹)
+            first_chunk: dict[int, str] = {}
+            for rid, _t in rows:
+                c = self._con.execute(
+                    "SELECT content FROM knowledge_chunks WHERE item_id=? "
+                    "ORDER BY chunk_index LIMIT 1",
+                    (rid,),
+                ).fetchone()
+                first_chunk[rid] = c[0] if c else ""
+        retired: list[int] = []
+        seen: dict[tuple, int] = {}
+        for rid, title in rows:
+            key = ((title or "").strip(), first_chunk.get(rid, "").strip())
+            if not key[0] or not key[1]:
+                continue  # 无内容的不参与去重
+            if key in seen:
+                retired.append(rid)
+                if not dry_run:
+                    self._con.execute(
+                        "UPDATE knowledge_items SET retired=1 WHERE id=?", (rid,)
+                    )
+            else:
+                seen[key] = rid
+        if not dry_run:
+            self._con.commit()
+        return {"retired": retired, "dry_run": dry_run}
 
     def close(self) -> None:
         with self._lock:

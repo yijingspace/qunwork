@@ -272,3 +272,98 @@ def test_hornet_resonate_attaches_kb_metadata(tmp_path, monkeypatch):
     r2 = mgr.hornet_resonate("DPNN 相位", k=3)
     assert "hits" in r2
 
+
+# -- S11 知识资产版本控制 (蜂群审计报告 G5) ------------------------------------
+
+def test_index_file_update_snapshots_history(tmp_path):
+    """重索引 (文件变化) 时旧内容快照进历史版本链, 版本递增。"""
+    store = KnowledgeStore(tmp_path / "kb.db")
+    f = tmp_path / "doc.md"
+    f.write_text("第一版内容", encoding="utf-8")
+    store.index_file(f, workspace="ws")
+    item_id = store._con.execute(
+        "SELECT id FROM knowledge_items WHERE source_path=?", (str(f),)
+    ).fetchone()[0]
+
+    # 文件变化 → 重索引
+    import time
+
+    time.sleep(0.01)
+    f.write_text("第二版内容更长一些", encoding="utf-8")
+    store.index_file(f, workspace="ws", force=True)
+
+    hist = store.history(item_id)
+    assert len(hist) >= 2
+    assert hist[0]["current"] is True
+    # 历史里有第一版内容
+    assert any(h["content"] == "第一版内容" for h in hist)
+    store.close()
+
+
+def test_knowledge_rollback_restores_old_content(tmp_path):
+    store = KnowledgeStore(tmp_path / "kb.db")
+    f = tmp_path / "doc.md"
+    f.write_text("第一版内容", encoding="utf-8")
+    store.index_file(f, workspace="ws")
+    item_id = store._con.execute(
+        "SELECT id FROM knowledge_items WHERE source_path=?", (str(f),)
+    ).fetchone()[0]
+
+    import time
+
+    time.sleep(0.01)
+    f.write_text("第二版内容更长一些", encoding="utf-8")
+    store.index_file(f, workspace="ws", force=True)
+    # 回滚到 v1
+    ok = store.rollback(item_id, 1)
+    assert ok is True
+    # 回滚后内容恢复第一版
+    chunks = store._con.execute(
+        "SELECT content FROM knowledge_chunks WHERE item_id=? ORDER BY chunk_index",
+        (item_id,),
+    ).fetchall()
+    assert any("第一版内容" in c[0] for c in chunks)
+    store.close()
+
+
+def test_knowledge_rollback_unknown_version(tmp_path):
+    store = KnowledgeStore(tmp_path / "kb.db")
+    f = tmp_path / "doc.md"
+    f.write_text("内容", encoding="utf-8")
+    store.index_file(f, workspace="ws")
+    item_id = store._con.execute(
+        "SELECT id FROM knowledge_items WHERE source_path=?", (str(f),)
+    ).fetchone()[0]
+    assert store.rollback(item_id, 99) is False  # 不存在版本, 不改动
+    store.close()
+
+
+# -- S5 知识去重 --------------------------------------------------------------
+
+def test_knowledge_dedupe_retires_duplicates(tmp_path):
+    store = KnowledgeStore(tmp_path / "kb.db")
+    # 同 title + 同 content 的两条 (不同 source_path, 绕过 UNIQUE)
+    a = store.add_text("重复知识", "完全相同的内容正文", workspace="ws1")
+    b = store.add_text("重复知识", "完全相同的内容正文", workspace="ws2")
+    result = store.dedupe()
+    assert b in result["retired"]  # 后插入的 retired
+    # retired 后检索不可见但保留
+    hits = store.search("完全相同的内容正文", workspace="ws2", k=5)
+    assert not any(h.get("item_id") == b for h in hits)
+    store.close()
+
+
+def test_knowledge_dedupe_dry_run(tmp_path):
+    store = KnowledgeStore(tmp_path / "kb.db")
+    a = store.add_text("重复知识", "完全相同的内容正文", workspace="ws1")
+    b = store.add_text("重复知识", "完全相同的内容正文", workspace="ws2")
+    result = store.dedupe(dry_run=True)
+    assert result["dry_run"] is True
+    assert b in result["retired"]
+    # 未实际 retired
+    row = store._con.execute(
+        "SELECT retired FROM knowledge_items WHERE id=?", (b,)
+    ).fetchone()
+    assert row[0] == 0
+    store.close()
+
