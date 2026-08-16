@@ -193,6 +193,27 @@ def clean_thought(text: str, worker: str = "") -> str:
     return t[:400]
 
 
+def _truncate_with_warning(text: str, limit: int) -> str:
+    """S3 上下文预算管理: 截断长文本时给下游 worker 明确预警, 避免静默信息
+    丢失 (蜂群 worker 曾因评审输入被无声切到 4000 字符而误判)。
+
+    返回: 未超限 → 原文; 超限 → 头部保留 + 显式标记 (总长/被裁量),
+    让评审者知道信息不完整, 可要求完整内容而非基于残缺做判断。
+    """
+    if text is None:
+        return ""
+    if len(text) <= limit:
+        return text
+    head = text[:limit]
+    total = len(text)
+    return (
+        f"{head}\n"
+        f"\n…[注意: 执行结果过长, 已截断 — 原文 {total} 字符, 仅展示前 {limit} "
+        f"字符。若判定需要完整内容, 请要求重新输出完整结果而非依据残缺内容 "
+        f"做最终评审]…"
+    )
+
+
 @dataclass
 class Orchestrator:
     """Runs one orchestrated goal to convergence, with an optional governance loop."""
@@ -547,7 +568,7 @@ class Orchestrator:
                 )
                 prompt = (
                     f"Task [{task.id}]: {task.description}\n\n"
-                    f"Executor's result:\n{result[:4000]}\n\n"
+                    f"Executor's result:\n{_truncate_with_warning(result, 4000)}\n\n"
                     "Validate the result against the task. Return the JSON verdict."
                 )
                 text, status = await _run_engine_async(

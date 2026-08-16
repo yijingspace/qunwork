@@ -1203,17 +1203,33 @@ class TurnEngine:
         # P0 结构无损裁剪 (GuaAgent 研究文档 #112): 只裁剪 tool 消息的超大输出 /
         # base64 数据 / 元数据块; user / assistant 原文 100% 保留。只在 provider
         # feed 生效 —— self.messages 持久化完整输出, 磁盘/审计链不丢任何内容。
+        # S3 实证修复: 对"显式内容请求"类工具 (read_file 等) 豁免 head/tail
+        # 裁剪 — 蜂群 worker 曾因 read_file 内容被裁而自造 read_file_plain。
         if self.trim_tool_outputs:
-            from .trim import trim_tool_content
+            from .trim import TRIM_EXEMPT_TOOLS, trim_tool_content
 
-            out = [
-                (
-                    {**msg, "content": trim_tool_content(msg.get("content"))}
-                    if msg.get("role") == "tool"
-                    else msg
-                )
-                for msg in out
-            ]
+            # 反查 tool_call_id -> 工具名 (assistant 消息声明 tool_calls)。
+            tool_name_by_id: dict[str, str] = {}
+            for msg in out:
+                if msg.get("role") == "assistant":
+                    for tc in msg.get("tool_calls") or []:
+                        tid = tc.get("id")
+                        if tid:
+                            tool_name_by_id[tid] = (
+                                (tc.get("function") or {}).get("name", "") or ""
+                            )
+
+            def _trim_msg(msg: dict[str, Any]) -> dict[str, Any]:
+                tid = msg.get("tool_call_id")
+                tname = tool_name_by_id.get(tid, "") if tid else ""
+                return {
+                    **msg,
+                    "content": trim_tool_content(
+                        msg.get("content"), tool_name=tname or None
+                    ),
+                }
+
+            out = [_trim_msg(msg) if msg.get("role") == "tool" else msg for msg in out]
         out = _heal_tool_pairing(out)
         # PDF attachments (stored as `file` parts) are adapted to the ACTIVE model right
         # here — never in the persisted history — so a mid-session model switch always

@@ -615,7 +615,7 @@ def test_outbound_trims_tool_output_but_keeps_user_and_assistant_verbatim(tmp_pa
             "role": "assistant",
             "content": "助手原始回复：好的，我保留。",
             "tool_calls": [
-                {"id": "call_x", "type": "function", "function": {"name": "read_file", "arguments": "{}"}}
+                {"id": "call_x", "type": "function", "function": {"name": "run_shell", "arguments": "{}"}}
             ],
         },
         {"role": "tool", "tool_call_id": "call_x", "content": big},

@@ -67,8 +67,7 @@ def test_merge_applies_remote_member_and_dedups(tmp_path):
     a.store.add_member("张总", role="gm")
     changes = a.collect_snapshot_changes()
 
-    b = _sync(tmp_path, name="b")  # fresh store, no members yet
-    b.store.ensure_team()
+    b = _sync(tmp_path, name="b")  # fresh store, no members yet    b.store.ensure_team()
     result = b.merge_changes(changes)
     assert result["applied"] == len(changes)
     # 张总 同步到了 B; A 的 chairman(Me) 也作为独立成员同步过来
@@ -171,3 +170,89 @@ def test_sync_status_and_run_unconfigured(tmp_path, monkeypatch):
     assert result["ok"] is False and "no peer_url" in result["error"]
     # 配置缺 peer_url → error
     assert mgr.team_sync_config("")["ok"] is False
+
+
+# -- S1 架构级修复: peer 公钥信任白名单 ---------------------------------------
+
+def test_record_peer_public_key_and_allowlist(tmp_path):
+    """记录 peer 公钥 → 白名单生效 (allow_list_active=True), 持久化跨实例。"""
+    a = _sync(tmp_path, name="a")
+    # 未记录时: legacy 模式 (无白名单)
+    assert a.allow_list_active() is False
+    assert a.trusted_peer_keys() == set()
+
+    peer_key = "ab" * 32  # 64-hex-char valid Ed25519 pub key (fake but well-formed)
+    assert a.record_peer_public_key(peer_key) is True
+    assert a.allow_list_active() is True
+    assert peer_key in a.trusted_peer_keys()
+    # 重复记录 → 不新增
+    assert a.record_peer_public_key(peer_key) is False
+
+    # 持久化: 新实例自动从 store 加载白名单
+    b = _sync(tmp_path, name="b")  # same store path? no — new store
+    # 用同一个 store 重建
+    from coworker.team.store import TeamStore
+
+    st = TeamStore(tmp_path / "a.db")
+    c = TeamSync(st, secrets_path=tmp_path / "c_secrets", author="c")
+    assert c.allow_list_active() is True
+    assert peer_key in c.trusted_peer_keys()
+    st.close()
+
+
+def test_record_peer_public_key_rejects_invalid(tmp_path):
+    a = _sync(tmp_path, name="a")
+    assert a.record_peer_public_key("") is False
+    assert a.record_peer_public_key("short") is False
+    assert a.record_peer_public_key("zz" * 32) is False  # 非 hex
+    assert a.allow_list_active() is False
+
+
+def test_allowlist_drops_nonpeer_author(tmp_path):
+    """白名单生效后, 非白名单作者的 envelope 被丢弃 (G12 核心防护)。"""
+    from coworker.team.store import TeamStore
+
+    st = TeamStore(tmp_path / "w.db")
+    trusted = _sync(tmp_path, store=st, name="trusted")
+    trusted.store.ensure_team()
+    trusted.store.add_member("张总", role="gm")
+    changes = trusted.collect_snapshot_changes()
+    envelopes = trusted.pack_for_transport(changes)
+
+    # 白名单 = 另一个 (伪造的) 公钥 → 真实作者不在白名单 → 全部丢弃
+    st2 = TeamStore(tmp_path / "w2.db")
+    strict = TeamSync(
+        st2,
+        secrets_path=tmp_path / "strict_secrets",
+        author="strict",
+        peer_public_keys={"cd" * 32},  # 白名单不含真实作者
+    )
+    assert strict.unpack_from_transport(envelopes) == []
+    st.close()
+    st2.close()
+
+
+def test_manager_register_peer_key_endpoint(tmp_path, monkeypatch):
+    """POST /v1/team/sync/register-peer-key — 手动登记 peer 公钥 (S1)。"""
+    monkeypatch.setenv("COWORKER_STATE_DIR", str(tmp_path / "state"))
+    from fastapi.testclient import TestClient
+
+    from coworker.server.app import create_app
+    from coworker.server.manager import SessionManager
+
+    mgr = SessionManager(data_dir=tmp_path / "data")
+    client = TestClient(create_app(mgr))
+    peer_key = "ef" * 32
+    r = client.post(
+        "/v1/team/sync/register-peer-key", json={"peer_public_key": peer_key}
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is True and body["recorded"] is True
+    # status 显示白名单生效
+    st = client.get("/v1/team/sync/status").json()
+    assert st["trusted_peer_keys"] >= 1
+    assert st["allow_list_active"] is True
+    # 非法 key 拒绝
+    r2 = client.post("/v1/team/sync/register-peer-key", json={"peer_public_key": "bad"})
+    assert r2.json()["ok"] is False

@@ -48,6 +48,22 @@ META_MIN_LEN = 900
 # (base64 collapse / meta elision apply unconditionally — they always shrink).
 MIN_NET_SAVING = 200
 
+# 豁免裁剪的工具 (S3 上下文预算管理实证修复, 蜂群自造 read_file_plain 的根因):
+# 这些工具的输出是模型"显式请求的完整内容" (文件内容/知识检索/搜索结果),
+# 裁剪会让模型读到残缺数据 — 静默信息丢失。只裁机械性膨胀输出
+# (base64/元数据/超大日志), 不裁"内容请求"类结果。前缀匹配:
+# 以 `read_` / `knowledge_search` / `search_` / `web_fetch` 开头的工具,
+# 其输出视为内容本身, 不做 head/tail 裁剪 (base64/元数据折叠仍生效)。
+TRIM_EXEMPT_TOOLS: tuple[str, ...] = (
+    "read_file",
+    "read_file_plain",
+    "knowledge_search",
+    "web_fetch",
+    "web_search",
+    "grep",
+    "list_files",
+)
+
 # Matches inline data URIs: data:image/png;base64,<payload> (also pdf/audio/etc).
 # The payload class is deliberately STRICT (no whitespace): base64 payloads in
 # tool output are single-line, and allowing \s made the regex swallow following
@@ -121,12 +137,20 @@ def _elide_meta_json(text: str) -> str:
     return "".join(out)
 
 
-def trim_tool_content(content: Any) -> Any:
+def trim_tool_content(content: Any, *, tool_name: Optional[str] = None) -> Any:
     """Structurally lossless trim of ONE tool message's content.
 
     Accepts a plain string or a content-parts list (OpenAI-style). Returns the
     trimmed copy; the input is never mutated.
+
+    `tool_name`: 触发该 tool 消息的工具名。对"显式内容请求"类工具
+    (read_file/knowledge_search/web_fetch…, 见 TRIM_EXEMPT_TOOLS) 跳过
+    head/tail 裁剪 — 它们的输出是模型要用的完整内容, 裁剪=静默信息丢失
+    (S3 实证: 蜂群 worker 因 read_file 内容被裁而自造 read_file_plain)。
+    base64/元数据折叠对所有工具仍生效 (那才是真·机械性膨胀)。
     """
+    if tool_name in TRIM_EXEMPT_TOOLS:
+        return _collapse_only(content)
     if isinstance(content, str):
         return _trim_text(content)
     if isinstance(content, list):
@@ -139,6 +163,22 @@ def trim_tool_content(content: Any) -> Any:
                 out.append(part)
         return out
     # Unknown shape — leave untouched (never break a provider feed).
+    return content
+
+
+def _collapse_only(content: Any) -> Any:
+    """豁免工具的降级处理: 只折叠 base64/元数据膨胀, 不做 head/tail 裁剪。"""
+    if isinstance(content, str):
+        return _elide_meta_json(_collapse_base64(content))
+    if isinstance(content, list):
+        out = []
+        for part in content:
+            if isinstance(part, dict) and part.get("type") == "text":
+                collapsed = _elide_meta_json(_collapse_base64(part.get("text", "")))
+                out.append({**part, "text": collapsed})
+            else:
+                out.append(part)
+        return out
     return content
 
 

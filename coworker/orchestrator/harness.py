@@ -259,12 +259,93 @@ class HarnessStore:
             self._conn.commit()
         return cur.rowcount > 0
 
+    # -- S2 记忆系统治理: 经验库生命周期 --------------------------------------
+    def maintenance(
+        self,
+        *,
+        dry_run: bool = False,
+        min_uses_to_keep: int = 3,
+        similar_threshold: float = 0.90,
+        max_lessons: int = 500,
+    ) -> dict[str, Any]:
+        """经验库治理 (S2 记忆系统治理 — 蜂群经验维度的 G1/G2):
+          1. 相似去重: 同 kind 且标题/正文高度相似 (difflib >= similar_threshold)
+             的重复经验合并 (保留 use_count 高的一条, 其余删除);
+          2. 冷经验清理: use_count == 0 且版本 == 1 的"一次性经验"超过
+             max_lessons 上限后按最旧优先清理 (经验库不无限膨胀);
+          3. 返回 {"removed": [ids], "dry_run": bool}。
+
+        与记忆维护 (coworker/memory/maintenance.py) 对齐的治理周期,
+        供 _memory_maintenance_loop 或 manager 手动调用。
+        """
+        lessons = self.list(limit=max_lessons * 4)
+        removed: list[int] = []
+
+        # 1) 相似去重 (同 kind 内)
+        from difflib import SequenceMatcher
+
+        by_kind: dict[str, list[SwarmLesson]] = {}
+        for ls in lessons:
+            by_kind.setdefault(ls.kind, []).append(ls)
+        for _kind, members in by_kind.items():
+            if len(members) < 2:
+                continue
+            members.sort(key=lambda ls: (-ls.use_count, ls.id))
+            keep: list[SwarmLesson] = [members[0]]
+            for dup in members[1:]:
+                hay = f"{dup.title} {dup.body}"
+                best_score = 0.0
+                for k in keep:
+                    s = SequenceMatcher(
+                        None, f"{k.title} {k.body}", hay
+                    ).ratio()
+                    if s > best_score:
+                        best_score = s
+                if best_score >= similar_threshold:
+                    removed.append(dup.id)
+                    if not dry_run:
+                        self.delete(dup.id)
+                else:
+                    keep.append(dup)
+
+        # 2) 冷经验清理 (上限保护)
+        if len(lessons) > max_lessons:
+            # 保留活跃经验, 清理零使用的一次性经验
+            survivors = sorted(
+                lessons,
+                key=lambda ls: (
+                    ls.use_count > 0,  # 有使用记录优先保留
+                    ls.version > 1,  # 更新过的优先保留
+                    _parse_iso(ls.created_at) if ls.created_at else 0.0,
+                ),
+            )
+            excess = survivors[: len(survivors) - max_lessons]
+            for ls in excess:
+                if ls.use_count == 0 and ls.version == 1:
+                    removed.append(ls.id)
+                    if not dry_run:
+                        self.delete(ls.id)
+
+        return {
+            "removed": list(dict.fromkeys(removed)),
+            "dry_run": dry_run,
+        }
+
     def close(self) -> None:
         with self._lock:
             try:
                 self._conn.close()
             except Exception:
                 pass
+
+
+def _parse_iso(s: str) -> float:
+    import time as _t
+
+    try:
+        return _t.mktime(_t.strptime(s, "%Y-%m-%d %H:%M:%S"))
+    except (ValueError, TypeError):
+        return 0.0
 
 
 def _row_to_lesson(row: sqlite3.Row) -> SwarmLesson:

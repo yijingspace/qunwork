@@ -4542,14 +4542,66 @@ class SessionManager:
         if not peer_url:
             return {"ok": False, "error": "peer_url required"}
         self.team_store.sync_config_set("peer_url", peer_url)
+        # S1 架构级修复: 配置 peer 时尝试拉取对方的公钥并记入信任白名单
+        # (首次握手 TOFU)。拉取失败不阻断配置 — 白名单可后续手动登记。
+        peer_key = self._fetch_peer_public_key(peer_url)
+        if peer_key:
+            added = self.team_sync.record_peer_public_key(peer_key)
+            result = {
+                "ok": True,
+                "peer_url": peer_url,
+                "peer_public_key_recorded": added,
+                "peer_public_key": peer_key,
+            }
+        else:
+            result = {
+                "ok": True,
+                "peer_url": peer_url,
+                "peer_public_key_recorded": False,
+                "peer_public_key": None,
+            }
         # 配置 peer 后立即收集一次本地快照作为待同步变更。
         n = len(self.team_sync.collect_snapshot_changes())
-        return {"ok": True, "peer_url": peer_url, "snapshot_changes": n}
+        result["snapshot_changes"] = n
+        return result
+
+    def _fetch_peer_public_key(self, peer_url: str) -> Optional[str]:
+        """GET {peer_url}/v1/team/sync/status → 对方 public_key。best-effort。"""
+        try:
+            import httpx
+
+            r = httpx.get(f"{peer_url.rstrip('/')}/v1/team/sync/status", timeout=10)
+            if r.status_code == 200:
+                return (r.json() or {}).get("public_key") or None
+        except Exception:
+            pass
+        return None
+
+    def team_sync_register_peer_key(self, peer_public_key: str) -> dict[str, Any]:
+        """手动登记一个 peer 公钥到信任白名单 (S1: 当自动 TOFU 失败时)。"""
+        if not peer_public_key:
+            return {"ok": False, "error": "peer_public_key required"}
+        added = self.team_sync.record_peer_public_key(peer_public_key)
+        if added is False and peer_public_key not in self.team_sync.trusted_peer_keys():
+            # 非法/畸形公钥被 record_peer_public_key 拒绝
+            return {
+                "ok": False,
+                "error": "invalid peer_public_key (need 64 hex chars, valid Ed25519)",
+            }
+        return {
+            "ok": True,
+            "recorded": added,
+            "peer_public_key": peer_public_key,
+            "note": "peer key added to trust allow-list",
+        }
 
     def team_sync_status(self) -> dict[str, Any]:
         peer = self.team_store.sync_config_get("peer_url") or ""
         last = self.team_store.sync_config_get("last_sync")
         pending = len(self.team_sync.pending())
+        # S1: 信任白名单 (记录的 peer 公钥数) — 0 表示 legacy 模式 (接受任何
+        # 有效签名), 不安全; GUI 可据此提示用户登记 peer 公钥。
+        trusted_keys = self.team_sync.trusted_peer_keys()
         return {
             "status": "connected" if peer else "single",
             "peer_url": peer,
@@ -4557,6 +4609,8 @@ class SessionManager:
             "last_sync": float(last) if last else None,
             "peers_online": 1 if peer else 0,
             "public_key": self.team_sync.secrets.public_key_hex,
+            "trusted_peer_keys": len(trusted_keys),
+            "allow_list_active": self.team_sync.allow_list_active(),
         }
 
     async def team_sync_run(self) -> dict[str, Any]:
@@ -5572,6 +5626,7 @@ class SessionManager:
     ) -> dict[str, Any]:
         """P1/P2 记忆维护 (GuaAgent/OpenClaw/MemOS 文档): 自动去重合并 +
         衰减遗忘 + 睡眠整理 (Dream consolidation, 含 TTL 过期清理与高频巩固)。
+        S2: 增加蜂群经验库 (harness) 治理 — 相似去重 + 冷经验清理。
 
         结构化记忆 (memories 表) 始终覆盖; 向量记忆 (vector_memories) 在提供
         db 路径时覆盖 (默认取默认工作区的 .qunwork/memory.db)。返回各步骤摘要。
@@ -5584,9 +5639,21 @@ class SessionManager:
                 candidate = Path(ws) / ".qunwork" / "memory.db"
                 if candidate.exists():
                     vector_db_path = candidate
-        return run_maintenance(
+        result = run_maintenance(
             self.memory_store, vector_db_path=vector_db_path, dry_run=dry_run
         )
+        # S2: 蜂群经验库治理 (经验去重 + 冷经验清理, 不无限膨胀)。
+        try:
+            harness = self._harness()
+            try:
+                result["harness_maintenance"] = harness.maintenance(
+                    dry_run=dry_run
+                )
+            finally:
+                harness.close()
+        except Exception:
+            pass
+        return result
 
     # -- Refine 机制 (蜂群经验进化闭环, 对标 Prime Agent Continual Harness) ---
     def _harness(self, workspace: Optional[str] = None) -> Any:

@@ -302,6 +302,51 @@ def test_harness_persists_across_instances(tmp_path):
     h2.close()
 
 
+# -- S2 记忆系统治理: 经验库维护 -----------------------------------------------
+
+
+def test_harness_maintenance_dedupes_similar(tmp_path):
+    """S2: 相似经验 (同 kind, 标题/正文高度相似但标题不同) 合并去重, 保留
+    高频一条。"""
+    h = _harness(tmp_path)
+    a = h.add(kind="lesson", title="部署经验", body="先跑测试再部署到生产环境")
+    for _ in range(5):
+        h.bump_usage(a.id)
+    b = h.add(kind="lesson", title="部署注意事项", body="先跑测试再部署到生产环境")
+    h.add(kind="lesson", title="完全不相关", body="另一个主题的经验内容")
+    result = h.maintenance(similar_threshold=0.80)
+    assert b.id in result["removed"]  # 相似重复被清理
+    remaining = [ls.id for ls in h.list()]
+    assert a.id in remaining and len(remaining) >= 2
+    h.close()
+
+
+def test_harness_maintenance_dry_run(tmp_path):
+    h = _harness(tmp_path)
+    a = h.add(kind="lesson", title="经验A", body="内容A")
+    b = h.add(kind="lesson", title="经验A补充", body="内容A 相似补充")
+    result = h.maintenance(dry_run=True)
+    assert result["dry_run"] is True
+    assert len(h.list()) == 2  # 未删除
+    h.close()
+
+
+def test_harness_maintenance_cold_cleanup_cap(tmp_path):
+    """S2: 超过上限时清理零使用的一次性冷经验 (经验库不无限膨胀)。"""
+    h = _harness(tmp_path)
+    for i in range(30):
+        ls = h.add(kind="lesson", title=f"冷经验{i}", body=f"内容{i}")
+        if i == 0:
+            for _ in range(5):
+                h.bump_usage(ls.id)  # 第一条高频使用 → 保留
+    result = h.maintenance(max_lessons=5)
+    assert result["removed"]  # 有冷经验被清理
+    # 高频的第一条保留
+    lessons = h.list(limit=100)
+    assert any(ls.title == "冷经验0" for ls in lessons)
+    h.close()
+
+
 # -- Orchestrator 端到端: 自进化闭环 -------------------------------------------
 
 class _ScriptedProvider:

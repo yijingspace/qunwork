@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from coworker.trim import (
     TOOL_TRIM_MIN_LEN,
+    TRIM_EXEMPT_TOOLS,
     trim_tool_content,
 )
 
@@ -127,3 +128,48 @@ def test_unknown_shapes_untouched():
     assert trim_tool_content(None) is None
     assert trim_tool_content(12345) == 12345
     assert trim_tool_content({"a": 1}) == {"a": 1}
+
+
+# -- S3 实证修复: 显式内容请求工具豁免 head/tail 裁剪 -------------------------
+
+
+def test_read_file_output_not_head_tail_trimmed():
+    """read_file 是"显式内容请求" — 输出是模型要用的完整内容, 不裁剪中间
+    (蜂群 worker 曾因内容被裁而自造 read_file_plain 绕开 — S3 实证)。"""
+    text = "STATUS: line1\n" + _big_text() + "\nTAIL: last"
+    out = trim_tool_content(text, tool_name="read_file")
+    assert out == text  # 完整保留 (base64/元数据折叠除外, 此处无)
+
+
+def test_read_file_still_collapses_base64():
+    """豁免工具的降级: base64 折叠仍生效 (那是真·机械性膨胀)。"""
+    text = "data:image/png;base64," + "Q" * 3000 + "\nrest"
+    out = trim_tool_content(text, tool_name="read_file")
+    assert "collapsed" in out
+    assert "rest" in out
+
+
+def test_knowledge_search_output_not_trimmed():
+    text = _big_text()
+    assert trim_tool_content(text, tool_name="knowledge_search") == text
+
+
+def test_other_tools_still_trimmed():
+    """非豁免工具 (如 run_shell 输出) 保持 head/tail 裁剪。"""
+    text = _big_text()
+    out = trim_tool_content(text, tool_name="run_shell")
+    assert "trimmed" in out
+    assert len(out) < len(text)
+
+
+def test_no_tool_name_defaults_to_trim():
+    """未传 tool_name (未知工具) 保持裁剪 — 保守默认。"""
+    text = _big_text()
+    out = trim_tool_content(text)
+    assert "trimmed" in out
+
+
+def test_exempt_list_contains_content_tools():
+    assert "read_file" in TRIM_EXEMPT_TOOLS
+    assert "knowledge_search" in TRIM_EXEMPT_TOOLS
+    assert "web_fetch" in TRIM_EXEMPT_TOOLS

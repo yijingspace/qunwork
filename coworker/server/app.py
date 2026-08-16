@@ -1569,8 +1569,18 @@ def create_app(manager: SessionManager) -> FastAPI:
     # -- P2P 团队同步 (设计方案第六章) ----------------------------------------
     @app.post("/v1/team/sync/config")
     def team_sync_config(body: dict) -> dict[str, Any]:
-        """Configure the peer endpoint; collects a local snapshot on first set."""
+        """Configure the peer endpoint; collects a local snapshot on first set.
+        S1: also attempts TOFU — fetches the peer's public key and records it
+        into the trust allow-list (falls back to manual register_peer_key)."""
         return manager.team_sync_config(str((body or {}).get("peer_url") or ""))
+
+    @app.post("/v1/team/sync/register-peer-key")
+    def team_sync_register_peer_key(body: dict) -> dict[str, Any]:
+        """S1: manually register a peer's Ed25519 public key into the trust
+        allow-list (used when automatic TOFU failed)."""
+        return manager.team_sync_register_peer_key(
+            str((body or {}).get("peer_public_key") or "")
+        )
 
     @app.get("/v1/team/sync/status")
     def team_sync_status() -> dict[str, Any]:

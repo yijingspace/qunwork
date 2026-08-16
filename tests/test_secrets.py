@@ -85,3 +85,50 @@ def test_delete(tmp_path):
     assert store.delete("x") is True
     assert store.delete("x") is False
     assert store.get("x") is None
+
+
+# -- S1 密钥托管: 静态加密 (DPAPI on Windows) ----------------------------------
+
+def test_secrets_at_rest_encrypted_on_windows(tmp_path):
+    """S1: Windows 上 secrets.json 应以 DPAPI 加密落盘 (带版本标记),
+    磁盘明文不含密钥材料; 重载后仍可读取 (迁移 + 解密透明)。"""
+    from coworker.secrets import _DPAPI_AVAILABLE, _SECRETS_MAGIC
+
+    path = tmp_path / "secrets.json"
+    store = SecretStore(path)
+    store.put("slack:default", {"type": "token", "bot_token": "xoxb-secret-123"})
+
+    raw = path.read_bytes()
+    if _DPAPI_AVAILABLE:
+        # 加密标记存在, 且明文密钥不出现在磁盘
+        assert raw.startswith(_SECRETS_MAGIC.encode())
+        assert b"xoxb-secret-123" not in raw
+    else:
+        # 非 Windows: 明文 + 文件权限 (0600), 无加密标记
+        assert not raw.startswith(_SECRETS_MAGIC.encode())
+        assert b"xoxb-secret-123" in raw
+
+    # 重载 (模拟重启) → 透明解密
+    store2 = SecretStore(path)
+    assert store2.get("slack:default")["bot_token"] == "xoxb-secret-123"
+
+
+def test_secrets_plaintext_store_migrates(tmp_path):
+    """S1: 旧版明文 secrets.json (无加密标记) 读取兼容, 再写入后升级为加密。"""
+    from coworker.secrets import _DPAPI_AVAILABLE, _SECRETS_MAGIC
+
+    path = tmp_path / "secrets.json"
+    # 模拟旧版明文文件
+    path.write_text(
+        '{"slack:default": {"type": "token", "bot_token": "legacy-tok"}}',
+        encoding="utf-8",
+    )
+    store = SecretStore(path)
+    assert store.get("slack:default")["bot_token"] == "legacy-tok"  # 可读
+
+    # 写操作触发迁移 → 之后文件带加密标记 (Windows)
+    store.put("new:default", {"k": "v"})
+    if _DPAPI_AVAILABLE:
+        assert path.read_bytes().startswith(_SECRETS_MAGIC.encode())
+    # 仍可读
+    assert SecretStore(path).get("slack:default")["bot_token"] == "legacy-tok"

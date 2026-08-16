@@ -157,9 +157,69 @@ class TeamSync:
         # author_pub is NOT in this set are dropped (the envelope's self-declared
         # key alone is not enough — anyone holding the shared AES key could claim
         # another author). Empty/None = accept any valid signature (legacy).
+        # S1 架构级修复: 白名单从 store 的 sync_config 自动加载 (记录过的
+        # peer 公钥), 使 P2P 拉取默认只信任已建立信任关系的 peer。
         self._peer_public_keys = (
             set(peer_public_keys) if peer_public_keys is not None else None
         )
+        if self._peer_public_keys is None:
+            recorded = self._load_recorded_peer_keys()
+            if recorded:
+                self._peer_public_keys = recorded
+
+    # ── S1: peer 公钥信任管理 ────────────────────────────────────────────────
+    def _load_recorded_peer_keys(self) -> Optional[set[str]]:
+        """从 store 读取所有记录的 peer 公钥 (sync_config peer_pubkey_*)。
+        有记录 → 返回白名单; 无记录 → None (保持 legacy 兼容, 首次握手 TOFU)。"""
+        try:
+            keys = set()
+            for i in range(64):
+                v = self.store.sync_config_get(f"peer_pubkey_{i}")
+                if not v:
+                    break
+                keys.add(v.strip())
+            return keys if keys else None
+        except Exception:
+            return None
+
+    def record_peer_public_key(self, peer_public_key: str) -> bool:
+        """记录一个 peer 公钥到信任白名单 (S1: 首次握手 TOFU + 可重复覆盖)。
+        返回是否新增 (True) 或已是已知 peer (False)。"""
+        key = (peer_public_key or "").strip()
+        if not key:
+            return False
+        try:
+            # 校验是合法 Ed25519 公钥 hex (64 字符)
+            if len(key) != 64:
+                logger.warning("refusing invalid peer public key length %d", len(key))
+                return False
+            bytes.fromhex(key)  # raises on bad hex
+        except (ValueError, TypeError):
+            logger.warning("refusing malformed peer public key")
+            return False
+        with self._lock:
+            known = self._load_recorded_peer_keys() or set()
+            if key in known:
+                return False
+            idx = len(known)
+            self.store.sync_config_set(f"peer_pubkey_{idx}", key)
+            if self._peer_public_keys is not None:
+                self._peer_public_keys.add(key)
+            else:
+                self._peer_public_keys = {key}
+        return True
+
+    def trusted_peer_keys(self) -> set[str]:
+        """当前信任白名单 (S1 状态展示)。"""
+        if self._peer_public_keys is not None:
+            return set(self._peer_public_keys)
+        recorded = self._load_recorded_peer_keys()
+        return recorded or set()
+
+    def allow_list_active(self) -> bool:
+        """白名单是否生效 (True = 只信任记录过的 peer; False = legacy 接受
+        任何有效签名 — 不安全, GUI 应提示登记)。"""
+        return self._peer_public_keys is not None
 
     # ── outbox 收集 ──────────────────────────────────────────────────────────
     def collect_snapshot_changes(self, *, force: bool = False) -> list[dict]:

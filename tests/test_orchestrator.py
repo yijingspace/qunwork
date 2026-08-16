@@ -54,6 +54,33 @@ def test_parse_verdict():
     assert not v.accepted and v.needs_human and v.reason == "missing data"
 
 
+# -- S3 上下文预算管理: 截断预警 ----------------------------------------------
+
+def test_truncate_with_warning_short_text_untouched():
+    from coworker.orchestrator.orchestrator import _truncate_with_warning
+
+    text = "short result"
+    assert _truncate_with_warning(text, 100) == text
+
+
+def test_truncate_with_warning_long_text_marks():
+    from coworker.orchestrator.orchestrator import _truncate_with_warning
+
+    text = "A" * 5000
+    out = _truncate_with_warning(text, 4000)
+    assert len(out) > 4000  # 头 + 预警标记
+    assert "已截断" in out
+    assert "5000" in out  # 原文总长可见
+    assert "4000" in out  # 展示长度可见
+    assert "完整内容" in out  # 提示可要求完整内容
+
+
+def test_truncate_with_warning_none():
+    from coworker.orchestrator.orchestrator import _truncate_with_warning
+
+    assert _truncate_with_warning(None, 100) == ""
+
+
 # -- orchestration flow -----------------------------------------------------
 
 

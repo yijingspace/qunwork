@@ -6,10 +6,18 @@ The store holds profiles keyed by `connector[:account]`; values may be literals 
 
 v1 is a `0600` JSON file behind this interface; the interface is what callers depend on, so
 a Keychain / age-encrypted backend can swap in later without touching them.
+
+S1 密钥托管 (安全架构级修复): on Windows the store is additionally encrypted at
+rest with DPAPI (CryptProtectData, scoped to the current user) — a plaintext
+secrets.json on disk was the "密钥落盘" gap (H2/G12). On other platforms it
+falls back to `0600` file permissions (macOS/Linux keychains remain a TODO).
+The format is versioned so an existing plaintext store migrates transparently.
 """
 
 from __future__ import annotations
 
+import base64
+import ctypes
 import json
 import os
 import re
@@ -22,6 +30,57 @@ from typing import Any, Optional
 
 _REF = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 _IS_WINDOWS = sys.platform == "win32"
+
+# S1: secrets.json 静态加密版本标记 — 文件头写入此标记, _read 据此解密。
+_SECRETS_MAGIC = "qunwork-secrets-v1:"
+_DPAPI_AVAILABLE = _IS_WINDOWS
+
+
+def _dpapi_protect(plaintext: bytes) -> bytes:
+    """Windows DPAPI CryptProtectData — encrypt for the current user only."""
+    import ctypes.wintypes
+
+    class DATA_BLOB(ctypes.Structure):
+        _fields_ = [("cbData", ctypes.wintypes.DWORD), ("pbData", ctypes.POINTER(ctypes.c_byte))]
+
+    blob_in = DATA_BLOB(len(plaintext), ctypes.cast(
+        ctypes.create_string_buffer(plaintext), ctypes.POINTER(ctypes.c_byte)))
+    blob_out = DATA_BLOB()
+    if not ctypes.windll.crypt32.CryptProtectData(
+        ctypes.byref(blob_in), None, None, None, None, 0, ctypes.byref(blob_out)
+    ):
+        raise OSError("CryptProtectData failed")
+    try:
+        raw = ctypes.string_at(blob_out.pbData, blob_out.cbData)
+        return raw
+    finally:
+        ctypes.windll.kernel32.LocalFree(blob_out.pbData)
+
+
+def _dpapi_unprotect(ciphertext: bytes) -> bytes:
+    """Windows DPAPI CryptUnprotectData."""
+    import ctypes.wintypes
+
+    class DATA_BLOB(ctypes.Structure):
+        _fields_ = [("cbData", ctypes.wintypes.DWORD), ("pbData", ctypes.POINTER(ctypes.c_byte))]
+
+    blob_in = DATA_BLOB(len(ciphertext), ctypes.cast(
+        ctypes.create_string_buffer(ciphertext), ctypes.POINTER(ctypes.c_byte)))
+    blob_out = DATA_BLOB()
+    if not ctypes.windll.crypt32.CryptUnprotectData(
+        ctypes.byref(blob_in), None, None, None, None, 0, ctypes.byref(blob_out)
+    ):
+        raise OSError("CryptUnprotectData failed")
+    try:
+        raw = ctypes.string_at(blob_out.pbData, blob_out.cbData)
+        return raw
+    finally:
+        ctypes.windll.kernel32.LocalFree(blob_out.pbData)
+
+
+def secrets_at_rest_encrypted() -> bool:
+    """当前平台 secrets.json 是否静态加密 (S1 状态展示)。"""
+    return _DPAPI_AVAILABLE
 
 
 def state_dir() -> Path:
@@ -177,8 +236,19 @@ class SecretStore:
         if not self.path.is_file():
             return {}
         try:
-            return json.loads(self.path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+            raw = self.path.read_bytes()
+            if raw.startswith(_SECRETS_MAGIC.encode()):
+                # S1: DPAPI 加密存储 → 解密后解析
+                if not _DPAPI_AVAILABLE:
+                    return {}  # 平台无 DPAPI 但文件已加密 → 无法读取
+                payload = base64.b64decode(raw[len(_SECRETS_MAGIC):].decode())
+                try:
+                    decrypted = _dpapi_unprotect(payload)
+                except OSError:
+                    return {}  # 解密失败 (不同用户/机器) → 视为空
+                return json.loads(decrypted.decode("utf-8"))
+            return json.loads(raw.decode("utf-8"))
+        except (OSError, json.JSONDecodeError, ValueError):
             return {}
 
     def _write(self, store: dict[str, Any]) -> None:
@@ -188,6 +258,16 @@ class SecretStore:
         except OSError:
             pass
         tmp = self.path.with_name(self.path.name + ".tmp")
-        tmp.write_text(json.dumps(store, indent=2), encoding="utf-8")
+        payload = json.dumps(store, indent=2).encode("utf-8")
+        if _DPAPI_AVAILABLE:
+            # S1: 静态加密落盘 (DPAPI, 仅当前用户可解)
+            try:
+                enc = _dpapi_protect(payload)
+                data = (_SECRETS_MAGIC + base64.b64encode(enc).decode()).encode()
+            except OSError:
+                data = payload  # DPAPI 失败回退明文 (文件权限仍保护)
+        else:
+            data = payload
+        tmp.write_bytes(data)
         _restrict_to_user(tmp, is_dir=False)
         os.replace(tmp, self.path)
