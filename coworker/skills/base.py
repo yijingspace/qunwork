@@ -187,11 +187,14 @@ class SkillLoader:
         allowed_tools: Optional[list[str]] = None,
     ) -> Optional[Path]:
         """Patch an existing skill's frontmatter/body in place (returns its SKILL.md
-        path, or None when the skill does not exist)."""
+        path, or None when the skill does not exist). S7: 更新前把旧版本快照
+        到 .versions/ (变更可审计、可回退)。"""
         skill = self.get(name)
         if skill is None or skill.path is None:
             return None
         md = Path(skill.path) / "SKILL.md"
+        # S7 工具/技能版本管理: 更新前快照旧版本 (回滚依据)。
+        self._snapshot_version(skill)
         text = md.read_text(encoding="utf-8")
         end = text.find("\n---", 3)
         front = text[3:end] if text.startswith("---") and end != -1 else ""
@@ -234,7 +237,7 @@ class SkillLoader:
 
     def delete_skill(self, name: str) -> bool:
         """Remove a skill folder entirely (all dirs; returns True when something was
-        deleted)."""
+        deleted). S7: 删除前把各目录副本快照到 .versions/ (误删可回退)。"""
         name = re.sub(r"[^\w\-.]", "_", name).strip("_").strip(".")
         removed = False
         for directory in self._dirs:
@@ -242,11 +245,98 @@ class SkillLoader:
             if (target / "SKILL.md").is_file():
                 import shutil
 
+                # S7: 删除前快照 (回滚依据)
+                try:
+                    snap = target / ".versions" / "pre-delete"
+                    snap.mkdir(parents=True, exist_ok=True)
+                    for f in target.rglob("*"):
+                        if f.is_file() and ".versions" not in f.parts:
+                            rel = f.relative_to(target)
+                            (snap / rel).parent.mkdir(parents=True, exist_ok=True)
+                            (snap / rel).write_bytes(f.read_bytes())
+                except Exception:
+                    pass
                 shutil.rmtree(target, ignore_errors=True)
                 removed = True
         if removed:
             self.refresh()
         return removed
+
+    # -- S7 工具/技能版本管理与回滚 (蜂群审计报告 G8) -------------------------
+    def _snapshot_version(self, skill: "Skill") -> Optional[Path]:
+        """把技能当前版本快照到 <skill>/.versions/<ts>-<version>/ (变更前调用)。
+        返回快照路径; 失败返回 None (不阻断更新)。"""
+        if skill is None or skill.path is None:
+            return None
+        try:
+            import time as _t
+
+            src = Path(skill.path)
+            ts = _t.strftime("%Y%m%d%H%M%S", _t.gmtime())
+            ver = (skill.version or "0.1.0").replace("/", "_")
+            snap_dir = src / ".versions" / f"{ts}-{ver}"
+            snap_dir.mkdir(parents=True, exist_ok=True)
+            for f in src.rglob("*"):
+                if f.is_file() and ".versions" not in f.parts:
+                    rel = f.relative_to(src)
+                    target = snap_dir / rel
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_bytes(f.read_bytes())
+            return snap_dir
+        except Exception:
+            return None
+
+    def skill_history(self, name: str) -> list[dict]:
+        """版本历史: 该技能 .versions/ 下的快照列表 (旧->新, 含当前版本)。"""
+        skill = self.get(name)
+        if skill is None or skill.path is None:
+            return []
+        versions_dir = Path(skill.path) / ".versions"
+        if not versions_dir.is_dir():
+            return []
+        out = []
+        for d in sorted(versions_dir.iterdir()):
+            if d.is_dir():
+                out.append(
+                    {
+                        "name": d.name,
+                        "version": d.name.split("-", 1)[1] if "-" in d.name else d.name,
+                        "path": str(d / "SKILL.md"),
+                    }
+                )
+        out.append({"name": "current", "version": skill.version, "path": str(skill.path)})
+        return out
+
+    def rollback_skill(self, name: str, snapshot_name: str) -> bool:
+        """回滚技能到指定历史快照: 用快照内容覆盖当前 SKILL.md (及资源),
+        并把当前版本快照进 .versions/ (回滚本身可追溯)。"""
+        skill = self.get(name)
+        if skill is None or skill.path is None:
+            return False
+        snap_dir = Path(skill.path) / ".versions" / snapshot_name
+        snap_md = snap_dir / "SKILL.md"
+        if not snap_md.is_file():
+            return False
+        try:
+            import shutil
+
+            # 先快照当前版本 (回滚可再回退)
+            self._snapshot_version(skill)
+            src = Path(skill.path)
+            # 清理当前资源 (除 .versions), 再复制快照内容
+            for f in list(src.rglob("*")):
+                if f.is_file() and ".versions" not in f.parts:
+                    f.unlink(missing_ok=True)
+            for f in snap_dir.rglob("*"):
+                if f.is_file():
+                    rel = f.relative_to(snap_dir)
+                    target = src / rel
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_bytes(f.read_bytes())
+            self.refresh()
+            return True
+        except Exception:
+            return False
 
     def export_skill(self, name: str, dest: Path) -> Optional[Path]:
         """Pack a skill folder (SKILL.md + any resources/scripts) into a zip file."""
