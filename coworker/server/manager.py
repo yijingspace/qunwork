@@ -2771,10 +2771,13 @@ class SessionManager:
 
     def _build_task_engine(self, task, *, session_id: str) -> TurnEngine:
         ag = get_agent(task.agent)
-        Path(task.workspace).mkdir(parents=True, exist_ok=True)
+        # 容错: 任务缺 workspace (如 HORNET 在无默认工作区时生成的补全任务)
+        # 时回退到默认工作区或 state_dir, 绝不 Path(None) 崩溃。
+        ws = task.workspace or self.default_workspace or str(state_dir())
+        Path(ws).mkdir(parents=True, exist_ok=True)
         engine = build_engine(
             agent=ag,
-            workspace=task.workspace,
+            workspace=ws,
             model=task.model or self.model,
             mode=Mode.INTERACTIVE,
             approver=self._scheduled_approver(task, session_id),
@@ -3248,11 +3251,12 @@ class SessionManager:
                 f"{prior}"
             )
         opening += period_context
+        run_ws = task.workspace or self.default_workspace or str(state_dir())
         try:
             async for _event in engine.run(opening):
                 pass
             run.result_text = _last_assistant_text(engine.messages)
-            run.artifacts = _recent_files(task.workspace, since=run.started_at)
+            run.artifacts = _recent_files(run_ws, since=run.started_at)
             run.status = "ok"
             # Asset loop (Phase 1): a completed automation sinks its result into
             # the unified knowledge library (kind=automation) so the next run —

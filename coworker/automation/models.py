@@ -138,6 +138,10 @@ class ScheduledTask:
     last_status: Optional[str] = None
     run_count: int = 0
     max_runs: Optional[int] = None
+    # DPNN 大小周期嵌套 catch-up (自动化错过补跑): 失败重试的截止时间
+    # (epoch 秒)。调度器失败时设 retry_until = 本次周期触发点 + 宽限窗口
+    # (如 6 小时), 期间保留短重试 next_run; 超过则放弃本周期推进大周期。
+    retry_until: Optional[float] = None
     # Sidebar unread tracking (UX-023): runs started after this mark count as
     # "unseen"; opening the automation's detail advances it. 0.0 = never opened.
     seen_runs_at: float = 0.0

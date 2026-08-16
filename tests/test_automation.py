@@ -627,3 +627,122 @@ def test_hornet_gap_task_gets_valid_next_run(tmp_path, monkeypatch):
     assert t.schedule.kind == "once"
     assert t.next_run is not None, "补全任务 next_run 必须非 None — 否则 scheduler 永不触发"
     assert t.next_run > 0
+
+
+# -- DPNN 大小周期嵌套 catch-up (自动化错过补跑) ------------------------------
+
+def test_failed_run_retries_in_small_cycle(tmp_path):
+    """失败的任务: next_run 设短重试 (小周期, 5 分钟), 而非跳到下个大周期
+    (周报 9 点失败 → 几小时后重试当天, 不跳过)。"""
+    store = TaskStore(tmp_path / "auto.db")
+    calls = {"n": 0}
+
+    async def failing_runner(task, trigger):
+        calls["n"] += 1
+        return TaskRun(task_id=task.id, status="error", error="boom")
+
+    sched = Scheduler(store, failing_runner, tick_seconds=0.01)
+    t = _task(schedule=Schedule(kind="cron", cron="0 9 * * 1"))
+    store.save(t)
+
+    import asyncio
+
+    run = asyncio.run(sched.run_task(t, trigger="schedule"))
+    assert run.status == "error"
+    fresh = store.get(t.id)
+    assert fresh.retry_until is not None  # 宽限窗口开启
+    # 失败后 next_run 是短延迟 (5 分钟), 不是下周 9:00 (大周期)
+    assert fresh.next_run is not None
+    short = fresh.next_run - time.time()
+    assert 0 < short < 3600  # 小周期: 分钟级, 不是按周
+
+
+def test_success_advances_to_next_big_cycle(tmp_path):
+    """成功的任务: 推进状态 (run_count+1), 清空重试状态 (retry_until=None)。"""
+    store = TaskStore(tmp_path / "auto.db")
+
+    async def ok_runner(task, trigger):
+        return TaskRun(task_id=task.id, status="ok")
+
+    sched = Scheduler(store, ok_runner, tick_seconds=0.01)
+    t = _task(schedule=Schedule(kind="cron", cron="* * * * *"))
+    store.save(t)
+
+    import asyncio
+
+    asyncio.run(sched.run_task(t, trigger="schedule"))
+    fresh = store.get(t.id)
+    assert fresh.retry_until is None  # 成功 → 无重试状态
+    assert fresh.run_count == 1  # 已推进
+    assert fresh.last_status == "ok"
+    assert fresh.next_run is not None  # 已排下次
+
+
+def test_retry_exhausted_advances_big_cycle(tmp_path):
+    """重试耗尽 (max_retries 次失败) → 放弃本周期, 清重试状态 (不无限重试)。"""
+    store = TaskStore(tmp_path / "auto.db")
+
+    async def failing_runner(task, trigger):
+        return TaskRun(task_id=task.id, status="error", error="still broken")
+
+    sched = Scheduler(store, failing_runner, tick_seconds=0.01)
+    sched.max_retries = 2
+    t = _task(schedule=Schedule(kind="cron", cron="* * * * *"))
+    store.save(t)
+
+    import asyncio
+
+    for _ in range(3):  # 3 次失败 > max_retries=2
+        asyncio.run(sched.run_task(t, trigger="schedule"))
+        t = store.get(t.id)
+
+    fresh = store.get(t.id)
+    assert fresh.retry_until is None  # 重试状态已清 (耗尽后放弃本周期)
+    assert fresh.last_status == "error"
+    assert fresh.next_run is not None  # 已排下次 cron (大周期推进)
+
+
+def test_workspace_null_falls_back_in_task_engine(tmp_path, monkeypatch):
+    """知识补全等任务 workspace=None 时, _build_task_engine 回退默认工作区,
+    不 Path(None) 崩溃 (修复 'not NoneType' 错误)。"""
+    monkeypatch.setenv("COWORKER_STATE_DIR", str(tmp_path / "state"))
+    from coworker.server.manager import SessionManager
+
+    mgr = SessionManager(data_dir=tmp_path / "data")
+    t = _task(workspace=None)
+    # 不抛异常即通过 (旧代码 Path(None) 崩溃)
+    engine = mgr._build_task_engine(t, session_id="__task__test")
+    assert engine is not None
+    engine.executor.close()
+
+
+def test_startup_catchup_runs_missed_due_task(tmp_path):
+    """DPNN 大小周期: 触发点错过 (9 点没开机) 后启动, catchup 补跑当天的
+    任务 — next_run 已过期 (< now) 的任务在启动时立即执行 (不跳到下周)。"""
+    store = TaskStore(tmp_path / "auto.db")
+    ran: list[str] = []
+
+    async def runner(task, trigger):
+        ran.append(trigger)
+        return TaskRun(task_id=task.id, status="ok")
+
+    sched = Scheduler(store, runner, tick_seconds=0.01)
+    t = _task(schedule=Schedule(kind="cron", cron="* * * * *"))
+    store.save(t)
+    # 模拟错过: 直接改 DB 的 next_run 为过去 (触发点已过, 机器当时没开),
+    # 绕过 save() 的重算 (save 会按 schedule 算未来)。
+    past = time.time() - 600
+    with store._lock:
+        store._conn.execute(
+            "UPDATE scheduled_tasks SET next_run=? WHERE id=?", (past, t.id)
+        )
+        store._conn.commit()
+
+    # catchup tick: 启动时调 _tick(trigger="catchup") — due() 返回过期任务并执行
+    import asyncio
+
+    asyncio.run(sched._tick(trigger="catchup"))
+    assert "catchup" in ran  # 错过的任务被 catchup 补跑
+    fresh = store.get(t.id)
+    assert fresh.last_status == "ok"
+    assert fresh.next_run is not None and fresh.next_run > time.time()  # 已排下次

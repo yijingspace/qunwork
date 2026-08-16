@@ -20,6 +20,12 @@ logger = logging.getLogger("coworker.automation")
 Runner = Callable[[ScheduledTask, str], Awaitable[TaskRun]]
 
 
+def _epoch() -> float:
+    import time
+
+    return time.time()
+
+
 class Scheduler:
     def __init__(
         self,
@@ -52,6 +58,13 @@ class Scheduler:
         # a freshly deserialized instance every tick, so a count written on the
         # task would be lost and the anti-starvation gate would never trip.
         self._deferrals: dict[str, int] = {}
+        # DPNN 大小周期嵌套 catch-up: 失败任务在小周期内重试 (不跳过当天),
+        # 成功后推进大周期。_retries 记录每个任务连续失败次数 (同 _deferrals
+        # 理由: store.due() 每次返回新实例, 计数必须留在 scheduler)。
+        self._retries: dict[str, int] = {}
+        self.retry_delay_seconds: float = 300.0  # 失败后 5 分钟重试 (小周期)
+        self.max_retries: int = 5  # 单次周期最多重试次数, 耗尽才跳过大周期
+        self.catchup_window_seconds: float = 6 * 3600  # 宽限窗口: 触发点后 6h 内可补跑
 
     def start(self) -> None:
         if self._task is None:
@@ -116,6 +129,9 @@ class Scheduler:
             stale = [tid for tid in self._deferrals if tid not in live_ids]
             for tid in stale:
                 self._deferrals.pop(tid, None)
+            stale_r = [tid for tid in self._retries if tid not in live_ids]
+            for tid in stale_r:
+                self._retries.pop(tid, None)
         for task in self.store.due():
             # D: defer heavy/low-priority tasks during rhythm peaks.
             # Anti-starvation: a task deferred too many ticks runs anyway — an
@@ -166,12 +182,38 @@ class Scheduler:
         # OUTSIDE the runner's error handling; a crashed runner skipped it, so
         # run_count never advanced and the task re-ran every tick. Keep it
         # inside a guard: a store failure must not crash the scheduler loop.
+        # DPNN 大小周期嵌套 (catch-up): 大周期 = cron 触发点 (日/周 9:00);
+        # 小周期 = tick 内的失败重试。任务失败时 next_run 不跳到下个大周期
+        # (那样当天的就永远错过), 而是设短重试 (小周期) — 对应"9 点没开机
+        # /执行失败, 过几小时也应执行当天的任务"。retry_until = 本次周期
+        # 触发点 + 宽限窗口 (默认 6h); 超时放弃推进大周期。
         try:
             fresh = self.store.get(task.id)
             if fresh is not None:
                 fresh.run_count += 1
                 fresh.last_run = run.started_at if run else None
                 fresh.last_status = run.status if run else "error"
+                if run is not None and run.status != "ok":
+                    retries = self._retries.get(task.id, 0) + 1
+                    self._retries[task.id] = retries
+                    # 本次周期的宽限窗口起点: 上次成功执行 / 任务创建时间。
+                    base = fresh.last_run or fresh.created_at
+                    if fresh.retry_until is None:
+                        fresh.retry_until = base + self.catchup_window_seconds
+                    if retries <= self.max_retries and _epoch() < fresh.retry_until:
+                        # 小周期重试: 5 分钟后 (save 保留此 next_run,
+                        # 因为 retry_until 未过)。
+                        fresh.next_run = _epoch() + self.retry_delay_seconds
+                    else:
+                        # 重试耗尽或超出宽限窗口 → 放弃本周期, 推进大周期。
+                        self._retries.pop(task.id, None)
+                        fresh.retry_until = None
+                        fresh.next_run = None  # save 会重算下次 cron
+                else:
+                    # 成功 → 清重试, 推进大周期。
+                    self._retries.pop(task.id, None)
+                    fresh.retry_until = None
+                    fresh.next_run = None  # save 会重算下次 cron
                 self.store.save(fresh)
         except Exception:
             logger.exception("advancing task %s run state failed", task.id)

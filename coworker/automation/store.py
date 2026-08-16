@@ -100,7 +100,10 @@ class TaskStore:
     # -- tasks ------------------------------------------------------------------
     def save(self, task: ScheduledTask) -> ScheduledTask:
         task.updated_at = _epoch_now()
-        task.next_run = compute_next_run(task) if task.enabled else None
+        # DPNN catch-up: 失败重试期间 (retry_until 未过) 保留调度器设置的
+        # 短重试 next_run; 否则按 schedule 计算 (成功推进大周期 / 初始)。
+        if task.retry_until is None or _epoch_now() > task.retry_until:
+            task.next_run = compute_next_run(task) if task.enabled else None
         with self._lock:
             self._conn.execute(
                 "INSERT OR REPLACE INTO scheduled_tasks (id, enabled, next_run, data) VALUES (?, ?, ?, ?)",
