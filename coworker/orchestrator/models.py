@@ -7,7 +7,9 @@ and a run-level summary. No vector memory / governance loop yet (Phase 2+).
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
+from typing import Optional
 
 # Process/planning utterances that must never be shipped as the deliverable.
 _PROCESS_MARKERS = (
@@ -41,6 +43,46 @@ def _is_process_text(text: str) -> bool:
     if len(t) >= 300:  # long outputs are almost certainly real content
         return False
     return any(m in t for m in _PROCESS_MARKERS)
+
+
+# Meta/shell lines an executor may wrap around the real product (delivery headers,
+# character-count notes, verification notes). Never shipped.
+_SECTION_RE = re.compile(r"^===\s*SECTION\s*:\s*(.+?)\s*=== *$", re.M)
+
+
+def _assemble_sections(products: list["Task"]) -> Optional[str]:
+    """S4 蜂群结构化结果协议: 多个产物若带 ===SECTION:<标题>=== 章节标记,
+    按章节自动聚合 (相同章节合并去重), 无标记时返回 None (走原逻辑)。
+
+    协议: worker 章节产出以 `===SECTION: 标题===` 开头标记所属章节,
+    后续行是该章节内容。多个 worker 写同一章节 → 内容合并。
+    """
+    sections: list[tuple[str, list[str]]] = []
+    index: dict[str, int] = {}
+    found = False
+    for t in products:
+        text = (t.result or "").strip()
+        if not text:
+            continue
+        lines = text.splitlines()
+        if not lines or not _SECTION_RE.match(lines[0]):
+            continue
+        found = True
+        m = _SECTION_RE.match(lines[0])
+        title = m.group(1).strip()
+        body = "\n".join(lines[1:]).strip()
+        if title in index:
+            sections[index[title]][1].append(body)
+        else:
+            index[title] = len(sections)
+            sections.append((title, [body]))
+    if not found:
+        return None
+    out = []
+    for title, bodies in sections:
+        out.append(f"## {title}")
+        out.append("\n\n".join(b for b in bodies if b))
+    return "\n\n".join(out)
 
 
 # Meta/shell lines an executor may wrap around the real product (delivery headers,
@@ -189,6 +231,11 @@ class OrchestrationResult:
             return clean_deliverable("\n\n".join(real) if real else done[-1].result)
         if len(products) == 1:
             return clean_deliverable(products[0].result)
+        # S4 蜂群结构化结果协议: 若产物带 ===SECTION:<标题>=== 章节标记,
+        # 按章节自动聚合 (相同章节合并去重), 避免拼接错乱/重复标题。
+        assembled = _assemble_sections(products)
+        if assembled is not None:
+            return clean_deliverable(assembled)
         # consolidation task normally carries the full report; if it is short or
         # process-like, stitch the product fragments into the deliverable instead
         last = products[-1]

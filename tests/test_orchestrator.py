@@ -941,3 +941,85 @@ def test_governance_audit_revert_recorded(tmp_path):
     if cmd.action == REVERT:
         deck({"event": "governance", "action": cmd.action, "reason": cmd.reason, "metrics": cmd.metrics, "ts": __import__("time").time()})
     assert any(a["action"] == "REVERT" for a in audits)  # REVERT 已审计
+
+
+# -- S4 蜂群结构化结果协议: schema 化章节自动拼接 ------------------------------
+
+def test_final_report_assembles_sectioned_products(tmp_path):
+    """多个 worker 产出带 ===SECTION: 标题=== 标记 → 按章节自动聚合拼接,
+    相同章节合并 (S4: 减少人工拼接, 子任务产出可复用可校验)。"""
+    from coworker.orchestrator.models import Plan, Task, OrchestrationResult
+
+    plan = Plan(
+        goal="probe",
+        tasks=[
+            Task(
+                id="t0",
+                description="调研记忆系统",
+                status="done",
+                result="===SECTION: 记忆系统短板===\n分层缺失、无统一视图",
+            ),
+            Task(
+                id="t1",
+                description="调研知识管理",
+                status="done",
+                result="===SECTION: 知识管理短板===\n检索重复、临时文件堆积",
+            ),
+            Task(
+                id="t2",
+                description="调研安全",
+                status="done",
+                result="===SECTION: 安全短板===\nP2P 认证需加固",
+            ),
+        ],
+    )
+    result = OrchestrationResult(intent="probe", plan=plan, status="completed")
+    report = result.final_report()
+    # 三个章节标题 + 各自内容
+    assert "## 记忆系统短板" in report
+    assert "## 知识管理短板" in report
+    assert "## 安全短板" in report
+    assert "分层缺失" in report and "检索重复" in report and "P2P 认证需加固" in report
+
+
+def test_final_report_merges_same_section(tmp_path):
+    """两个 worker 写同一章节 → 内容合并去重 (不重复标题)。"""
+    from coworker.orchestrator.models import Plan, Task, OrchestrationResult
+
+    plan = Plan(
+        goal="probe",
+        tasks=[
+            Task(
+                id="t0",
+                description="章节A-上",
+                status="done",
+                result="===SECTION: 结论===\n第一段内容",
+            ),
+            Task(
+                id="t1",
+                description="章节A-下",
+                status="done",
+                result="===SECTION: 结论===\n第二段内容",
+            ),
+        ],
+    )
+    result = OrchestrationResult(intent="probe", plan=plan, status="completed")
+    report = result.final_report()
+    assert report.count("## 结论") == 1  # 标题只出现一次
+    assert "第一段内容" in report and "第二段内容" in report
+
+
+def test_final_report_unsectioned_falls_back(tmp_path):
+    """无 SECTION 标记 → 走原拼接逻辑 (不破坏既有行为)。"""
+    from coworker.orchestrator.models import Plan, Task, OrchestrationResult
+
+    plan = Plan(
+        goal="probe",
+        tasks=[
+            Task(id="t0", description="a", status="done", result="内容一"),
+            Task(id="t1", description="b", status="done", result="内容二"),
+        ],
+    )
+    result = OrchestrationResult(intent="probe", plan=plan, status="completed")
+    report = result.final_report()
+    assert "内容一" in report and "内容二" in report
