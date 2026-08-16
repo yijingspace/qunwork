@@ -224,20 +224,29 @@ export function SwarmView({ onBack, workspace }: { onBack: () => void; workspace
 
   // Refine 机制: 蜂群经验 (自进化闭环学习成果)
   const loadLessons = () => {
-    listSwarmLessons(lessonKind || undefined)
+    const ws = workspacePath?.trim() || undefined;
+    listSwarmLessons(lessonKind || undefined, 50, ws)
       .then((r) => mounted.current && setLessons(r.lessons ?? []))
       .catch(() => {});
   };
 
   const removeLesson = async (id: number) => {
-    const ok = await deleteSwarmLesson(id);
+    const ws = workspacePath?.trim() || undefined;
+    const ok = await deleteSwarmLesson(id, ws);
     if (ok.ok) setLessons((prev) => prev.filter((x) => x.id !== id));
   };
 
   useEffect(() => {
     loadTemplates();
     loadLessons();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // workspace 变化时刷新蜂群经验 (经验库按 workspace 隔离)。
+  useEffect(() => {
+    loadLessons();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [workspacePath]);
 
   const loadHistory = async () => {
     try {
@@ -995,41 +1004,48 @@ export function SwarmView({ onBack, workspace }: { onBack: () => void; workspace
           </div>
         )}
 
-        {/* Refine 机制: 蜂群经验 (自进化闭环的学习成果) */}
-        {lessons.length > 0 && (
-          <div className="mb-3" data-testid="swarm-lessons">
-            <div className="flex items-center gap-2 mb-1.5">
-              <button
-                className="text-[11px] uppercase tracking-[0.07em] text-faint font-semibold flex items-center gap-1"
-                onClick={() => setLessonsOpen((v) => !v)}
-                aria-expanded={lessonsOpen}
-              >
-                <span className={lessonsOpen ? "" : "rotate-90"} aria-hidden>▶</span>
-                🧠 {t("Swarm lessons")}
-                <span className="text-[10px] text-faint normal-case font-normal">
-                  ({lessons.length})
-                </span>
-              </button>
-              <select
-                value={lessonKind}
-                onChange={(e) => {
-                  setLessonKind(e.target.value);
-                  listSwarmLessons(e.target.value || undefined)
-                    .then((r) => mounted.current && setLessons(r.lessons ?? []))
-                    .catch(() => {});
-                }}
-                className="ml-auto text-[11px] bg-panel border border-line rounded px-1.5 py-0.5 text-muted"
-                aria-label={t("Filter lessons")}
-              >
-                <option value="">{t("All")}</option>
-                <option value="lesson">{t("Lessons")}</option>
-                <option value="skill_hint">{t("Skill hints")}</option>
-                <option value="task_template">{t("Task templates")}</option>
-              </select>
-            </div>
-            {lessonsOpen && (
-              <div className="space-y-1.5">
-                {lessons.map((ls) => (
+        {/* Refine 机制: 蜂群经验 (自进化闭环的学习成果) — 始终显示,
+            空状态提示"跑一次蜂群后自动沉淀" */}
+        <div className="mb-3" data-testid="swarm-lessons">
+          <div className="flex items-center gap-2 mb-1.5">
+            <button
+              className="text-[11px] uppercase tracking-[0.07em] text-faint font-semibold flex items-center gap-1"
+              onClick={() => setLessonsOpen((v) => !v)}
+              aria-expanded={lessonsOpen}
+            >
+              <span className={lessonsOpen ? "" : "rotate-90"} aria-hidden>▶</span>
+              🧠 {t("Swarm lessons")}
+              <span className="text-[10px] text-faint normal-case font-normal">
+                ({lessons.length})
+              </span>
+            </button>
+            <select
+              value={lessonKind}
+              onChange={(e) => {
+                const kind = e.target.value;
+                setLessonKind(kind);
+                const ws = workspacePath?.trim() || undefined;
+                listSwarmLessons(kind || undefined, 50, ws)
+                  .then((r) => mounted.current && setLessons(r.lessons ?? []))
+                  .catch(() => {});
+              }}
+              className="ml-auto text-[11px] bg-panel border border-line rounded px-1.5 py-0.5 text-muted"
+              aria-label={t("Filter lessons")}
+            >
+              <option value="">{t("All")}</option>
+              <option value="lesson">{t("Lessons")}</option>
+              <option value="skill_hint">{t("Skill hints")}</option>
+              <option value="task_template">{t("Task templates")}</option>
+            </select>
+          </div>
+          {lessonsOpen && (
+            <div className="space-y-1.5">
+              {lessons.length === 0 ? (
+                <div className="rounded-lg border border-dashed border-line bg-panel px-3 py-2.5 text-[11.5px] text-faint">
+                  {t("No swarm lessons yet — run a swarm and its lessons (success strategies, pitfalls, self-made tools) will be distilled here automatically.")}
+                </div>
+              ) : (
+                lessons.map((ls) => (
                   <div
                     key={ls.id}
                     className="w-full rounded-lg border border-line bg-panel px-3 py-2 flex items-start gap-2"
@@ -1072,11 +1088,11 @@ export function SwarmView({ onBack, workspace }: { onBack: () => void; workspace
                       ✕
                     </button>
                   </div>
-                ))}
-              </div>
-            )}
-          </div>
-        )}
+                ))
+              )}
+            </div>
+          )}
+        </div>
 
         {compare && (
           <div className="rounded-xl border border-line bg-panel px-3.5 py-3 mb-3" data-testid="branch-compare">

@@ -1048,16 +1048,22 @@ export interface SwarmLesson {
 export async function listSwarmLessons(
   kind?: string,
   limit = 50,
+  workspace?: string,
 ): Promise<{ lessons: SwarmLesson[] }> {
   const q = new URLSearchParams();
   if (kind) q.set("kind", kind);
   q.set("limit", String(limit));
+  if (workspace) q.set("workspace", workspace);
   const res = await fetch(`${httpBase()}/v1/swarm-lessons?${q.toString()}`);
   return await res.json();
 }
 
-export async function deleteSwarmLesson(id: number): Promise<{ ok: boolean }> {
-  const res = await fetch(`${httpBase()}/v1/swarm-lessons/${id}`, {
+export async function deleteSwarmLesson(
+  id: number,
+  workspace?: string,
+): Promise<{ ok: boolean }> {
+  const q = workspace ? `?workspace=${encodeURIComponent(workspace)}` : "";
+  const res = await fetch(`${httpBase()}/v1/swarm-lessons/${id}${q}`, {
     method: "DELETE",
   });
   return await res.json();

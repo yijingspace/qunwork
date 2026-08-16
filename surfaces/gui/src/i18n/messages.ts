@@ -611,6 +611,7 @@ export const zh: Messages = {
   "Template": "模板",
   "reuses": "次复用",
   "Delete lesson": "删除经验",
+  "No swarm lessons yet — run a swarm and its lessons (success strategies, pitfalls, self-made tools) will be distilled here automatically.": "还没有蜂群经验 — 运行一次蜂群后，其教训（成功策略、易错点、自造工具）会自动沉淀在这里。",
   "Resume": "恢复",
   "Pause": "暂停",
   "Message to the swarm…": "给蜂群发指令…",

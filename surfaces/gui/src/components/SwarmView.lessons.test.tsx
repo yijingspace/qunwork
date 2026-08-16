@@ -79,7 +79,8 @@ describe("SwarmView — 蜂群经验 (Refine 机制学习成果)", () => {
     const select = screen.getByLabelText("Filter lessons");
     fireEvent.change(select, { target: { value: "skill_hint" } });
     await waitFor(() => {
-      expect(listSwarmLessons).toHaveBeenLastCalledWith("skill_hint");
+      // kind first, limit second, workspace (undefined when none) third
+      expect(listSwarmLessons).toHaveBeenLastCalledWith("skill_hint", 50, undefined);
     });
   });
 
@@ -90,11 +91,23 @@ describe("SwarmView — 蜂群经验 (Refine 机制学习成果)", () => {
     const deleteButtons = screen.getAllByLabelText("Delete lesson");
     fireEvent.click(deleteButtons[0]);
     await waitFor(() => {
-      expect(deleteSwarmLesson).toHaveBeenCalledWith(1);
+      expect(deleteSwarmLesson).toHaveBeenCalledWith(1, undefined);
     });
     // optimistic removal
     await waitFor(() => {
       expect(screen.queryByText("[成功] 报告任务策略")).toBeNull();
     });
+  });
+
+  it("shows empty-state hint when no lessons exist", async () => {
+    const { listSwarmLessons } = await import("../api");
+    (listSwarmLessons as ReturnType<typeof vi.fn>).mockResolvedValue({ lessons: [] });
+    renderView();
+    // block still renders with (0) count and a hint, even with no lessons
+    await screen.findByTestId("swarm-lessons");
+    expect(screen.getByText("(0)")).toBeTruthy();
+    expect(
+      screen.getByText(/No swarm lessons yet/),
+    ).toBeTruthy();
   });
 });
