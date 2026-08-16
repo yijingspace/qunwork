@@ -82,16 +82,32 @@ class PersistentVectorMemory:
                 self._db.commit()
             except sqlite3.OperationalError:
                 pass  # column already present
+        # P2 MemCube 式元数据 (MemOS MemCube): version 版本链 / ttl 过期 /
+        # origin 来源 / hotness 热度。幂等迁移。
+        for col, ddl in (
+            ("version", "INTEGER NOT NULL DEFAULT 1"),
+            ("ttl", "REAL"),
+            ("origin", "TEXT"),
+            ("hotness", "REAL NOT NULL DEFAULT 0.0"),
+        ):
+            try:
+                self._db.execute(
+                    f"ALTER TABLE vector_memories ADD COLUMN {col} {ddl}"
+                )
+                self._db.commit()
+            except sqlite3.OperationalError:
+                pass  # column already present
         self._load()
 
     # -- persistence --------------------------------------------------------
     def _load(self) -> None:
         with self._lock:
             rows = self._db.execute(
-                "SELECT text, meta, vector FROM vector_memories WHERE scope = ?",
+                "SELECT text, meta, vector, ttl FROM vector_memories WHERE scope = ?",
                 (self.scope,),
             ).fetchall()
-        for text, meta, vec in rows:
+        now = time.time()
+        for text, meta, vec, ttl in rows:
             # P1 衰减遗忘: stale 条目 (meta.stale=true) 不载入内存 → 检索自动
             # 排除; 数据保留在库中 (Manus 降级而非抹除), 可手动恢复。
             try:
@@ -100,6 +116,14 @@ class PersistentVectorMemory:
                 meta_obj = {}
             if meta_obj.get("stale"):
                 continue
+            # P2 MemCube TTL: 已过期的条目跳过加载 (检索不可见; 由睡眠整理任务
+            # 统一标记 stale 清理)。
+            if ttl is not None:
+                try:
+                    if now >= float(ttl):
+                        continue
+                except (TypeError, ValueError):
+                    pass
             item = self._mem._new_item(text, meta_obj)
             if vec:
                 try:
@@ -109,10 +133,18 @@ class PersistentVectorMemory:
             self._mem.items.append(item)
 
     def add(
-        self, text: str, *, phase: Optional[int] = None, **meta: Any
+        self,
+        text: str,
+        *,
+        phase: Optional[int] = None,
+        origin: Optional[str] = None,
+        ttl: Optional[float] = None,
+        **meta: Any,
     ) -> None:
         if phase is not None:
             meta["phase"] = int(phase)
+        if origin is not None:
+            meta["origin"] = origin  # P2 MemCube provenance
         item = self._mem._new_item(text, meta)
         if item.vector is None and self._mem.embedder is not None:
             try:
@@ -124,7 +156,8 @@ class PersistentVectorMemory:
         with self._lock:
             self._mem.items.append(item)
             self._db.execute(
-                "INSERT INTO vector_memories (scope, text, meta, vector, created_at, phase) VALUES (?,?,?,?,?,?)",
+                "INSERT INTO vector_memories (scope, text, meta, vector, created_at, phase, ttl) "
+                "VALUES (?,?,?,?,?,?,?)",
                 (
                     self.scope,
                     text,
@@ -132,6 +165,7 @@ class PersistentVectorMemory:
                     json.dumps(item.vector) if item.vector is not None else None,
                     time.time(),
                     int(phase) if phase is not None else None,
+                    float(ttl) if ttl is not None else None,
                 ),
             )
             self._db.commit()
@@ -145,14 +179,17 @@ class PersistentVectorMemory:
         # a concurrent add() never mutates it mid-iteration.
         with self._lock:
             hits = self._mem.search(query, k=k)
-            # P1 衰减遗忘 (FADEMEM): 命中的记忆刷新 use_count — 高频使用的
-            # 记忆在衰减 pass 中获得新鲜度地板, 不会被误标 stale。
+            # P1 衰减遗忘 (FADEMEM) + P2 MemCube hotness: 命中的记忆刷新
+            # use_count / last_used_at / hotness — 高频使用的记忆在衰减 pass
+            # 中获得新鲜度地板, 不会被误标 stale。
             if hits:
                 text_ids = {h.text: None for h in hits}
                 placeholders = ",".join("?" * len(text_ids))
                 self._db.execute(
                     f"UPDATE vector_memories SET use_count = use_count + 1, "
-                    f"last_used_at = ? WHERE scope = ? AND text IN ({placeholders})",
+                    f"last_used_at = ?, "
+                    f"hotness = 1.0 - 1.0 / (1.0 + use_count) "
+                    f"WHERE scope = ? AND text IN ({placeholders})",
                     [time.time(), self.scope, *text_ids.keys()],
                 )
                 self._db.commit()

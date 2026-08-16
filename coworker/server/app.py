@@ -254,10 +254,23 @@ def create_app(manager: SessionManager) -> FastAPI:
                             len(summary.get("memories_decay", {}).get("stale", []))
                             + len(summary.get("vector_decay", {}).get("stale", []))
                         )
-                        if removed or stale:
+                        expired = (
+                            len(
+                                summary.get("memories_consolidate", {}).get(
+                                    "expired", []
+                                )
+                            )
+                            + len(
+                                summary.get("vector_consolidate", {}).get(
+                                    "expired", []
+                                )
+                            )
+                        )
+                        if removed or stale or expired:
                             print(
                                 f"[coworker] memory maintenance: "
-                                f"merged/removed {removed}, decayed {stale}"
+                                f"merged/removed {removed}, decayed {stale}, "
+                                f"ttl-expired {expired}"
                             )
                     except Exception:
                         pass

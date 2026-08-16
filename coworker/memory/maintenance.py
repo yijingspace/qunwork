@@ -1,13 +1,15 @@
-"""P1 记忆维护 — 自动去重合并 + 衰减/遗忘管理.
+"""P1/P2 记忆维护 — 去重合并 + 衰减遗忘 + MemCube 元数据 + 睡眠整理.
 
-依据 QunWork 知识库研究文档:
+依据 QunWork 知识库研究文档 与 MemOS 对比研究的 MemCube 方案:
   * GuaAgent 框架研究 (#112): 记忆全量存储 + 智能整理, "存得全, 用得精";
   * OpenClaw 蜂群架构重构构想 (#141): FADEMEM 差分衰减遗忘 — 记忆重要性得分
     I = α·rel(c,Q) + β·f/(1+f) + γ·recency(t), 记忆按重要性动态分配
     长期/短期层级; Manus "遗忘内容保留路径" — 从 L1(上下文) 降级到
-    L2(文件系统)/L3(知识库), 而不是抹掉.
+    L2(文件系统)/L3(知识库), 而不是抹掉;
+  * MemOS MemCube: 每个记忆单元带 version (版本链) / ttl / origin / hotness,
+    为记忆可审计、可回滚打底; Dream 睡眠巩固 (离线整理).
 
-本模块提供两个维护原语, 都可在后台低频任务里跑:
+本模块提供维护原语, 都可在后台低频任务里跑:
 
   * 去重合并 (dedupe): 同 key / 内容高度相似的记忆合并为一条, 保留较新或
     较完整的, 并把被合并条目的 id 记入映射 (旧 id -> 新 id), 模型引用旧 id
@@ -15,6 +17,8 @@
   * 衰减遗忘 (decay): 基于最后使用时间与访问频率衰减记忆的新鲜度, 长期
     未用 / 低价值的记忆自动降级 (标记 stale, 从注入与检索中隐藏但保留在库
     中, 可恢复 — 对应 Manus 的"降级而非抹除").
+  * 睡眠整理 (consolidate, 对应 MemOS Dream): TTL 过期条目标记 stale +
+    高频记忆 (hotness 高) 巩固复活, 与衰减同周期运行.
 
 结构化记忆 (memories 表) 与向量记忆 (vector_memories 表) 都覆盖.
 所有函数都是幂等的、可安全重复运行的; 默认保守 (低相似度阈值、长半衰期).
@@ -204,7 +208,8 @@ def _vector_rows(db_path: str | Path) -> list[dict[str, Any]]:
         rows = con.execute(
             "SELECT id, scope, text, meta, vector, created_at, "
             "COALESCE(use_count,0) AS use_count, "
-            "COALESCE(last_used_at, created_at) AS last_used_at "
+            "COALESCE(last_used_at, created_at) AS last_used_at, "
+            "ttl, COALESCE(hotness, 0.0) AS hotness "
             "FROM vector_memories ORDER BY id"
         ).fetchall()
         return [dict(r) for r in rows]
@@ -305,21 +310,132 @@ def decay_vector_memories(
     return {"stale": stale, "freshness": fresh_map, "dry_run": dry_run}
 
 
+# -- P2 睡眠整理 (Dream consolidation, 对应 MemOS Dream) -----------------------
+
+def consolidate_memories(
+    store: Any,
+    *,
+    dry_run: bool = False,
+    now: Optional[float] = None,
+) -> dict[str, Any]:
+    """睡眠整理 (Dream): 记忆 consolidation pass。
+
+    对应 MemOS Dream 睡眠巩固 + QunWork 知识库文档的"智能整理"理念:
+      1. TTL 过期检查: 设置了 ttl 且已过期的记忆 → 标记 stale (隐藏),
+         由后续衰减 pass 保持; 数据保留可恢复;
+      2. 高频记忆巩固: hotness >= 0.75 (约 >=3 次命中) 的记忆解除 stale
+         (巩固为常青记忆), 与衰减的频率地板配合;
+      3. 返回 consolidation 统计 (auditable summary)。
+
+    这是纯整理操作 — 不做破坏性删除, 全部可逆 (Manus 降级而非抹除)。
+    """
+    now = time.time() if now is None else now
+    try:
+        items = store.list(include_stale=True)
+    except TypeError:
+        items = store.list()
+    expired: list[int] = []
+    consolidated: list[int] = []
+    for it in items:
+        # 1) TTL 过期 → stale
+        if it.ttl:
+            try:
+                ts = _dt.datetime.strptime(it.ttl, "%Y-%m-%d %H:%M:%S").replace(
+                    tzinfo=_dt.timezone.utc
+                )
+                if now >= ts.timestamp():
+                    expired.append(it.id)
+                    if not dry_run:
+                        store.mark_stale(it.id)
+                    continue
+            except (ValueError, TypeError):
+                pass  # 无法解析的 ttl 视为未设置
+        # 2) 高频记忆巩固 (hotness 来自 bump_usage 的 1 - 1/(1+use_count))
+        hotness = float(getattr(it, "hotness", 0.0) or 0.0)
+        if it.stale and hotness >= 0.75:
+            consolidated.append(it.id)
+            if not dry_run:
+                store.mark_stale(it.id, False)
+    return {
+        "expired": expired,
+        "consolidated": consolidated,
+        "dry_run": dry_run,
+    }
+
+
+def consolidate_vector_memories(
+    db_path: str | Path,
+    *,
+    dry_run: bool = False,
+    now: Optional[float] = None,
+) -> dict[str, Any]:
+    """睡眠整理 (Dream) — vector_memories 版: TTL 过期标记 stale + 高频巩固。
+
+    vector 记忆的 stale 用 meta.stale 标记 (检索层过滤); TTL 用 ttl 列
+    (epoch 秒), 由 PersistentVectorMemory._load 在加载时跳过。
+    """
+    rows = _vector_rows(db_path)
+    if not rows:
+        return {"expired": [], "consolidated": [], "dry_run": dry_run}
+    now = time.time() if now is None else now
+    expired: list[int] = []
+    consolidated: list[int] = []
+    con = sqlite3.connect(_vector_db_path(db_path))
+    try:
+        for r in rows:
+            ttl = r.get("ttl")
+            if ttl is not None:
+                try:
+                    if now >= float(ttl):
+                        expired.append(r["id"])
+                        if not dry_run:
+                            meta = json.loads(r["meta"] or "{}")
+                            if not meta.get("stale"):
+                                meta["stale"] = True
+                                con.execute(
+                                    "UPDATE vector_memories SET meta = ? WHERE id = ?",
+                                    (json.dumps(meta, ensure_ascii=False), r["id"]),
+                                )
+                        continue
+                except (TypeError, ValueError):
+                    pass
+            meta = json.loads(r["meta"] or "{}")
+            hotness = float(r.get("hotness") or 0.0)
+            if meta.get("stale") and hotness >= 0.75:
+                consolidated.append(r["id"])
+                if not dry_run:
+                    meta.pop("stale", None)
+                    con.execute(
+                        "UPDATE vector_memories SET meta = ? WHERE id = ?",
+                        (json.dumps(meta, ensure_ascii=False), r["id"]),
+                    )
+        if not dry_run:
+            con.commit()
+    finally:
+        con.close()
+    return {"expired": expired, "consolidated": consolidated, "dry_run": dry_run}
+
+
 def run_maintenance(
     memory_store: Any,
     vector_db_path: Optional[str | Path] = None,
     *,
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    """统一入口: 一次跑完全部维护 (去重 + 衰减)。返回汇总。
+    """统一入口: 一次跑完全部维护 (去重 + 衰减 + 睡眠整理)。返回汇总。
 
     供后台任务 (_memory_maintenance_loop) 与 manager.memory_maintenance 调用。
     """
     result: dict[str, Any] = {
         "memories_dedupe": dedupe_memories(memory_store, dry_run=dry_run),
         "memories_decay": decay_memories(memory_store, dry_run=dry_run),
+        # P2 睡眠整理 (Dream): TTL 过期清理 + 高频记忆巩固, 与衰减同周期。
+        "memories_consolidate": consolidate_memories(memory_store, dry_run=dry_run),
     }
     if vector_db_path is not None:
         result["vector_dedupe"] = dedupe_vector_memories(vector_db_path, dry_run=dry_run)
         result["vector_decay"] = decay_vector_memories(vector_db_path, dry_run=dry_run)
+        result["vector_consolidate"] = consolidate_vector_memories(
+            vector_db_path, dry_run=dry_run
+        )
     return result

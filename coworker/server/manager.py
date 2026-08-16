@@ -5570,7 +5570,8 @@ class SessionManager:
     def memory_maintenance(
         self, *, dry_run: bool = False, vector_db_path: Optional[str | Path] = None
     ) -> dict[str, Any]:
-        """P1 记忆维护 (GuaAgent/OpenClaw 文档): 自动去重合并 + 衰减遗忘。
+        """P1/P2 记忆维护 (GuaAgent/OpenClaw/MemOS 文档): 自动去重合并 +
+        衰减遗忘 + 睡眠整理 (Dream consolidation, 含 TTL 过期清理与高频巩固)。
 
         结构化记忆 (memories 表) 始终覆盖; 向量记忆 (vector_memories) 在提供
         db 路径时覆盖 (默认取默认工作区的 .qunwork/memory.db)。返回各步骤摘要。
