@@ -69,10 +69,10 @@ def test_truncate_with_warning_long_text_marks():
     text = "A" * 5000
     out = _truncate_with_warning(text, 4000)
     assert len(out) > 4000  # 头 + 预警标记
-    assert "已截断" in out
+    assert "展示截断" in out
     assert "5000" in out  # 原文总长可见
     assert "4000" in out  # 展示长度可见
-    assert "完整内容" in out  # 提示可要求完整内容
+    assert "完整内容已保存" in out  # 明确产物无损
 
 
 def test_truncate_with_warning_none():
@@ -690,8 +690,9 @@ def test_clean_thought_normalizes_worker_feeds():
 
 
 def test_clean_deliverable_handles_n11_style_worker_output():
-    """N=11-shaped worker results (delivery shell + bullets + notes around a
-    body line) are distilled to the pure body text."""
+    """N=11-shaped worker results: delivery header + shell notes are stripped,
+    but the body (and any content lines) are preserved — 无损原则 (S3 修复:
+    正文/列表项绝不因"像 meta"被误删, 否则报告从上万字被砍到几千字)。"""
     from coworker.orchestrator.models import Plan, Task, OrchestrationResult, clean_deliverable
 
     raw = (
@@ -707,8 +708,28 @@ def test_clean_deliverable_handles_n11_style_worker_output():
     assert "Task [t0] 交付" not in cleaned
     assert "字数" not in cleaned and "已写入" not in cleaned and "artifact" not in cleaned
     assert "固态电池是以固态电解质" in cleaned  # body preserved
-    # 正文只保留主体句
-    assert len(cleaned) < 60
+    # 正文保留 (含列表项 — 那可能是报告正文, 不因"像 meta"被删)
+    assert len(cleaned) >= len("固态电池是以固态电解质替代传统液态电解液和隔膜的全新电池形态。")
+
+
+def test_clean_deliverable_preserves_markdown_content_bullets():
+    """无损原则: 报告正文的列表项 (`- `) 与加粗 (`**`) 必须保留 — 此前被当
+    meta 删除, 导致蜂群报告 (大量列表) 从上万字被砍到几千字 (S3 产物有损)。"""
+    from coworker.orchestrator.models import clean_deliverable
+
+    raw = (
+        "**Task [t0] 交付**\n\n"
+        "# QunWork 短板审计\n\n"
+        "- 记忆系统存在分层缺失\n"
+        "- 知识库检索重复\n"
+        "**结论**: 需要治理\n"
+    )
+    cleaned = clean_deliverable(raw)
+    assert "Task [t0] 交付" not in cleaned
+    assert "- 记忆系统存在分层缺失" in cleaned  # 正文列表保留
+    assert "- 知识库检索重复" in cleaned
+    assert "**结论**: 需要治理" in cleaned  # 加粗正文保留
+    assert "# QunWork 短板审计" in cleaned  # 标题保留
 
 
 def test_text_stats_tool_counts_chinese():

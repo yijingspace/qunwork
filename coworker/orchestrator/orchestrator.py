@@ -194,11 +194,11 @@ def clean_thought(text: str, worker: str = "") -> str:
 
 
 def _truncate_with_warning(text: str, limit: int) -> str:
-    """S3 上下文预算管理: 截断长文本时给下游 worker 明确预警, 避免静默信息
-    丢失 (蜂群 worker 曾因评审输入被无声切到 4000 字符而误判)。
+    """截断长文本时给下游显式预警 (展示用途: GUI 事件流)。
 
-    返回: 未超限 → 原文; 超限 → 头部保留 + 显式标记 (总长/被裁量),
-    让评审者知道信息不完整, 可要求完整内容而非基于残缺做判断。
+    产物无损原则 (S3 修复): 评审者输入已改为完整传递 (不截断) — 本函数只
+    用于 GUI 事件等*展示*场景, 截断时带标记 (总长/被裁量), 避免界面把
+    残缺内容误读为完整产物。
     """
     if text is None:
         return ""
@@ -208,9 +208,8 @@ def _truncate_with_warning(text: str, limit: int) -> str:
     total = len(text)
     return (
         f"{head}\n"
-        f"\n…[注意: 执行结果过长, 已截断 — 原文 {total} 字符, 仅展示前 {limit} "
-        f"字符。若判定需要完整内容, 请要求重新输出完整结果而非依据残缺内容 "
-        f"做最终评审]…"
+        f"\n…[展示截断: 原文 {total} 字符, 此处仅预览前 {limit} 字符 — "
+        f"完整内容已保存, 产物无损]…"
     )
 
 
@@ -568,7 +567,7 @@ class Orchestrator:
                 )
                 prompt = (
                     f"Task [{task.id}]: {task.description}\n\n"
-                    f"Executor's result:\n{_truncate_with_warning(result, 4000)}\n\n"
+                    f"Executor's result (完整产物, 不截断):\n{result}\n\n"
                     "Validate the result against the task. Return the JSON verdict."
                 )
                 text, status = await _run_engine_async(
@@ -779,7 +778,15 @@ class Orchestrator:
                 self._emit("task_result", {"id": task.id, "error": str(exc), "status": task.status})
                 return True
 
-            self._emit("task_result", {"id": task.id, "result": result[:2000]})
+            # GUI 事件流展示用截断 (完整结果已存 task.result, 产物无损);
+            # 截断时带预警, 避免界面误读为完整内容。
+            self._emit(
+                "task_result",
+                {
+                    "id": task.id,
+                    "result": _truncate_with_warning(result, 2000),
+                },
+            )
             verdict = await self._review(task, result)
             self._emit(
                 "task_review",

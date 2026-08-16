@@ -71,7 +71,13 @@ _TAIL_SHELL = (
 def clean_deliverable(text: str) -> str:
     """Strip the delivery shell an executor may wrap around the product:
     a '**Task [t0] 交付…**' header, artifact links, and trailing meta lines
-    (字符数/核对结果/已写入…), leaving the pure body text."""
+    (字符数/核对结果/已写入…), leaving the pure body text.
+
+    无损原则 (S3 修复): 只删除*包装壳* (任务头/尾注/artifact 链接), 绝不
+    删除正文内容 — 特别是 Markdown 的列表项 (`- `) / 加粗 (`**`) / 标题,
+    那是报告的正文, 不是 meta。此前把 `- `/`**` 开头的行当 meta 删除,
+    导致蜂群报告 (大量列表/加粗) 从上万字被砍到几千字 — 产物有损。
+    """
     import re
 
     t = re.sub(
@@ -88,10 +94,16 @@ def clean_deliverable(text: str) -> str:
         s = ln.strip()
         if not s:
             continue
-        if any(m in s for m in _TAIL_SHELL) and len(s) < 160:
+        # 删除包装壳行, 保留正文 (无损原则):
+        #  1) 短行且含 _TAIL_SHELL 标记 → 尾注 (字数/核对/已写入/衔接说明);
+        #  2) bullet 行 (`- `/`* `) 若其内容也是纯 shell 说明 (短 + 含 shell
+        #     标记) → 视为交付说明删除; 否则是正文列表项, 必须保留。
+        # 长行 (>40) 一律视为正文, 永不删除 (报告正文/列表项/表格行)。
+        stripped = s.lstrip("-* ")
+        is_bullet = s[:1] in ("-", "*")
+        shellish = any(m in s for m in _TAIL_SHELL) and len(s) <= 40
+        if shellish and (not is_bullet or len(stripped) <= 40):
             continue
-        if s.startswith(("- ", "* ", "**")):
-            continue  # bullet/list/emphasis meta lines
         lines.append(s)
     return "\n".join(lines).strip()
 
