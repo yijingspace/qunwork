@@ -16,6 +16,7 @@ export type EventType =
   | "turn_end"
   | "error"
   | "input_rejected"
+  | "supplement_accepted"
   | "interrupted"
   | "model_changed"
   | "turn_done";
@@ -47,6 +48,7 @@ export type WsEvent =
   | { type: "interrupted"; data: Record<string, unknown> }
   | { type: "error"; data: { error?: string } }
   | { type: "input_rejected"; data: { error?: string } }
+  | { type: "supplement_accepted"; data: { text?: string } }
   | { type: "turn_done"; data: Record<string, unknown> }
   | { type: "inbound"; data: Record<string, unknown> }
   | { type: "tool_started"; data: Record<string, unknown> }

@@ -61,6 +61,10 @@ interface Props {
   onConfigureVoiceInput?: () => void;
   onSend: (text: string, attachments?: Attachment[]) => void;
   onInterrupt: () => void;
+  // While a turn is running, the input stays editable and this (optional) handler sends the
+  // draft as a "supplement" — the server injects it into the RUNNING turn instead of
+  // rejecting it. Absent handler → no supplement button (surface keeps Stop-only).
+  onSupplement?: (text: string, attachments?: Attachment[]) => void;
   onModeChange: (mode: string) => void;
   onModelChange: (model: string) => void;
   // When set (Code/Cowork), the Mode menu is shown. The folder/roots + branch controls left the
@@ -258,10 +262,18 @@ export function Composer(props: Props) {
 
   const submit = () => {
     const t = text.trim();
-    if ((!t && attachments.length === 0) || props.running || dictation?.recording || dictationBusy) return;
+    if ((!t && attachments.length === 0) || dictation?.recording || dictationBusy) return;
     // No model connected: keep the draft (don't drop it) and send the user to setup instead.
     if (needsModel) {
       props.onConnectModel?.();
+      return;
+    }
+    // Running turn: the send button becomes "Supplement" — the draft goes to the running
+    // task via onSupplement (falls back to plain onSend when the surface didn't wire one).
+    if (props.running) {
+      (props.onSupplement ?? props.onSend)(t, attachments);
+      setText("");
+      setAttachments([]);
       return;
     }
     props.onSend(t, attachments);
@@ -516,11 +528,23 @@ export function Composer(props: Props) {
             </button>
           )}
 
-          {/* send / stop */}
+          {/* send / supplement / stop */}
           {props.running ? (
-            <button className="btn danger" onClick={props.onInterrupt}>
-              ⏹ Stop
-            </button>
+            <>
+              {hasContent && (
+                <button
+                  className="btn-primary text-[12px] px-3 h-7 rounded-lg shrink-0"
+                  onClick={submit}
+                  title={t("Send this as a supplement to the running task")}
+                  data-testid="supplement-btn"
+                >
+                  {t("Supplement")}
+                </button>
+              )}
+              <button className="btn danger" onClick={props.onInterrupt}>
+                ⏹ Stop
+              </button>
+            </>
           ) : (
             <button
               className={

@@ -757,6 +757,18 @@ export function App() {
           ]);
           break;
         }
+        case "supplement_accepted": {
+          // The server injected this draft into the RUNNING turn (next model round).
+          setItems((p) => [
+            ...p,
+            {
+              kind: "notice",
+              tone: "info",
+              text: t("Supplement received — the running task will pick it up in its next step."),
+            },
+          ]);
+          break;
+        }
         case "turn_done":
           setRunning(false);
           refreshSessions();
@@ -1658,6 +1670,7 @@ export function App() {
               onConnectModel={openModelSetup}
               onConfigureVoiceInput={() => openSettings("voice")}
               onSend={send}
+              onSupplement={send}
               onInterrupt={interrupt}
               onModeChange={changeMode}
               onModelChange={changeModel}

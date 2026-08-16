@@ -3179,7 +3179,32 @@ def create_app(manager: SessionManager) -> FastAPI:
                         content = build_user_content(
                             text, attachments, save_images_to=_img_dir
                         )
-                        await claim_turn(content=content)
+                        if manager.is_running(session_id):
+                            # Running turn: accept the draft as a SUPPLEMENT instead of
+                            # rejecting it. manager._engines[session_id] is the session-wide
+                            # shared engine (all views of a session hold the same instance),
+                            # so the injection lands on the turn that is actually running.
+                            # queue_steering appends it as a user message before the next
+                            # model round — and if the run is about to end, the engine's
+                            # steering path forces one more round to honour it.
+                            _running = manager.get_engine(session_id)
+                            if _running is not None:
+                                _running.queue_steering(
+                                    text, source={"supplement": True, "display": "supplement"}
+                                )
+                                await ws.send_json(
+                                    {
+                                        "type": "supplement_accepted",
+                                        "data": {"text": text},
+                                    }
+                                )
+                            else:
+                                await reject_input(
+                                    "This session is busy and has no live engine to "
+                                    "accept a supplement."
+                                )
+                        else:
+                            await claim_turn(content=content)
                 else:
                     await reject_input(f"Unknown WebSocket message type: {kind}.")
         except WebSocketDisconnect:

@@ -422,11 +422,13 @@ def test_ws_allows_only_one_inflight_turn_per_session(tmp_path):
         while "turn_done" not in types:
             types.append(ws.receive_json()["type"])
 
-    assert "input_rejected" in types
-    assert provider.max_active == 1
+    assert "input_rejected" not in types  # 运行中的第二条消息现在是「补充」而非拒绝
+    assert "supplement_accepted" in types
+    assert provider.max_active == 1  # 补充不抢锁: 同一时刻仍只有一个 turn 在跑
     engine = manager._engines["serialized"]
     user_messages = [m for m in engine.messages if m.get("role") == "user"]
-    assert [m["content"] for m in user_messages] == ["first"]
+    # 第一条启动 turn, 第二条作为补充注入(在 run 结束后被 steering 路径消费)
+    assert [m["content"] for m in user_messages] == ["first", "second"]
 
 
 def test_ws_rate_limits_inbound_frames(tmp_path):
@@ -1071,3 +1073,66 @@ def test_set_provider_persists_extra_fields(tmp_path):
     manager.set_provider("ollama", {"base_url": ""})
     providers = {p["name"]: p for p in manager.get_providers()}
     assert "base_url" not in providers["ollama"]["values"]
+
+
+# -- 运行中补充 (Supplement) -----------------------------------------------------
+
+class _RecordingProvider(ScriptedProvider):
+    """ScriptedProvider that records every model-round messages list."""
+
+    def __init__(self, turns):
+        super().__init__(turns)
+        self.rounds = []
+
+    def complete(self, *, model, messages, tools=None, **settings):
+        self.rounds.append(list(messages))
+        return super().complete(model=model, messages=messages, tools=tools, **settings)
+
+
+def test_ws_supplement_injects_into_running_turn(tmp_path):
+    """运行中发 user_message 应被当作「补充」注入当前任务(而非拒绝):
+    1) 收到 supplement_accepted; 2) 下一轮模型调用能看到补充文本; 3) run 正常结束。"""
+    provider = _RecordingProvider(
+        [_tool("write_file", {"path": "a.txt", "content": "x"}), _text("done")]
+    )
+    manager = SessionManager(workspace=tmp_path, provider=provider)
+    client = TestClient(create_app(manager))
+    with client.websocket_connect("/ws/session/sup") as ws:
+        assert ws.receive_json()["type"] == "ready"
+        ws.send_json({"type": "user_message", "text": "start task"})
+        # 等到 write_file 的审批请求: engine 此时暂停在审批上, running 标记已占用,
+        # 这是注入补充的确定窗口(不会与 run 完成竞态)。
+        got_perm = False
+        for _ in range(30):
+            ev = ws.receive_json()
+            if ev["type"] == "permission_required":
+                got_perm = True
+                break
+        assert got_perm, "expected an approval to hold the turn open"
+        # 运行中 → 发补充(此时 run 暂停, 必走补充分支)
+        ws.send_json({"type": "user_message", "text": "补充要求：请用中文回答"})
+        got_supp = False
+        for _ in range(30):
+            ev = ws.receive_json()
+            if ev["type"] == "supplement_accepted":
+                got_supp = True
+                break
+        assert got_supp, "running turn must accept a supplement instead of rejecting it"
+        # 放行审批 → run 继续: 工具执行 → 下一轮(含补充) → turn_end
+        ws.send_json({"type": "approval", "decision": "once"})
+        got_done = False
+        for _ in range(80):
+            ev = ws.receive_json()
+            if ev["type"] == "turn_done":
+                got_done = True
+                break
+        assert got_done, "the turn must still complete after the supplement"
+    # 第二轮(工具后)模型调用应看到补充注入的 user 消息
+    assert len(provider.rounds) >= 2, "expected ≥2 model rounds (tool round + final)"
+    final_round = provider.rounds[1]
+    assert any(
+        isinstance(m, dict)
+        and m.get("role") == "user"
+        and "补充要求" in str(m.get("content", ""))
+        for m in final_round
+    ), "supplement text must be injected into the next model round"
