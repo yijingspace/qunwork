@@ -70,6 +70,22 @@ _RISK_PATTERNS: list[tuple[str, int, str]] = [
 ]
 
 
+def level_for_score(total_score: int) -> str:
+    """Map a 0-100 risk score to a severity level — the SINGLE source of truth.
+
+    Score semantics: HIGHER score = MORE dangerous. Both analyze_skill_content
+    and the catalog's security_level field must agree; keep them in lockstep
+    (regression: catalog_row once inverted this mapping, showing the most
+    dangerous skills as 'low')."""
+    if total_score <= 20:
+        return "low"
+    if total_score <= 50:
+        return "medium"
+    if total_score <= 80:
+        return "high"
+    return "critical"
+
+
 def analyze_skill_content(content: str) -> dict[str, Any]:
     """静态分析 Skill 内容 (SKILL.md body + 内嵌 scripts), 返回风险报告。
 
@@ -102,17 +118,14 @@ def analyze_skill_content(content: str) -> dict[str, Any]:
     # 上限 100
     total_score = min(total_score, 100)
 
-    if total_score <= 20:
-        level = "low"
+    level = level_for_score(total_score)
+    if level == "low":
         recommendation = "低风险: 只读操作为主, 可安全导入。"
-    elif total_score <= 50:
-        level = "medium"
+    elif level == "medium":
         recommendation = "中风险: 含文件写操作, 建议审查后导入。"
-    elif total_score <= 80:
-        level = "high"
+    elif level == "high":
         recommendation = "高风险: 含 shell 执行或网络请求, 务必人工审查。"
     else:
-        level = "critical"
         recommendation = "极高风险: 含动态执行 + shell + 网络, 强烈建议不要导入。"
 
     return {
@@ -133,19 +146,16 @@ def analyze_skill_dir(skill_dir: str | Path) -> dict[str, Any]:
     if md.exists():
         parts.append(md.read_text(encoding="utf-8", errors="ignore"))
 
-    # 所有 Python 文件
-    for py in skill_dir.rglob("*.py"):
-        try:
-            parts.append(py.read_text(encoding="utf-8", errors="ignore"))
-        except OSError:
-            continue
-
-    # 所有 shell 脚本
-    for sh in skill_dir.rglob("*.sh"):
-        try:
-            parts.append(sh.read_text(encoding="utf-8", errors="ignore"))
-        except OSError:
-            continue
+    # 所有可执行脚本 — Python + shell + PowerShell/批处理/JS 等。规则表里有
+    # 大量 PowerShell / cmd.exe / Invoke-WebRequest 模式, 只扫 *.py/*.sh 会让
+    # 纯 .ps1 恶意 skill 得 0 分 (C15)。
+    _SCRIPT_GLOBS = ("*.py", "*.sh", "*.ps1", "*.psm1", "*.bat", "*.cmd", "*.js", "*.ts", "*.rb")
+    for glob in _SCRIPT_GLOBS:
+        for script in skill_dir.rglob(glob):
+            try:
+                parts.append(script.read_text(encoding="utf-8", errors="ignore"))
+            except OSError:
+                continue
 
     content = "\n".join(parts)
     return analyze_skill_content(content)

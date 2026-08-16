@@ -25,6 +25,11 @@ from typing import Any, Callable, Optional
 from .governance import ESCALATE, NOP, PAUSE, REVERT, WARN, Governance, GovernanceCommand, GovernanceConfig
 from .memory_store import PersistentVectorMemory
 from .models import OrchestrationResult, Plan, ReviewVerdict, Task
+
+# The placeholder an executor leaves when a task timed out before producing any
+# content (see the timeout-degrade path). Shared so every check that needs to
+# distinguish "timeout placeholder" from a real deliverable uses ONE string.
+_TASK_TIMEOUT_PREFIX = "⚠ task timed out"
 from .vectormemory import VectorMemory
 from .workers import (
     _run_engine_async,
@@ -274,7 +279,7 @@ class Orchestrator:
         are distilled into readable lines."""
 
         def feed(kind: str, payload: dict[str, Any]) -> None:
-            if kind == "worker_thought":
+            if kind in ("worker_thought", "tool_thought"):
                 self._emit(
                     "worker_thought",
                     {
@@ -343,6 +348,29 @@ class Orchestrator:
         raise RuntimeError(f"planner failed after 3 attempts: {last_err}")
 
     # -- execution ----------------------------------------------------------
+    def _build_executor_engine(self, task: Task, *, role_tag: Optional[str] = None) -> Any:
+        """Construct the executor TurnEngine for one task (agent pool aside).
+
+        Extracted from _execute so a task-timeout run can pre-warm the engine
+        BEFORE the timeout window starts (building spawns a shell + loads
+        skills/knowledge — seconds of work that must not count against the
+        task's execution budget)."""
+        from . import auto_approver
+        from .workers import build_executor_engine as _build_executor_engine
+
+        role_tag = role_tag or task.agent or self.executor_agent
+        return _build_executor_engine(
+            workspace=self.workspace,
+            provider=self.provider,
+            model=self.model,
+            approver=self.approver if self.approver is not None else auto_approver(),
+            agent=role_tag,
+            model_settings=self.model_settings,
+            memory_store=self.memory_store,
+            knowledge_db_path=self.knowledge_db_path,
+            usage_sink=self.usage_sink,
+        )
+
     async def _execute(
         self,
         task: Task,
@@ -369,17 +397,13 @@ class Orchestrator:
             except Exception:
                 pool_inst = None
         try:
-            engine = build_executor_engine(
-                workspace=self.workspace,
-                provider=self.provider,
-                model=self.model,
-                approver=self.approver if self.approver is not None else auto_approver(),
-                agent=role_tag,
-                model_settings=self.model_settings,
-                memory_store=self.memory_store,
-                knowledge_db_path=self.knowledge_db_path,
-                usage_sink=self.usage_sink,
-            )
+            # Consume a pre-warmed engine if the caller staged one (built OUTSIDE
+            # the task-timeout window — see _process_impl). Always cleared so a
+            # stale warm engine can never leak across tasks.
+            engine = getattr(self, "_warm_executor", None)
+            self._warm_executor = None
+            if engine is None:
+                engine = self._build_executor_engine(task, role_tag=role_tag)
             parts = [f"Task [{task.id}]: {task.description}\nExecute it now and report the result."]
             if deps:
                 parts.append("\nDependencies' results (reuse them):\n" + "\n".join(deps))
@@ -399,6 +423,19 @@ class Orchestrator:
                             "task_id": task.id,
                             "agent_id": acquired_agent_id,
                             "text": clean_thought(raw, "executor"),
+                        },
+                    )
+                elif kind == "tool_thought" and payload.get("text"):
+                    # Tool heartbeat — show it on the deck but NEVER collect it
+                    # as a draft (the timeout-degrade path uses collected[-1]
+                    # as the deliverable fragment).
+                    self._emit(
+                        "worker_thought",
+                        {
+                            "worker": "executor",
+                            "task_id": task.id,
+                            "agent_id": acquired_agent_id,
+                            "text": clean_thought(str(payload["text"]), "executor"),
                         },
                     )
                 elif kind == "decision_trace":
@@ -426,6 +463,19 @@ class Orchestrator:
                     self.agent_pool.release(acquired_agent_id)
                 except Exception:
                     pass
+            # 3) Always reap the executor's resources — every build spawned a
+            # persistent shell process (LocalExecutor.__init__) that would
+            # otherwise leak per task (C2). Runs even when the task timed out
+            # and wait_for cancelled _run_engine_async mid-stream.
+            if engine is not None:
+                close_exec = getattr(engine, "executor", None)
+                if close_exec is not None:
+                    close = getattr(close_exec, "close", None)
+                    if close is not None:
+                        try:
+                            close()
+                        except Exception:
+                            pass
         if _looks_like_interim(text):
             # Deliverable push: the model stopped with a process note ("I will
             # verify…", "Let me check…") instead of the product — observed on
@@ -498,7 +548,7 @@ class Orchestrator:
         # completed — the timeout note alone is not a deliverable.
         if result.status == "paused" and result.report_path:
             report = result.final_report()
-            if report.strip() and not report.startswith("swarm timed out"):
+            if report.strip() and not report.startswith(_TASK_TIMEOUT_PREFIX):
                 result.status = "completed"
         return result
 
@@ -509,7 +559,31 @@ class Orchestrator:
         # T4: consecutive no-progress rounds → stall (fixed point without completion).
         stall_rounds = 0
         stalled_reason: Optional[str] = None
-        plan = self.initial_plan if self.initial_plan is not None else await self._plan(intent)
+        plan: Optional[Plan] = None
+        planner_timed_out = False
+        if self.initial_plan is not None:
+            plan = self.initial_plan
+        else:
+            # The global timeout budget must constrain the PLANNER too — otherwise a
+            # slow plan call eats the whole budget before the first task is even
+            # dispatched (regression: test_orchestrator_timeout_pauses). Wait for
+            # the plan within the remaining budget; on expiry return a paused run
+            # with no plan instead of completing an empty plan.
+            remaining = (deadline - time.monotonic()) if deadline is not None else None
+            try:
+                if remaining is not None and remaining <= 0:
+                    raise TimeoutError("planner budget exhausted before start")
+                if remaining is not None:
+                    plan = await asyncio.wait_for(self._plan(intent), timeout=remaining)
+                else:
+                    plan = await self._plan(intent)
+            except TimeoutError:
+                planner_timed_out = True
+                plan = Plan(goal=intent, tasks=[])
+                self._emit(
+                    "run_timed_out",
+                    {"seconds": self.timeout_seconds, "stage": "plan", "final_batch": []},
+                )
         self._last_plan = plan
         self._emit(
             "plan_ready",
@@ -540,6 +614,19 @@ class Orchestrator:
         else:
             mem = VectorMemory(embedder=self.embedder)
             _own_mem = True
+        # C12: the SQLite-backed memory handle must be closed even when _run
+        # raises mid-flight (executor/governance exceptions). The explicit close
+        # at the end covers the happy path; this registers the SAME close as a
+        # finalizer so the abnormal path is covered too. `self` may outlive the
+        # run, but the mem object itself becomes unreachable when this run's
+        # locals die — weakref on the STORE (not self) fires at that point.
+        mem_close = getattr(mem, "close", None)
+        if _own_mem and mem_close is not None:
+            try:
+                import weakref
+                weakref.finalize(mem, mem_close)
+            except Exception:
+                pass
         gov_log: list[str] = []
         governance_paused = False
         budget_exhausted = False  # set when the soft deadline passes; stops new batches
@@ -579,6 +666,20 @@ class Orchestrator:
             if directives:
                 hints = hints + [f"[operator] {d}" for d in directives]
 
+            # Pre-warm the executor engine OUTSIDE the task-timeout window: building
+            # spawns a shell process and loads skills/knowledge (seconds on this
+            # machine), so counting it against a short task_timeout would burn the
+            # whole budget before the first draft is ever produced. Handed to
+            # _execute via an instance slot (NOT a keyword arg) so tests that stub
+            # _execute keep their signatures; _execute consumes and clears it.
+            warm_engine = None
+            if self.task_timeout_seconds:
+                try:
+                    warm_engine = self._build_executor_engine(task)
+                except Exception:
+                    warm_engine = None
+            self._warm_executor = warm_engine
+
             async def _run_task() -> str:
                 return await self._execute(
                     task, deps=deps, hints=hints, on_text=collected.append
@@ -603,7 +704,7 @@ class Orchestrator:
                 partial = collected[-1] if collected else ""
                 task.status = "done"
                 task.result = partial or (
-                    f"⚠ task timed out after {self.task_timeout_seconds}s — "
+                    f"{_TASK_TIMEOUT_PREFIX} after {self.task_timeout_seconds}s — "
                     "no content was produced before the timeout"
                 )
                 task.confidence = 0.4 if partial else 0.3
@@ -777,6 +878,30 @@ class Orchestrator:
 
             if not ready:
                 blocked = [t.id for t in plan.tasks if t.status == "pending"]
+                # M7: diagnose DANGLING deps — a pending task whose deps reference
+                # task ids that don't exist (planner hallucination / JSON drift)
+                # would otherwise deadlock the run into a silent 'failed' with zero
+                # events. Emit a run-stalled-style diagnostic so callers know why.
+                dangling = [
+                    {
+                        "id": t.id,
+                        "missing_deps": [
+                            d for d in t.deps if d not in by_id
+                        ],
+                    }
+                    for t in plan.tasks
+                    if t.status == "pending" and any(d not in by_id for d in t.deps)
+                ]
+                if dangling:
+                    reason = (
+                        f"{len(dangling)} task(s) blocked by unknown dependency ids: "
+                        + ", ".join(
+                            f"{d['id']}→{d['missing_deps']}" for d in dangling[:5]
+                        )
+                    )
+                    stalled_reason = stalled_reason or reason
+                    self._emit("run_stalled", {"reason": reason, "dangling": dangling})
+                    gov_log.append(f"[stalled] {reason}")
                 break
             # Soft-budget deadline: once exhausted we run THIS final batch (tasks
             # that are ready now — e.g. the consolidation task whose deps just
@@ -818,7 +943,9 @@ class Orchestrator:
                 break
 
         status = (
-            "completed"
+            "paused"
+            if planner_timed_out
+            else "completed"
             if plan.all_done()
             else "paused"
             if governance_paused or budget_exhausted
@@ -831,6 +958,15 @@ class Orchestrator:
         summary = "\n\n".join(
             f"[{t.id}] {t.description}\n{t.result}" for t in plan.tasks if t.result
         )
+        if planner_timed_out:
+            gov_log.append(
+                f"[plan] TIMEOUT: planner exceeded {self.timeout_seconds}s budget — "
+                "no plan, no deliverable"
+            )
+            summary = (
+                f"⚠ run timed out: planner produced no plan within "
+                f"{self.timeout_seconds}s budget — no deliverable"
+            )
         if stalled_reason is not None:
             gov_log.append(f"[stalled] {stalled_reason}")
         if budget_exhausted:
@@ -847,7 +983,8 @@ class Orchestrator:
             runs=self._runs,
             governance_report="\n".join(gov_log),
         )
-        self._persist_report(result)
+        if not planner_timed_out:
+            self._persist_report(result)
         # Owner-audit 2026-08-07 (bug #4): close SQLite-backed memory we
         # created for this run so connections don't leak across many runs.
         if _own_mem:
@@ -883,9 +1020,8 @@ class Orchestrator:
         import time as _time
 
         report = result.final_report().strip()
-        if not report or (report.startswith("⚠ task timed out") and len(report) < 40):
-            return
-        # honor an explicit output filename in the intent, if any
+        if not report or (report.startswith(_TASK_TIMEOUT_PREFIX) and len(report) < 40):
+            return        # honor an explicit output filename in the intent, if any
         m = _re.search(
             r"(?:写入|保存(?:到|为)?|输出(?:到|为)?|生成|创建|落盘(?:到)?|文件(?:名)?[:：]?)\s*"
             r"([\w\u4e00-\u9fff.\-]+\.(?:md|markdown|txt))",

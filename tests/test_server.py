@@ -471,6 +471,7 @@ def test_server_sets_explicit_websocket_frame_limit(tmp_path, monkeypatch):
 
 def test_standalone_server_token_file_is_user_only(tmp_path, monkeypatch):
     import os
+    import sys
 
     from coworker.server import run as server_run
 
@@ -480,7 +481,13 @@ def test_standalone_server_token_file_is_user_only(tmp_path, monkeypatch):
         assert path == tmp_path / "coworker-state" / "qunwork-9876.token"
         assert path.read_text().strip() == os.environ["COWORKER_API_TOKEN"]
         assert len(path.read_text().strip()) == 64
-        assert (path.stat().st_mode & 0o777) == 0o600
+        # POSIX: 0600 owner-only. Windows st_mode has no mode bits (chmod is a
+        # no-op there) — write_private_text applies an icacls user-only ACL
+        # instead; assert existence on win32.
+        if not sys.platform.startswith("win"):
+            assert (path.stat().st_mode & 0o777) == 0o600
+        else:
+            assert path.is_file()
     finally:
         path.unlink(missing_ok=True)
         os.environ.pop("COWORKER_API_TOKEN", None)
@@ -729,6 +736,17 @@ def test_workspace_command_trust_controls_live_engine(tmp_path):
         assert not after.allowed and after.needs_user
 
     manager.workspace_trust.set_trusted(proj, True)
+    # Windows holds a handle on the workspace dir while a live engine caches it,
+    # so rename can fail with WinError 32 even though POSIX allows it. Drop the
+    # engine's workspace handle first; on POSIX the plain rename is still valid.
+    for sid, eng in list(manager._engines.items()):
+        try:
+            executor = getattr(eng, "executor", None)
+            if executor is not None:
+                executor.close()
+        except Exception:
+            pass
+        manager._engines.pop(sid, None)
     proj.rename(tmp_path / "moved-project")
     assert client.post(
         "/v1/workspaces/trust",

@@ -9,7 +9,6 @@ No network, no real LLM — ScriptedProvider drives the orchestrator.
 from __future__ import annotations
 
 import asyncio
-import time
 
 import pytest
 
@@ -27,10 +26,17 @@ def test_deposit_level_and_withdraw():
 
 
 def test_evaporation_over_time():
-    f = PheromoneField(half_life=0.2)  # 200ms half-life
+    # Deterministic clock — a real time.sleep on a 200ms half-life was flaky
+    # under load (a preempted process evaporates past the >0.0 assertion).
+    clock = {"t": 0.0}
+
+    def _now():
+        return clock["t"]
+
+    f = PheromoneField(half_life=0.2, now_fn=_now)
     f.deposit("code", 1.0)
     assert f.level("code") > 0.9
-    time.sleep(0.45)  # > 2 half-lives → < 25% of original
+    clock["t"] += 0.45  # > 2 half-lives → < 25% of original
     assert f.level("code") < 0.3
     assert f.level("code") > 0.0  # still faintly present before full fade
 

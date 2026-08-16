@@ -155,7 +155,13 @@ class ScheduledTask:
     def from_dict(cls, d: dict) -> "ScheduledTask":
         d = dict(d)
         d["schedule"] = Schedule.from_dict(d.get("schedule") or {})
-        return cls(**d)
+        # C11: `cls(**d)` raises TypeError on any key the current dataclass
+        # doesn't declare (schema drift: a field was renamed/removed in code but
+        # old rows still carry it) — that single failure then takes down the
+        # whole scheduler tick via store.due(). Keep only the declared fields.
+        declared = {f.name for f in cls.__dataclass_fields__.values()}
+        filtered = {k: v for k, v in d.items() if k in declared}
+        return cls(**filtered)
 
     # -- standing rules (§25) --------------------------------------------------
     def standing_rules(self) -> dict[str, set[str]]:

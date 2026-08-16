@@ -98,8 +98,10 @@ class PersistentVectorMemory:
                 item.vector = self._mem.embedder(text)
             except Exception:
                 logger.debug("persistent memory embedder failed", exc_info=True)
-        self._mem.items.append(item)
+        # C12: _mem.items is shared mutable state; append and DB insert under the
+        # SAME lock so a concurrent search() never iterates a half-appended list.
         with self._lock:
+            self._mem.items.append(item)
             self._db.execute(
                 "INSERT INTO vector_memories (scope, text, meta, vector, created_at, phase) VALUES (?,?,?,?,?,?)",
                 (
@@ -118,7 +120,10 @@ class PersistentVectorMemory:
     ) -> list[MemoryHit]:
         """Top-k memory hits. With `phase`, same-phase history is preferred and
         the rest of k is backfilled from the global store (T5 periodic reuse)."""
-        hits = self._mem.search(query, k=k)
+        # C12: search reads the shared in-memory items list — hold the lock so
+        # a concurrent add() never mutates it mid-iteration.
+        with self._lock:
+            hits = self._mem.search(query, k=k)
         if phase is None:
             return hits
         with self._lock:

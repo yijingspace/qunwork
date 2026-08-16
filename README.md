@@ -61,6 +61,8 @@
 
 QunWork 本地优先。一切都在你的机器上：agent 循环、对话、连接器 token、模型 Key —— 全部在应用的本地 secret store 里。唯一的云组件是一个为连接器代理 OAuth 握手的小服务。你也可以完全不登录使用 —— 通过手动创建的凭据/API Key 使用连接器。
 
+> **本地安全边界**：`qunwork-server` 每次启动都会自签一个随机 API token（写入用户专属的 `0600` token 文件，退出即删），REST/WS 请求需携带 `X-QunWork-Token` 请求头或 WebSocket 子协议。**除非你显式设置 `COWORKER_API_TOKEN` 为空，否则服务默认只对本机进程开放**。任何本机进程仍可访问此回环端口（含工具调用），因此请勿在共享机器上开启不受信任的会话；`--host` 默认 `127.0.0.1`，不要绑定 `0.0.0.0`（团队 P2P 同步端点会因此暴露在局域网）。
+
 ## 从源码运行
 
 前置条件：Python 3.10+、Node 20+、以及（桌面壳需要）通过 [rustup](https://rustup.rs/) 安装 Rust 工具链。

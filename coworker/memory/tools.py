@@ -15,7 +15,12 @@ from .base import MemoryStore, Scope
 
 _SCOPES = {s.value for s in Scope}
 
-_META = dict(category="memory", risk_level="low", capabilities=["remember"])
+# 低危: each tool declares its ACTUAL capability (all three used to share
+# capabilities=["remember"], mislabeling update/forget as write-only-remember).
+_META_BASE = dict(category="memory", risk_level="low")
+_META = {**_META_BASE, "capabilities": ["remember"]}
+_META_UPDATE = {**_META_BASE, "capabilities": ["memory_update"]}
+_META_FORGET = {**_META_BASE, "capabilities": ["memory_forget"]}
 
 
 def memory_tools(store: MemoryStore, *, workspace: Optional[str]) -> list:
@@ -59,6 +64,7 @@ def memory_tools(store: MemoryStore, *, workspace: Optional[str]) -> list:
         return {"deleted": False, "error": f"no memory with id {memory_id}"}
 
     return [
-        ai.tool(fn, metadata=ai.ToolMetadata(**_META))
-        for fn in (remember, memory_update, memory_forget)
+        ai.tool(remember, metadata=ai.ToolMetadata(**_META)),
+        ai.tool(memory_update, metadata=ai.ToolMetadata(**_META_UPDATE)),
+        ai.tool(memory_forget, metadata=ai.ToolMetadata(**_META_FORGET)),
     ]

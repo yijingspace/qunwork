@@ -138,14 +138,19 @@ def _parse_rg(stdout: str, root: Path, n: int) -> dict[str, Any]:
     matches: list[dict[str, Any]] = []
     # ripgrep emits `<path>:<line>:<text>`. Windows drive letters contain a colon
     # (C:\...), so a naive split(":", 2) would truncate the path at the drive —
-    # upstream #17. Match greedily: everything up to the LAST path:line boundary
-    # (the colon directly before the line number) is the file.
+    # upstream #17. Parse by taking the FIRST `:digits:` run as the path/line
+    # boundary: a drive-letter colon is never followed by a digit (C:\...), while
+    # the real boundary always is. This also fixes C7 — a greedy ^(.+):(\d+):…
+    # anchored at the END would steal a `:123:` inside the matched TEXT (e.g.
+    # "see ref:42: note") as the line number.
     import re as _re
 
     for line in stdout.splitlines():
-        m = _re.match(r"^(.+):(\d+):(.*)$", line)
+        m = _re.search(r":(\d+):", line)
         if m:
-            f, ln, txt = m.group(1), m.group(2), m.group(3)
+            f = line[: m.start()]
+            ln = m.group(1)
+            txt = line[m.end() :]
             matches.append(
                 {
                     "file": _rel(f, root),
@@ -172,6 +177,11 @@ def _py_grep(
             if glob and not fnmatch.fnmatch(fn, glob):
                 continue
             fp = Path(dirpath) / fn
+            # C8: never follow symlinks — a link inside the workspace could
+            # point at an arbitrary machine file and this read-only search
+            # would exfiltrate its contents into the agent's context.
+            if fp.is_symlink():
+                continue
             try:
                 with open(fp, "r", encoding="utf-8", errors="ignore") as fh:
                     for i, line in enumerate(fh, 1):

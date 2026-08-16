@@ -48,8 +48,15 @@ class RunController:
         """Invoke fn on the bound loop thread; fall back to direct call when
         no loop is bound or when we're already on that loop."""
         loop = self._loop
-        if loop is not None and loop.is_running() and asyncio.get_event_loop() is not loop:
-            loop.call_soon_threadsafe(fn)
+        if loop is not None and loop.is_running():
+            try:
+                # `get_event_loop()` raises RuntimeError on worker/threadpool
+                # threads (FastAPI sync endpoints run there) — use
+                # get_running_loop() which only succeeds on a loop thread.
+                asyncio.get_running_loop()
+                fn()
+            except RuntimeError:
+                loop.call_soon_threadsafe(fn)
         else:
             fn()
 
@@ -169,9 +176,14 @@ class RunController:
                 return True
             return False
 
-        if self._loop is not None and self._loop.is_running() and asyncio.get_event_loop() is not self._loop:
-            self._loop.call_soon_threadsafe(_do)
-            return True  # queued; the future will resolve
+        loop = self._loop
+        if loop is not None and loop.is_running():
+            try:
+                asyncio.get_running_loop()  # already on the bound loop thread
+                return _do()
+            except RuntimeError:
+                self._loop.call_soon_threadsafe(_do)
+                return True  # queued; the future will resolve
         return _do()
 
     def reject_requeue(self, task_id: str) -> bool:
@@ -182,9 +194,14 @@ class RunController:
                 return True
             return False
 
-        if self._loop is not None and self._loop.is_running() and asyncio.get_event_loop() is not self._loop:
-            self._loop.call_soon_threadsafe(_do)
-            return True
+        loop = self._loop
+        if loop is not None and loop.is_running():
+            try:
+                asyncio.get_running_loop()  # already on the bound loop thread
+                return _do()
+            except RuntimeError:
+                self._loop.call_soon_threadsafe(_do)
+                return True
         return _do()
 
     def pending_requeues(self) -> list[dict[str, Any]]:

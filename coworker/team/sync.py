@@ -19,7 +19,6 @@ import json
 import logging
 import threading
 import time
-import uuid
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -61,22 +60,40 @@ class SyncSecrets:
             return False
 
     def encrypt(self, plaintext: bytes) -> dict:
-        nonce = uuid.uuid4().bytes[:12]
-        ct = AESGCM(self.aes_key).encrypt(nonce, plaintext, None)
+        # M11: os.urandom(12) — uuid4 bytes carry fixed version/variant bits
+        # (~92 bits of entropy after truncation); urandom gives the full 96.
+        # The author public key is bound as AAD so a tamper that swaps the
+        # author field also breaks GCM authentication (not just the outer
+        # Ed25519 check).
+        import os as _os
+
+        nonce = _os.urandom(12)
+        author_pub = self.public_key_hex
+        ct = AESGCM(self.aes_key).encrypt(
+            nonce, plaintext, author_pub.encode("ascii")
+        )
         return {
             "nonce": base64.b64encode(nonce).decode(),
             "ciphertext": base64.b64encode(ct).decode(),
-            "author_pub": self.public_key_hex,
+            "author_pub": author_pub,
         }
 
     def decrypt(self, envelope: dict) -> bytes:
         nonce = base64.b64decode(envelope["nonce"])
         ct = base64.b64decode(envelope["ciphertext"])
-        return AESGCM(self.aes_key).decrypt(nonce, ct, None)
+        # AAD must match the encrypt side (author_pub) or GCM rejects.
+        aad = str(envelope.get("author_pub") or "").encode("ascii")
+        return AESGCM(self.aes_key).decrypt(nonce, ct, aad)
 
 
 def load_or_create_sync_secrets(path: str | Path) -> SyncSecrets:
-    """Load (or create) the team's sync secrets: Ed25519 key + AES key file."""
+    """Load (or create) the team's sync secrets: Ed25519 key + AES key file.
+
+    Both files carry user-only permissions (0600 / icacls) via
+    write_private_text — the AES-256 shared key and the Ed25519 signing key
+    must never be world-readable (H2)."""
+    from ..secrets import write_private_text
+
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     sign_path = path.with_suffix(".sign.pem")
@@ -85,20 +102,36 @@ def load_or_create_sync_secrets(path: str | Path) -> SyncSecrets:
         sign_key = serialization.load_pem_private_key(
             sign_path.read_bytes(), password=None
         )
-        aes_key = aes_path.read_bytes()
+        raw_aes = aes_path.read_bytes().strip()
+        # New layout stores the 32-byte key base64-encoded (text writer); older
+        # files hold the raw bytes — accept both.
+        import base64 as _b64
+
+        if len(raw_aes) != 32:
+            try:
+                aes_key = _b64.b64decode(raw_aes)
+            except Exception:
+                aes_key = raw_aes
+        else:
+            aes_key = raw_aes
         if len(aes_key) != 32:
             aes_key = aes_key[:32].ljust(32, b"\0")
         return SyncSecrets(sign_key, aes_key)
     sign_key = ed25519.Ed25519PrivateKey.generate()
-    sign_path.write_bytes(
+    write_private_text(
+        sign_path,
         sign_key.private_bytes(
             serialization.Encoding.PEM,
             serialization.PrivateFormat.PKCS8,
             serialization.NoEncryption(),
-        )
+        ).decode("ascii"),
     )
     aes_key = __import__("os").urandom(32)  # AES-256 key, 32 bytes
-    aes_path.write_bytes(aes_key)
+    # write_private_text is a TEXT writer — carry the binary key base64 so a
+    # round-trip through UTF-8 cannot corrupt it (H2).
+    import base64 as _b64
+
+    write_private_text(aes_path, _b64.b64encode(aes_key).decode("ascii"))
     return SyncSecrets(sign_key, aes_key)
 
 
@@ -112,6 +145,7 @@ class TeamSync:
         secrets_path: str | Path,
         author: str = "local",
         knowledge_upsert: Optional[Callable[[dict], Any]] = None,
+        peer_public_keys: Optional[set[str]] = None,
     ) -> None:
         self.store = store
         self.secrets = load_or_create_sync_secrets(secrets_path)
@@ -119,6 +153,13 @@ class TeamSync:
         # knowledge_upsert(payload) -> apply one knowledge change (追加合并).
         self._knowledge_upsert = knowledge_upsert
         self._lock = threading.Lock()
+        # H3: optional peer allow-list. When set, inbound envelopes whose
+        # author_pub is NOT in this set are dropped (the envelope's self-declared
+        # key alone is not enough — anyone holding the shared AES key could claim
+        # another author). Empty/None = accept any valid signature (legacy).
+        self._peer_public_keys = (
+            set(peer_public_keys) if peer_public_keys is not None else None
+        )
 
     # ── outbox 收集 ──────────────────────────────────────────────────────────
     def collect_snapshot_changes(self, *, force: bool = False) -> list[dict]:
@@ -185,9 +226,15 @@ class TeamSync:
             except Exception:
                 logger.warning("dropping undecryptable change (bad/tampered envelope)")
                 continue
+            author_pub = str(env.get("author_pub") or "")
+            # H3: when a peer allow-list is configured, the author must be in
+            # it — the self-declared key is not proof of identity by itself.
+            if self._peer_public_keys is not None and author_pub not in self._peer_public_keys:
+                logger.warning("dropping change from non-peer author %s", author_pub[:16])
+                continue
             sig = base64.b64decode(env.get("author_sig", ""))
-            if not self.secrets.verify(body, sig, env.get("author_pub", "")):
-                logger.warning("dropping change with bad signature from %s", env.get("author_pub"))
+            if not self.secrets.verify(body, sig, author_pub):
+                logger.warning("dropping change with bad signature from %s", author_pub)
                 continue
             out.append(json.loads(body.decode()))
         return out
@@ -218,8 +265,19 @@ class TeamSync:
         return {"applied": applied, "skipped": skipped}
 
     def _lww_wins(self, etype: str, eid: str, remote_ts: float, op: str) -> bool:
+        # H3: delete must participate in LWW too — an unconditional "delete wins"
+        # let any envelope with a valid shared-key signature erase members/groups
+        # even when the local side has newer data. A delete only applies when the
+        # remote change is at least as new as the entity's local last-write time.
         if op == "delete":
-            return True
+            if etype == "member":
+                local_ts = (self.store.get_member(eid) or {}).get("last_seen", 0) or 0
+            elif etype == "task_group":
+                g = self.store.get_task_group(eid)
+                local_ts = (g or {}).get("dissolved_at") or (g or {}).get("created_at", 0) or 0
+            else:
+                local_ts = 0
+            return remote_ts >= local_ts
         if etype == "member":
             return remote_ts >= (self.store.get_member(eid) or {}).get("last_seen", 0)
         if etype == "task_group":

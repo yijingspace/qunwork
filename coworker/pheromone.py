@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import threading
 import time
-from typing import Optional
+from typing import Callable, Optional
 
 
 class PheromoneField:
@@ -27,12 +27,17 @@ class PheromoneField:
         half_life: float = 60.0,
         cap: float = 10.0,
         decay_to: float = 0.05,
+        now_fn: Optional[Callable[[], float]] = None,
     ) -> None:
         self._lock = threading.Lock()
         self._marks: dict[str, tuple[float, float]] = {}  # key -> (intensity, last_ts)
         self._half_life = half_life
         self._cap = cap
         self._decay_to = decay_to
+        # Injectable clock — tests advance time deterministically instead of
+        # sleeping on a real half-life (flaky under load: a preempted process
+        # evaporates past the >0.0 assertion).
+        self._now = now_fn or time.time
 
     # -- internals ----------------------------------------------------------
     def _evaporated(self, intensity: float, age: float) -> float:
@@ -44,7 +49,7 @@ class PheromoneField:
         """Release (positive) or withdraw (negative) pheromone for `key`. A task
         start deposits +1.0; its completion deposits -1.0. Capped and floored."""
         with self._lock:
-            now = time.time()
+            now = self._now()
             prev, ts = self._marks.get(key, (0.0, now))
             cur = self._evaporated(prev, now - ts)
             nxt = max(0.0, min(self._cap, cur + amount))
@@ -60,7 +65,7 @@ class PheromoneField:
             if mark is None:
                 return 0.0
             intensity, ts = mark
-            v = self._evaporated(intensity, time.time() - ts)
+            v = self._evaporated(intensity, self._now() - ts)
             if v < self._decay_to:
                 self._marks.pop(key, None)
                 return 0.0
@@ -69,7 +74,7 @@ class PheromoneField:
     def levels(self) -> dict[str, float]:
         """All non-faded signals, most intense first. Reads also prune faded keys."""
         with self._lock:
-            now = time.time()
+            now = self._now()
             out: dict[str, float] = {}
             for k, (intensity, ts) in list(self._marks.items()):
                 v = self._evaporated(intensity, now - ts)

@@ -57,6 +57,10 @@ class E2EProvider(ProviderClient):
 
     def complete(self, *, model, messages, tools=None, **settings):
         self.calls.append([dict(m) for m in messages])
+        import os
+        if os.environ.get("DEBUG_E2E"):
+            last = str(messages[-1].get("content"))[:80] if messages else "?"
+            print(f"  [E2E call #{len(self.calls)}] last-msg: {last!r}")
         return self._turns.pop(0)
 
     def capabilities(self, model):
@@ -79,6 +83,16 @@ async def _wait_until(predicate, *, timeout: float = 8.0, interval: float = 0.02
         await asyncio.sleep(interval)
         val = predicate()
     return val
+
+
+def _stable_call_count(provider) -> bool:
+    """True when the provider's call count hasn't grown since the last sample —
+    i.e. the gateway's event stream has settled (used to baseline before the
+    muted-message assertion; a delayed dispatch would otherwise look like a wake)."""
+    last = getattr(_stable_call_count, "_last", -1)
+    current = len(provider.calls)
+    _stable_call_count._last = current
+    return current == last and current > 0
 
 
 def _find_card(outbound):
@@ -257,6 +271,15 @@ async def test_ui_refresh_cross_cutting_e2e(fake_slack, tmp_path, monkeypatch):
         assert mgr.inbox.get(item_id).state == "resolved"
 
         # -- Step 4: mute Slack for the session -> a further post does NOT wake it, still buffered -
+        # Let the turn's event stream FULLY settle before capturing the baseline:
+        # a delayed gateway event (FakeSlack socket dispatch can lag a tick behind
+        # is_running()) arriving after calls_before would make the muted assertion
+        # count a stale delivery as a wake (Windows flake). Poll until the call
+        # count is stable across two consecutive samples.
+        await _wait_until(
+            lambda: _stable_call_count(provider),
+            timeout=5.0,
+        )
         msgcount_before = len(mgr.session_messages(SID))
         calls_before = len(provider.calls)
         resp = client.post(

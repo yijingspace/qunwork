@@ -1055,6 +1055,22 @@ class SessionManager:
         for server in load_mcp_servers(ws, secrets=self.secrets):
             if not server.enabled:
                 continue
+            # H1 (RCE via cloned repo): a workspace-provided stdio MCP server
+            # spawns an arbitrary command from the repo's .coworker/mcp.json.
+            # Never spawn it until the user has trusted that exact workspace —
+            # same gate as config.toml allowed_commands (config.py). Global
+            # (user-owned) stdio servers and any http server are unaffected.
+            if server.source == "workspace" and server.transport == "stdio":
+                if not ws or not self.workspace_trust.is_trusted(ws):
+                    self._mcp_errors[server.name] = (
+                        "workspace stdio MCP server requires trusting this "
+                        "workspace first (Settings ▸ Workspaces)"
+                    )
+                    logger.warning(
+                        "skipping workspace stdio MCP %s — workspace not trusted",
+                        server.name,
+                    )
+                    continue
             if server.auth == "oauth" and not mcp_oauth.has_tokens(
                 server.name, self.secrets
             ):
@@ -1095,7 +1111,13 @@ class SessionManager:
                     logger.info(
                         "mcp %s needs re-auth; skipped for this session", server.name
                     )
-                # else: bad command / unreachable url — skip, don't break the session
+                else:
+                    # bad command / unreachable url — record the failure so the
+                    # MCP page shows WHY (overwrites any stale trust-gate note
+                    # once the workspace has been trusted).
+                    self._mcp_errors[server.name] = (
+                        str(exc) or exc.__class__.__name__
+                    )
                 continue
             callables = build_callables(
                 server,
@@ -1171,6 +1193,16 @@ class SessionManager:
         for server in load_mcp_servers(self.default_workspace, secrets=self.secrets):
             if server.name != name:
                 continue
+            # H1: explicit connect must not bypass the workspace-trust gate for
+            # repo-provided stdio servers either.
+            if server.source == "workspace" and server.transport == "stdio":
+                ws = self.default_workspace
+                if not ws or not self.workspace_trust.is_trusted(ws):
+                    self._mcp_errors[name] = (
+                        "workspace stdio MCP server requires trusting this workspace "
+                        "first (Settings ▸ Workspaces)"
+                    )
+                    return {"ok": False, "error": self._mcp_errors[name]}
             self._mcp_authorizing.add(name)
             self._mcp_errors.pop(name, None)
             try:
@@ -1459,6 +1491,39 @@ class SessionManager:
 
     MAX_BINARY_PREVIEW = 25 * 1024 * 1024  # base64-over-JSON gets heavy past this
 
+    def _artifact_roots(self, record) -> list[Path]:
+        """The roots an artifact may live in: the session workspace, its parent
+        (merged workspace layouts), the default/primary workspace, and any
+        extra roots the user granted this session. Absolute artifact paths are
+        allowed ONLY inside these roots (M3: arbitrary file read was possible
+        via /v1/sessions/{id}/artifacts/read?path=C:\\...)."""
+        roots: list[Path] = []
+        for raw in (
+            [getattr(record, "workspace", None)]
+            if record is not None
+            else [self.default_workspace]
+        ):
+            if raw:
+                p = Path(raw).expanduser().resolve()
+                roots.append(p)
+                parent = p.parent
+                if parent != p and parent != Path(parent.anchor):
+                    roots.append(parent)
+        dw = getattr(self, "default_workspace", None)
+        if dw:
+            dwp = Path(dw).expanduser().resolve()
+            if dwp not in roots:
+                roots.append(dwp)
+        if record is not None:
+            for extra in getattr(record, "extra_roots", []) or []:
+                try:
+                    ep = Path(extra.get("path", "")).expanduser().resolve()
+                except (ValueError, TypeError):
+                    continue
+                if ep not in roots:
+                    roots.append(ep)
+        return roots
+
     def _artifact_target(
         self, session_id: str, path: str
     ) -> tuple[Optional[Path], Optional[str]]:
@@ -1470,17 +1535,31 @@ class SessionManager:
            workspace that differs from the session workspace — the Artifacts panel
            must still open them);
         3. URL-encoded variants of either (a model/agent may echo an encoded name
-           into an artifact: link, e.g. Chinese filenames become %E7%AA%81…)."""
+           into an artifact: link, e.g. Chinese filenames become %E7%AA%81…).
+
+        Absolute paths must resolve inside the session's artifact roots
+        (workspace / parent / default workspace / granted extra roots) — a
+        cloned repo's workspace must never let a session read C:/Users/…/secrets.json
+        (M3)."""
         from urllib.parse import unquote
 
         record = self.session_store.load(session_id)
         workspace = record.workspace if record else self.default_workspace
+        roots = self._artifact_roots(record)
+
+        def _inside_roots(candidate: Path) -> bool:
+            try:
+                return any(candidate.is_relative_to(r) for r in roots)
+            except (ValueError, OSError):
+                return False
 
         candidates: list[Path] = []
         if path:
             p = Path(path).expanduser()
             if p.is_absolute():
-                candidates.append(p.resolve())
+                cand = p.resolve()
+                if _inside_roots(cand):
+                    candidates.append(cand)
             elif workspace:
                 ws_root = Path(workspace).expanduser().resolve()
                 candidates.append((ws_root / path).resolve())
@@ -1502,7 +1581,9 @@ class SessionManager:
                 if decoded != path:
                     dp = Path(decoded).expanduser()
                     if dp.is_absolute():
-                        candidates.append(dp.resolve())
+                        cand = dp.resolve()
+                        if _inside_roots(cand):
+                            candidates.append(cand)
                     elif workspace:
                         candidates.append(
                             (Path(workspace).expanduser().resolve() / decoded).resolve()
@@ -4138,8 +4219,27 @@ class SessionManager:
                     except Exception:
                         continue
 
-                # skills — extract into the user skill dir
-                skill_names = {n.split("/", 1)[1].split("/", 1)[0] for n in names if n.startswith("skills/") and "/" in n[7:]}
+                # skills — extract into the user skill dir. M9: sanitize the
+                # skill name like skills/base.py does — "skills/../evil" would
+                # resolve dest = state_dir()/".." == state_dir() and let the zip
+                # overwrite state files (secrets.json / inbox.json). Reject any
+                # name that is not a single clean directory name.
+                import re as _re
+
+                def _clean_skill_name(n: str) -> Optional[str]:
+                    name = n.split("/", 1)[1].split("/", 1)[0] if "/" in n[7:] else ""
+                    name = _re.sub(r"[^\w\-.]", "_", name).strip("_.")
+                    if not name or name in (".", "..") or "/" in name or "\\" in name:
+                        return None
+                    return name
+
+                skill_names = {
+                    cn
+                    for n in names
+                    if n.startswith("skills/") and "/" in n[7:]
+                    for cn in [_clean_skill_name(n)]
+                    if cn
+                }
                 target = state_dir() / "skills"
                 target.mkdir(parents=True, exist_ok=True)
                 for name in sorted(skill_names):
@@ -4564,7 +4664,7 @@ class SessionManager:
     def remove_member(self, member_id: str):
         return {"ok": bool(self.team_store.remove_member(member_id))}
 
-    def list_agents(self) -> list[dict]:
+    def list_team_agents(self) -> list[dict]:
         """GET /v1/team/agents. Returns BOTH the live in-memory pool + the
         persisted snapshot rows; prefers pool for freshness. This guarantees
         the page shows something immediately when the pool is empty."""
@@ -5712,12 +5812,40 @@ def _artifact_kind(path: Path) -> str:
 
 
 def _redact(raw: dict[str, Any]) -> dict[str, Any]:
-    """Copy of a server config safe to return over REST — env/header values masked."""
+    """Copy of a server config safe to return over REST — env/header values and
+    credential-bearing URL/command query params masked (M13)."""
     out = dict(raw)
     for key in ("env", "headers"):
         if isinstance(out.get(key), dict):
             out[key] = {k: ("***" if v else v) for k, v in out[key].items()}
+    # Webhook-style URLs (wecom/dingtalk/feishu) and stdio commands can embed
+    # tokens in the query string — mask those params in the REST response.
+    for key in ("url", "command"):
+        if isinstance(out.get(key), str) and out[key]:
+            out[key] = _redact_url_query(out[key])
     return out
+
+
+def _redact_url_query(text: str) -> str:
+    """Mask secret-looking query params in a URL/command string."""
+    if "=" not in text:
+        return text
+    import re as _re
+
+    def _mask(m: _re.Match) -> str:
+        pairs = []
+        for pair in m.group(2).split("&"):
+            if "=" in pair:
+                k, _, _v = pair.partition("=")
+                if any(s in k.lower() for s in ("token", "key", "secret", "auth", "sig", "code")):
+                    pairs.append(f"{k}=***")
+                else:
+                    pairs.append(pair)
+            else:
+                pairs.append(pair)
+        return m.group(1) + "&".join(pairs)
+
+    return _re.sub(r"([?&])([^&\s]+=[^&\s]*)", _mask, text)
 
 
 def _git_branch(path: Path) -> Optional[str]:

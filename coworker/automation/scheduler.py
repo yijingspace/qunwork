@@ -105,6 +105,17 @@ class Scheduler:
             except Exception:
                 logger.exception("rhythm_gate failed — allowing all tasks")
                 in_valley = True
+        # C18: drop deferral counters for tasks that no longer exist (deleted or
+        # disabled automations) so the dict can't grow unboundedly and a recreated
+        # task with the same id doesn't inherit a stale deferral count.
+        try:
+            live_ids = {t.id for t in self.store.list()}
+        except (AttributeError, TypeError):
+            live_ids = None  # minimal test stores may not implement list()
+        if live_ids is not None:
+            stale = [tid for tid in self._deferrals if tid not in live_ids]
+            for tid in stale:
+                self._deferrals.pop(tid, None)
         for task in self.store.due():
             # D: defer heavy/low-priority tasks during rhythm peaks.
             # Anti-starvation: a task deferred too many ticks runs anyway — an
@@ -151,11 +162,17 @@ class Scheduler:
             # The task actually fired — clear any rhythm deferrals so the next
             # due cycle starts counting from zero.
             self._deferrals.pop(task.id, None)
-        # advance the task (run_count/last_run) → save recomputes next_run.
-        fresh = self.store.get(task.id)
-        if fresh is not None:
-            fresh.run_count += 1
-            fresh.last_run = run.started_at if run else None
-            fresh.last_status = run.status if run else "error"
-            self.store.save(fresh)
+        # C10: advance the task (run_count/last_run) — the save was previously
+        # OUTSIDE the runner's error handling; a crashed runner skipped it, so
+        # run_count never advanced and the task re-ran every tick. Keep it
+        # inside a guard: a store failure must not crash the scheduler loop.
+        try:
+            fresh = self.store.get(task.id)
+            if fresh is not None:
+                fresh.run_count += 1
+                fresh.last_run = run.started_at if run else None
+                fresh.last_status = run.status if run else "error"
+                self.store.save(fresh)
+        except Exception:
+            logger.exception("advancing task %s run state failed", task.id)
         return run

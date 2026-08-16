@@ -202,6 +202,19 @@ ACCESS: dict[str, list[str]] = {
     "hunter": [
         "Finds and verifies email addresses, using your Hunter quota.",
     ],
+    # 国内 webhook 群机器人 (P1-5 适配国内) — 单向推送, 无读取能力.
+    "wecom": [
+        "Sends messages to your WeCom group chat via the webhook.",
+        "Reads nothing — one-way push only.",
+    ],
+    "dingtalk": [
+        "Sends messages to your DingTalk group chat via the webhook.",
+        "Reads nothing — one-way push only.",
+    ],
+    "feishu": [
+        "Sends messages to your Feishu/Lark group chat via the webhook.",
+        "Reads nothing — one-way push only.",
+    ],
 }
 
 # Experimental / future connectors fall back to this rather than shipping

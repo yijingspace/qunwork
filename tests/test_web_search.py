@@ -137,6 +137,40 @@ def test_engine_registers_web_search(tmp_path):
     assert "web_search" in eng.registry.names()
 
 
+# -- SSRF guard (M2) ----------------------------------------------------------
+
+
+def test_web_fetch_blocks_loopback_and_private():
+    from coworker.web.fetch import _is_ssrf_target
+
+    # loopback
+    assert _is_ssrf_target("http://127.0.0.1:8765/v1/sessions")
+    assert _is_ssrf_target("http://localhost:8765/x")
+    assert _is_ssrf_target("http://[::1]/x")
+    # cloud metadata
+    assert _is_ssrf_target("http://169.254.169.254/latest/meta-data/")
+    # private ranges
+    assert _is_ssrf_target("http://10.0.0.1/x")
+    assert _is_ssrf_target("http://192.168.1.1/x")
+    assert _is_ssrf_target("http://172.16.0.1/x")
+    # public hosts pass
+    assert not _is_ssrf_target("https://example.com/x")
+    assert not _is_ssrf_target("https://github.com/andrewyng/openworker")
+
+
+def test_web_fetch_tool_blocks_private_url(tmp_path):
+    from coworker.web.fetch import make_web_fetch_tool
+
+    tool = make_web_fetch_tool()
+    for bad in (
+        "http://127.0.0.1:8765/v1/sessions",
+        "http://169.254.169.254/latest/meta-data/",
+        "http://192.168.1.1/x",
+    ):
+        out = tool(bad)
+        assert "blocked" in out.get("error", "") and "SSRF" in out.get("error", "")
+
+
 class _StubProvider:
     def complete(self, **_kw):
         from coworker.providers import AssistantTurn

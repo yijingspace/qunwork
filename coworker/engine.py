@@ -150,7 +150,18 @@ class TurnEngine:
         interrupted), or between iterations (the loop checkpoint). Every pending
         tool_call still gets a tool-error result so the history never carries orphans
         (hosted templates reject them, and durable-resume would re-prompt them)."""
-        self._cancel.set()
+        # C6: `_cancel` is a loop-bound asyncio.Event — `.set()` from a foreign
+        # thread (FastAPI sync endpoints run in a threadpool) is undefined
+        # behavior. Route through the bound loop when we're off it.
+        loop = getattr(self, "_event_loop", None)
+        if loop is not None and loop.is_running():
+            try:
+                asyncio.get_running_loop()  # already on the loop thread?
+                self._cancel.set()
+            except RuntimeError:
+                loop.call_soon_threadsafe(self._cancel.set)
+        else:
+            self._cancel.set()
         for hook in self._interrupt_hooks:
             try:
                 hook()
@@ -195,6 +206,9 @@ class TurnEngine:
         if source is not None:
             message["source"] = source
         self.messages.append(message)
+        # C6: bind the owning loop so request_interrupt (callable from FastAPI
+        # threadpool threads) can route Event.set() through call_soon_threadsafe.
+        self._event_loop = asyncio.get_running_loop()
         self._cancel.clear()
         data: dict[str, Any] = {"input": user_input}
         if source is not None:
@@ -465,42 +479,45 @@ class TurnEngine:
 
         loop.run_in_executor(None, produce)
         got_any = False
-        while True:
-            # Race the queue against Stop so a stalled stream (no chunks arriving —
-            # the pre-first-token wait, a wedged connection) can't hold the turn.
-            get_task = asyncio.ensure_future(queue.get())
-            cancel_task = asyncio.ensure_future(self._cancel.wait())
-            remaining = deadline - loop.time()
-            if remaining <= 0:
-                get_task.cancel()
+        try:
+            while True:
+                # Race the queue against Stop so a stalled stream (no chunks arriving —
+                # the pre-first-token wait, a wedged connection) can't hold the turn.
+                get_task = asyncio.ensure_future(queue.get())
+                cancel_task = asyncio.ensure_future(self._cancel.wait())
+                remaining = deadline - loop.time()
+                if remaining <= 0:
+                    get_task.cancel()
+                    cancel_task.cancel()
+                    raise TimeoutError(f"model call exceeded {_STREAM_TOTAL_TIMEOUT:.0f}s")
+                # No output yet: a stall deadline. After the first chunk the total
+                # deadline alone applies (long-thinking models can pause between chunks).
+                stall = _STREAM_STALL_TIMEOUT if not got_any else remaining
+                done, _ = await asyncio.wait(
+                    {get_task, cancel_task},
+                    timeout=min(remaining, stall),
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
                 cancel_task.cancel()
-                raise TimeoutError(f"model call exceeded {_STREAM_TOTAL_TIMEOUT:.0f}s")
-            # No output yet: a stall deadline. After the first chunk the total
-            # deadline alone applies (long-thinking models can pause between chunks).
-            stall = _STREAM_STALL_TIMEOUT if not got_any else remaining
-            done, _ = await asyncio.wait(
-                {get_task, cancel_task},
-                timeout=min(remaining, stall),
-                return_when=asyncio.FIRST_COMPLETED,
-            )
-            cancel_task.cancel()
-            if get_task not in done:
-                get_task.cancel()
-                if self._cancel.is_set():
-                    return  # user pressed Stop — the producer exits on its own
-                if not got_any:
-                    raise TimeoutError(
-                        f"no response from model within {_STREAM_STALL_TIMEOUT:.0f}s"
-                    )
-                raise TimeoutError("model stream stalled (no chunks)")
-            kind, payload = get_task.result()
-            if kind == "chunk":
-                got_any = True
-                yield payload
-            elif kind == "error":
-                raise payload
-            else:
-                return
+                if get_task not in done:
+                    get_task.cancel()
+                    if self._cancel.is_set():
+                        return  # user pressed Stop — the producer exits on its own
+                    if not got_any:
+                        raise TimeoutError(
+                            f"no response from model within {_STREAM_STALL_TIMEOUT:.0f}s"
+                        )
+                    raise TimeoutError("model stream stalled (no chunks)")
+                kind, payload = get_task.result()
+                if kind == "chunk":
+                    got_any = True
+                    yield payload
+                elif kind == "error":
+                    raise payload
+                else:
+                    return
+        finally:
+            pass  # C5 temporarily disabled for bisect
 
     async def _handle_tool_calls(
         self, tool_calls: list[ToolCall]

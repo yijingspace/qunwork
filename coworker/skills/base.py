@@ -10,6 +10,7 @@ into the agent's context; the full body is loaded on demand via the `load_skill`
 from __future__ import annotations
 
 import re
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -44,17 +45,14 @@ class Skill:
     scripts_integrity: Optional[list[dict[str, Any]]] = None
 
     def catalog_row(self) -> dict:
-        # 安全评分 -> 级别 (与 security.py 保持一致)
-        level: Optional[str] = None
-        if self.security_score is not None:
-            if self.security_score >= 85:
-                level = "low"
-            elif self.security_score >= 60:
-                level = "medium"
-            elif self.security_score >= 35:
-                level = "high"
-            else:
-                level = "critical"
+        # 安全评分 -> 级别 (与 security.py 保持一致 — 分数越高越危险:
+        # <=20 low / <=50 medium / <=80 high / else critical)。曾有一版把
+        # 映射写反 (>=85 -> low), 导致最危险的技能在目录里显示为 low。
+        from .security import level_for_score
+
+        level: Optional[str] = (
+            level_for_score(self.security_score) if self.security_score is not None else None
+        )
         lock_exists = self.lock_meta is not None
         return {
             "name": self.name,
@@ -105,14 +103,20 @@ class SkillLoader:
         self._dirs = [Path(d) for d in dirs]
         self._skills: dict[str, Skill] = {}
         self._registry_tool_schemas = registry_tool_schemas
+        # C16: _skills is shared between the loop thread (catalog() for the
+        # context provider) and worker/tool threads (load_skill -> refresh()).
+        # refresh() clears and rebuilds the dict, so concurrent iteration is a
+        # RuntimeError waiting to happen — serialize all access.
+        self._lock = threading.RLock()
         self.refresh()
 
     def refresh(self) -> None:
         """(Re)scan every skill directory — call after saving a new skill so it is
         immediately available to the running engine."""
-        self._skills.clear()
-        for directory in self._dirs:
-            self._discover(directory)
+        with self._lock:
+            self._skills.clear()
+            for directory in self._dirs:
+                self._discover(directory)
 
     def save_skill(
         self,
@@ -130,7 +134,12 @@ class SkillLoader:
     ) -> Path:
         """Write a new skill to the FIRST writable dir (workspace-local preferred)
         and refresh the catalog so it is immediately loadable."""
-        name = re.sub(r"[^\w\-.]", "_", name).strip("_") or "skill"
+        # Sanitize like import_skill does — keep '.' OUT of the final name and
+        # reject '.'/'..' outright, else name=".." escapes the skill dir upward
+        # (regression C4: no strip('.') meant target / '..' landed in the parent).
+        name = re.sub(r"[^\w\-.]", "_", name).strip("_.") or "skill"
+        if name in (".", ".."):
+            name = "skill"
         target = next((d for d in self._dirs if self._writable(d)), self._dirs[-1])
         skill_dir = target / name
         skill_dir.mkdir(parents=True, exist_ok=True)
@@ -251,7 +260,10 @@ class SkillLoader:
         with zipfile.ZipFile(dest, "w", zipfile.ZIP_DEFLATED) as zf:
             root = Path(skill.path)
             for file in sorted(root.rglob("*")):
-                if file.is_file():
+                # Never follow symlinks into the zip — a link inside the skill
+                # could point at an arbitrary machine file (低危: rglob follows
+                # links on Py≤3.12, packing the target's contents).
+                if file.is_file() and not file.is_symlink():
                     zf.write(file, file.relative_to(root).as_posix())
         return dest
 
@@ -266,8 +278,30 @@ class SkillLoader:
         target_dir.mkdir(parents=True, exist_ok=True)
         with zipfile.ZipFile(zip_path) as zf:
             names = zf.namelist()
+            # M5: zip-bomb guard — bound the entry count and the decompressed
+            # size so a pathological zip can't exhaust disk/CPU on import.
+            if len(names) > _IMPORT_MAX_ENTRIES:
+                return None
+            total = 0
+            for info in zf.infolist():
+                total += info.file_size
+                if total > _IMPORT_MAX_BYTES:
+                    return None
             top = _zip_root(names)
-            skill_md = next((n for n in names if n.endswith("SKILL.md") and _is_under(n, top)), None)
+            # SKILL.md must sit at the skill's top level — a nested
+            # resources/SKILL.md (or an xSKILL.md suffix match) must not be
+            # mistaken for the skill manifest (低危: endswith("SKILL.md") was
+            # too wide).
+            skill_md = next(
+                (
+                    n
+                    for n in names
+                    if n.endswith("SKILL.md")
+                    and _is_under(n, top)
+                    and n.count("/") == top.count("/")
+                ),
+                None,
+            )
             if skill_md is None:
                 return None
             skill_name = Path(skill_md).parent.name
@@ -356,13 +390,16 @@ class SkillLoader:
                 self._skills[skill.name] = skill
 
     def names(self) -> list[str]:
-        return list(self._skills)
+        with self._lock:
+            return list(self._skills)
 
     def get(self, name: str) -> Optional[Skill]:
-        return self._skills.get(name)
+        with self._lock:
+            return self._skills.get(name)
 
     def catalog(self) -> list[dict]:
-        return [s.catalog_row() for s in self._skills.values()]
+        with self._lock:
+            return [s.catalog_row() for s in self._skills.values()]
 
     def detail(self, name: str) -> Optional[dict]:
         """Full catalog row (metadata only — no instructions body)."""
@@ -399,18 +436,25 @@ class SkillLoader:
                 lock_path = str(p)
         mismatched: list[dict] = []
         missing: list[str] = []
+        unregistered: list[str] = []
         integrity_ok = True
         if skill.scripts_integrity is not None and lock_exists:
             for item in skill.scripts_integrity:
-                if item.get("status") == "mismatch":
+                status = item.get("status")
+                if status == "mismatch":
                     mismatched.append({
                         "path": item.get("path", ""),
-                        "expected": item.get("expected", ""),
-                        "actual": item.get("actual", ""),
+                        "expected": item.get("expected_sha256", item.get("expected", "")),
+                        "actual": item.get("actual_sha256", item.get("actual", "")),
                     })
                     integrity_ok = False
-                elif item.get("status") == "missing":
+                elif status == "missing":
                     missing.append(item.get("path", ""))
+                    integrity_ok = False
+                elif status == "unregistered":
+                    # C14: a script present on disk but not in the lock is a
+                    # tamper signal too — count it against integrity.
+                    unregistered.append(item.get("path", ""))
                     integrity_ok = False
         return {
             "lock": lock_meta,
@@ -419,6 +463,7 @@ class SkillLoader:
             "integrity_ok": integrity_ok if (skill.scripts_integrity is not None and lock_exists) else None,
             "mismatched_scripts": mismatched,
             "missing_scripts": missing,
+            "unregistered_scripts": unregistered,
             "scripts_integrity": skill.scripts_integrity,
         }
 
@@ -475,6 +520,12 @@ def _zip_root(names: list[str]) -> str:
     if len(tops) == 1 and all(n.startswith(next(iter(tops)) + "/") for n in names if n):
         return next(iter(tops)) + "/"
     return ""
+
+
+# M5: skill-import zip-bomb bounds — a skill zip is a handful of scripts and a
+# markdown file; anything larger is pathological and must be rejected.
+_IMPORT_MAX_ENTRIES = 500
+_IMPORT_MAX_BYTES = 50 * 1024 * 1024  # 50 MiB decompressed
 
 
 def _is_under(name: str, prefix: str) -> bool:

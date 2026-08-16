@@ -218,17 +218,20 @@ async def _run_engine_async(
             # run's event stream would freeze during long tool chains (e.g. the
             # consolidation task reading drafts + running verify scripts) — the
             # deck then misjudges the run as stale. Surface tool progress so the
-            # stream keeps ticking.
+            # stream keeps ticking. Distinct kind ("tool_thought") so a caller
+            # collecting DRAFT text (on_text in orchestrator._execute) never
+            # mistakes a heartbeat for the deliverable.
             if on_event:
                 name = event.data.get("name") or "tool"
                 if event.type == EventType.TOOL_STARTED:
-                    on_event("worker_thought", {"text": f"⚙ {name}…"})
+                    on_event("tool_thought", {"text": f"⚙ {name}…"})
                 else:
                     status = event.data.get("status") or ""
-                    on_event("worker_thought", {"text": f"✓ {name} {status}".strip()})
+                    on_event("tool_thought", {"text": f"✓ {name} {status}".strip()})
         elif event.type == EventType.TURN_END:
             status = event.data.get("status", "unknown")
         elif event.type == EventType.ERROR:
+            # DEBUG-BISECT: original behavior (keep partial text)
             return report, f"error: {event.data.get('error', '')}"
     # 13 Agent 影子模式: 把 engine 累积的 decision_trace 转发给 orchestrator,
     # 让 SwarmView 的「决策回放时间轴」能逐 worker 拖动回放。

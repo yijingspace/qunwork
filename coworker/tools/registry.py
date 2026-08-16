@@ -43,6 +43,15 @@ class ToolRegistry:
             schema or getattr(func, "__coworker_schema__", None) or _schema_for(func)
         )
         spec = ToolSpec(name=name, schema=resolved_schema, func=func, metadata=meta)
+        if name in self._tools:
+            # 低危: silently overwriting a registered tool hides wiring bugs
+            # (two builders both registering "read_file", a persona shadowing a
+            # built-in). Surface it — but keep last-registered-wins behavior.
+            import logging
+
+            logging.getLogger("coworker.tools").warning(
+                "tool %r registered twice — the later definition wins", name
+            )
         self._tools[name] = spec
         return spec
 

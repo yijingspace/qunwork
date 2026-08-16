@@ -256,12 +256,17 @@ class LocalExecutor(Executor):
                     break
 
     def _read_loop(self) -> None:
+        # C9: capture the queue reference at START — _spawn replaces self._queue
+        # on respawn, and without this the OLD reader thread (still draining the
+        # dead shell's stdout) would write its EOF sentinel into the NEW queue,
+        # making the next run() think the fresh shell had already died.
+        queue = self._queue
         try:
             assert self._proc.stdout is not None
             for line in self._proc.stdout:
-                self._queue.put(line)
+                queue.put(line)
         finally:
-            self._queue.put(None)  # EOF sentinel
+            queue.put(None)  # EOF sentinel
 
     def run(self, command: str, timeout: Optional[float] = None) -> dict[str, Any]:
         if self._proc.poll() is not None:

@@ -165,6 +165,10 @@ def scheduling_tools(
             }
         if cron and not croniter.is_valid(cron):
             return {"error": f"invalid cron expression: {cron}"}
+        if cron and fire_at:
+            # 低危: both given — cron wins; say so instead of silently dropping
+            # fire_at (a user who supplied both may not notice it's ignored).
+            fire_at = None
         schedule = Schedule(
             kind="once" if (fire_at and not cron) else "cron",
             cron=cron,

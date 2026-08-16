@@ -9,7 +9,6 @@ accepted until the user revokes trust.
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 from typing import Optional
 
@@ -52,11 +51,14 @@ class WorkspaceTrustStore:
         else:
             values.discard(canonical)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self.path.with_name(f".{self.path.name}.{os.getpid()}.tmp")
-        tmp.write_text(
+        # write_private_text applies 0600 (POSIX) or a user-only icacls ACL
+        # (Windows) + atomic replace — the trust list is a security decision and
+        # must not be world-readable (W1: raw os.chmod 0600 is a no-op on
+        # Windows, leaving the file inheriting broad ACLs).
+        from .secrets import write_private_text
+
+        write_private_text(
+            self.path,
             json.dumps({"trusted_workspaces": sorted(values)}, indent=2) + "\n",
-            encoding="utf-8",
         )
-        os.chmod(tmp, 0o600)
-        tmp.replace(self.path)
         return canonical

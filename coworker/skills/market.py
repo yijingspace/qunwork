@@ -17,6 +17,18 @@ import time
 from pathlib import Path
 
 
+def _version_key(version: str) -> tuple:
+    """Semantic-ish sort key: '0.10.0' must sort AFTER '0.2.0' (string order
+    would put it before). Non-numeric segments fall back to the raw string."""
+    parts = []
+    for seg in str(version).split("."):
+        try:
+            parts.append((0, int(seg)))
+        except ValueError:
+            parts.append((1, seg))
+    return tuple(parts)
+
+
 class SkillMarketStore:
     def __init__(self, db_path: str | Path) -> None:
         self._path = Path(db_path)
@@ -114,6 +126,9 @@ class SkillMarketStore:
                    FROM skill_meta WHERE name=? ORDER BY version""",
                 (name,),
             ).fetchall()
+        # 0.10.0 must sort after 0.2.0 — string order alone is wrong; sort by
+        # numeric components (低危: versions() 曾按字典序返回).
+        rows = sorted(rows, key=lambda r: _version_key(r[0]))
         out = []
         for version, install_count, rating_sum, rating_count, last_installed_at in rows:
             agg = self._aggregate((install_count, rating_sum, rating_count))
@@ -134,16 +149,25 @@ class SkillMarketStore:
                 (name,),
             ).fetchone()
         agg = self._aggregate(row)
-        # 附加: 版本数 + 最新版本
+        # 附加: 版本数 + 最新版本 — MAX(version) is STRING order (0.2.0 > 0.10.0);
+        # compute the latest by semantic components instead.
         with self._lock:
             meta = self._con.execute(
-                """SELECT COUNT(DISTINCT version), MAX(version), MAX(last_installed_at)
+                """SELECT COUNT(DISTINCT version), MAX(last_installed_at)
                    FROM skill_meta WHERE name=?""",
                 (name,),
             ).fetchone()
+            versions = [
+                r[0]
+                for r in self._con.execute(
+                    "SELECT DISTINCT version FROM skill_meta WHERE name=?", (name,)
+                )
+            ]
         agg["version_count"] = meta[0] or 0
-        agg["latest_version"] = meta[1] or None
-        agg["last_installed_at"] = meta[2]
+        agg["latest_version"] = (
+            max(versions, key=_version_key) if versions else None
+        )
+        agg["last_installed_at"] = meta[1]
         return agg
 
     def all_stats(self) -> dict[str, dict]:
@@ -169,6 +193,8 @@ class SkillMarketStore:
                 **agg,
                 "last_installed_at": last_installed_at,
             })
+        for lst in out.values():
+            lst.sort(key=lambda v: _version_key(v["version"]))
         return out
 
     def all_versioned_stats(self) -> list[dict]:

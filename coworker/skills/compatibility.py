@@ -277,7 +277,7 @@ def build_batch_autofix(
             changed_tools=list(r.get("changed_tools", [])),
             new_tools=list(r.get("new_tools", [])),
         )
-        lock = load_lock(cr.skill_path or "") or {}
+        lock = load_lock(cr.skill_path) if cr.skill_path else {}
         plan = build_autofix_plan(cr, lock)
         intents.append(plan["intent"])
         plans.append({"id": f"t{i}", "description": f"修复 {cr.skill_name}", "deps": []})

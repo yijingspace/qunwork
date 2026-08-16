@@ -159,7 +159,13 @@ def verify_lock(
 
     current_tools: [{"name": "github__create_pr", "params": {...}}]
     """
-    locked = {t["name"]: t for t in lock_data.get("tools", [])}
+    locked: dict[str, dict] = {}
+    for t in lock_data.get("tools", []):
+        # C17: a malformed lock entry (missing "name") must not KeyError the
+        # whole compatibility check — skip it instead.
+        if not isinstance(t, dict) or not t.get("name"):
+            continue
+        locked[t["name"]] = t
     current: dict[str, dict] = {}
     for t in current_tools:
         name = t.get("name", "")
@@ -278,6 +284,7 @@ def verify_scripts_integrity(lock_data: dict, skill_dir: str | Path) -> list[dic
         if current != s.get("sha256"):
             mismatches.append({
                 "path": s["path"],
+                "status": "missing" if not f.is_file() else "mismatch",
                 "expected_sha256": s.get("sha256", ""),
                 "actual_sha256": current,
                 "missing": not f.is_file(),
@@ -297,6 +304,7 @@ def verify_scripts_integrity(lock_data: dict, skill_dir: str | Path) -> list[dic
         if rel not in known:
             mismatches.append({
                 "path": rel,
+                "status": "unregistered",
                 "expected_sha256": "",
                 "actual_sha256": _file_sha256(f),
                 "unregistered": True,

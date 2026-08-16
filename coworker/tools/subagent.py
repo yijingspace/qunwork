@@ -27,6 +27,10 @@ from .files import file_tools
 from .git import git_tools
 from .search import search_tools
 
+# C13: hard outer bound for one explore — a wedged model stream must not hold
+# the parent tool call (and thus the session turn) forever.
+_EXPLORER_TIMEOUT = 300.0  # seconds
+
 EXPLORER_INSTRUCTIONS = """You are a read-only code explorer working inside the user's workspace. \
 Answer the research task you're given by searching and reading the code (`grep`, `read_file`, \
 `list_files`, `git_log`, `git_status`, `git_diff`). You cannot write files or run commands.
@@ -114,8 +118,23 @@ def explorer_tools(
                     return report, f"error: {event.data.get('error', '')}"
             return report, status
 
-        # Tools execute in a worker thread (no running loop), so asyncio.run is safe.
-        report, status = asyncio.run(_run())
+        # C13: an explorer must not hold the turn forever — a wedged model
+        # stream would otherwise block the parent tool call indefinitely (the
+        # engine's own stall guard exists, but this is an explicit outer bound
+        # so a buggy provider can't wedge the session).
+        import asyncio as _asyncio
+
+        try:
+            report, status = _asyncio.run(
+                _asyncio.wait_for(_run(), timeout=_EXPLORER_TIMEOUT)
+            )
+        except _asyncio.TimeoutError:
+            return {
+                "error": (
+                    f"explorer timed out after {_EXPLORER_TIMEOUT}s — "
+                    "the report may be partial"
+                )
+            }
         if not report:
             return {"error": f"explorer produced no report (status: {status})"}
         result: dict[str, Any] = {"report": report}

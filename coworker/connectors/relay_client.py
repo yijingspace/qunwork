@@ -191,8 +191,13 @@ class RelayHub:
             return "reconnecting"
         return "offline"
 
-    async def wait_dispatched(self, at_least: int, timeout: float = 2.0) -> None:
-        """Test helper: wait until at least N frames have been dispatched."""
+    async def wait_dispatched(self, at_least: int, timeout: float = 6.0) -> None:
+        """Test helper: wait until at least N frames have been dispatched.
+
+        Default window is 6s, not 2s: on Windows a connection to a refused port
+        (the tests' SLACK_API_URL dead loopback) takes ~2.2s to fail, and a
+        two-frame test needs two such name-resolution round-trips (≈4.5s). A
+        2s window made the relay tests flaky on Windows only (W4)."""
         loop = asyncio.get_event_loop()
         deadline = loop.time() + timeout
         while self._dispatched < at_least:

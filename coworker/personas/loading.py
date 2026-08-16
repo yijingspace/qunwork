@@ -40,6 +40,10 @@ def git_clone(
     url: str, dest: Path
 ) -> None:  # pragma: no cover - exercised via injection
     """Shallow-clone a persona repo. Injectable so tests don't touch the network."""
+    # M12: a URL starting with '-' would be parsed by git as an OPTION, not a
+    # path (e.g. '-c core.sshCommand=…' enables config injection). Reject it.
+    if not url or url.startswith("-"):
+        raise ValueError(f"invalid git URL: {url!r}")
     dest.parent.mkdir(parents=True, exist_ok=True)
     subprocess.run(
         ["git", "clone", "--depth", "1", url, str(dest)],

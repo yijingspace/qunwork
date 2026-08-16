@@ -785,7 +785,7 @@ def create_app(manager: SessionManager) -> FastAPI:
 <h1>🐝 QunWork · Inbox</h1>
 <div id="root"><div class="empty">Loading…</div></div>
 <script>
- const ticket = {json.dumps(ticket)};
+ const ticket = {json.dumps(ticket).replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")};
  async function resolve(id, r) {{
    await fetch('/v1/inbox/' + encodeURIComponent(id) + '/resolve', {{
      method: 'POST', headers: {{'Content-Type': 'application/json'}},
@@ -1108,6 +1108,11 @@ def create_app(manager: SessionManager) -> FastAPI:
         import zipfile
         from pathlib import Path
 
+        # M5: cap the wire size before decoding — base64 inflates by 4/3, and
+        # the zip-bomb guard downstream only sees the DECODED archive, so the
+        # raw payload must be bounded here too.
+        if len(zip_b64) > 70 * 1024 * 1024:  # ~52 MiB decoded
+            return {"ok": False, "error": "skill zip too large"}
         raw = base64.b64decode(zip_b64)
         tmp = Path(tempfile.gettempdir()) / f"qunwork-import-{secrets.token_hex(6)}.zip"
         tmp.write_bytes(raw)
@@ -1406,7 +1411,7 @@ def create_app(manager: SessionManager) -> FastAPI:
 
     @app.get("/v1/team/agents")
     def list_team_agents() -> list[dict]:
-        return manager.list_agents()
+        return manager.list_team_agents()
 
     @app.post("/v1/team/agents")
     def add_team_agent(body: dict) -> dict:

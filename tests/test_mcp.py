@@ -66,8 +66,54 @@ def test_load_merges_global_and_workspace(tmp_path, monkeypatch):
     servers = {s.name: s for s in load_mcp_servers(ws, secrets=SecretStore())}
     assert servers["fs"].args == ["workspace-wins"]
     assert servers["fs"].transport == "stdio"
+    assert servers["fs"].source == "workspace"  # H1: repo-provided config is tagged
     assert servers["docs"].transport == "http" and servers["docs"].enabled is False
     assert servers["docs"].requires_approval is True  # default
+
+
+def test_global_source_tag(tmp_path, monkeypatch):
+    """Global (user-owned) mcp.json servers are tagged 'global' — not gated."""
+    monkeypatch.setenv("COWORKER_STATE_DIR", str(tmp_path / "state"))
+    _write_json(
+        tmp_path / "state" / "mcp.json",
+        {"mcpServers": {"fs": {"command": "echo", "args": ["g"]}}},
+    )
+    servers = {s.name: s for s in load_mcp_servers(None, secrets=SecretStore())}
+    assert servers["fs"].source == "global"
+
+
+def test_workspace_stdio_mcp_requires_trust(tmp_path, monkeypatch):
+    """H1 regression: a repo-provided (.coworker/mcp.json) stdio MCP server must
+    NOT be prepared for a session until the workspace is trusted — spawning its
+    command would be RCE from a cloned malicious repo."""
+    from coworker.server.manager import SessionManager
+
+    ws = tmp_path / "ws"
+    _write_json(
+        ws / ".coworker" / "mcp.json",
+        {"mcpServers": {"evil": {"command": "malware.exe", "args": []}}},
+    )
+    mgr = SessionManager(workspace=str(ws), provider=None)
+    # Fresh manager: the workspace is NOT trusted yet.
+    assert mgr.workspace_trust.is_trusted(ws) is False
+
+    async def _prepare(session_id):
+        return await mgr.prepare_mcp_tools(session_id, workspace=str(ws), agent="code")
+
+    tools = asyncio.run(_prepare("sess-test"))
+    assert tools == []  # no tool callables — the stdio server was never spawned
+    assert "evil" in mgr._mcp_errors
+
+    # After trusting the workspace, the server is allowed to connect.
+    mgr.set_workspace_trust(str(ws), trusted=True)
+    tools2 = asyncio.run(_prepare("sess-test2"))
+    # The command "malware.exe" doesn't exist, so the connect fails gracefully —
+    # but it is NO LONGER blocked by the trust gate (the error is a spawn error,
+    # not the trust message).
+    assert mgr._mcp_errors.get("evil") != (
+        "workspace stdio MCP server requires trusting this workspace first "
+        "(Settings ▸ Workspaces)"
+    )
 
 
 def test_var_resolution(tmp_path, monkeypatch):

@@ -24,6 +24,49 @@ import pytest_asyncio
 from coworker.testing.fake_slack import FakeSlack
 
 
+@pytest.fixture(scope="session", autouse=True)
+def _utf8_logging():
+    """Windows console logging uses GBK by default; an emoji in a log message
+    (e.g. the 🔔 framing of a Slack alert) makes logging's StreamHandler raise
+    UnicodeEncodeError, which can kill a background turn mid-test (ui_refresh_e2e
+    has ~60% flake on Windows for exactly this, independent of any code change).
+    Rebuild the root handlers with UTF-8 + errors=replace so logging can never
+    break application logic."""
+    import logging
+    import sys
+
+    root = logging.getLogger()
+    for handler in list(root.handlers):
+        root.removeHandler(handler)
+    handler = logging.StreamHandler(sys.stderr)
+    handler.setFormatter(logging.Formatter("%(levelname)s:%(name)s:%(message)s"))
+    try:
+        # errors=replace: emoji and other non-GBK chars degrade, not raise.
+        handler.setStream(_Utf8Replace(sys.stderr))
+    except Exception:
+        pass
+    root.addHandler(handler)
+    root.setLevel(logging.WARNING)
+    yield
+
+
+class _Utf8Replace:
+    """Minimal stderr wrapper that encodes with errors='replace'."""
+
+    def __init__(self, stream):
+        self._stream = stream
+
+    def write(self, s):
+        try:
+            self._stream.write(s)
+        except UnicodeEncodeError:
+            enc = getattr(self._stream, "encoding", None) or "utf-8"
+            self._stream.write(s.encode(enc, errors="replace").decode(enc, errors="replace"))
+
+    def flush(self):
+        self._stream.flush()
+
+
 @pytest.fixture(autouse=True)
 def _isolated_state_dir(tmp_path, monkeypatch):
     """EVERY test gets an isolated SecretStore/state dir. Without this, any test that builds

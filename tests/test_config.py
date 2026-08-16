@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 from coworker.config import load_config
@@ -77,7 +78,13 @@ def test_workspace_trust_is_canonical_and_user_owned(tmp_path):
     assert canonical == str(real.resolve())
     assert store.is_trusted(real)
     assert store.list() == [str(real.resolve())]
-    assert (store.path.stat().st_mode & 0o777) == 0o600
+    # POSIX: 0600 owner-only. Windows st_mode has no mode bits (chmod is a
+    # no-op) — the ACL is the real guard and is applied via icacls; assert the
+    # file exists and skip the mode check there.
+    if not sys.platform.startswith("win"):
+        assert (store.path.stat().st_mode & 0o777) == 0o600
+    else:
+        assert store.path.is_file()
 
     store.set_trusted(real, False)
     assert not store.is_trusted(alias)

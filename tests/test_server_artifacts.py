@@ -54,6 +54,47 @@ def test_artifact_target_resolution(tmp_path, monkeypatch):
     t, err = mgr._artifact_target("sid", "nope.md")
     assert t is None and err == "not found"
 
+    # 6) M3: an absolute path OUTSIDE every artifact root (not under the
+    # workspace, its parent, or the default workspace) is rejected — a cloned
+    # repo's workspace must never read arbitrary machine files (secrets.json).
+    import tempfile as _tf
+    outside_dir = pathlib.Path(_tf.mkdtemp())  # sibling temp root, NOT under tmp_path
+    outside = outside_dir / "secrets.json"
+    outside.write_text("top-secret", encoding="utf-8")
+    t, err = mgr._artifact_target("sid", str(outside))
+    assert t is None and err == "not found"  # blocked by the roots gate
+
+
+def test_artifact_read_blocks_absolute_path_outside_roots(tmp_path, monkeypatch):
+    """End-to-end: /v1/artifacts/read with a path outside the session roots fails."""
+    from coworker.server.manager import SessionManager
+
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    victim = None  # replaced below by a sibling temp dir outside the roots
+
+    mgr = SessionManager.__new__(SessionManager)
+    mgr.default_workspace = str(ws)
+
+    class FakeSession:
+        workspace = str(ws)
+        extra_roots = []
+
+    mgr.session_store = type("S", (), {"load": staticmethod(lambda sid: FakeSession())})()
+
+    import tempfile as _tf
+    victim_dir = pathlib.Path(_tf.mkdtemp())  # OUTSIDE the ws/parent/default roots
+    victim = victim_dir / "secrets.json"
+    victim.write_text("secret", encoding="utf-8")
+    t, err = mgr._artifact_target("sid", str(victim))
+    assert t is None and err == "not found"
+
+    # a file INSIDE the workspace still reads fine
+    good = ws / "ok.md"
+    good.write_text("fine", encoding="utf-8")
+    t, err = mgr._artifact_target("sid", str(good))
+    assert err is None and t == good.resolve()
+
 
 def test_list_artifacts_skips_deps_and_merges_primary(tmp_path, monkeypatch):
     from coworker.server.manager import SessionManager

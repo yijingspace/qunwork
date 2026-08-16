@@ -37,6 +37,11 @@ class MCPServerDef:
     # "oauth" → browser OAuth 2.1 + PKCE with Dynamic Client Registration (mcp/oauth.py).
     # HTTP transport only; tokens live in the SecretStore, never in this file.
     auth: Optional[str] = None
+    # Config source — "global" (~/.config/coworker/mcp.json, user-owned) or
+    # "workspace" (<workspace>/.coworker/mcp.json, repo-provided). Workspace
+    # stdio servers spawn arbitrary commands from an untrusted repo, so they
+    # are gated behind the workspace-trust model (H1: RCE via cloned repo).
+    source: str = "global"
 
 
 def global_mcp_path() -> Path:
@@ -57,7 +62,15 @@ def _config_paths(workspace: Optional[str | Path]) -> list[Path]:
     return paths
 
 
-def _parse(name: str, raw: dict[str, Any], secrets: SecretStore) -> MCPServerDef:
+def _config_sources(workspace: Optional[str | Path]) -> list[tuple[Path, str]]:
+    """(path, source) pairs in load order — global first, workspace last (wins)."""
+    out = [(global_mcp_path(), "global")]
+    if workspace:
+        out.append((Path(workspace).expanduser() / ".coworker" / "mcp.json", "workspace"))
+    return out
+
+
+def _parse(name: str, raw: dict[str, Any], secrets: SecretStore, *, source: str = "global") -> MCPServerDef:
     raw = secrets.resolve(raw)  # resolve ${VAR} everywhere before building the def
     declared = str(raw.get("type", "")).lower()
     is_http = declared in _HTTP_TYPES or bool(raw.get("url"))
@@ -75,20 +88,24 @@ def _parse(name: str, raw: dict[str, Any], secrets: SecretStore) -> MCPServerDef
         exclude_tools=raw.get("exclude_tools"),
         requires_approval=bool(raw.get("requires_approval", True)),
         auth=(str(raw["auth"]).lower() if raw.get("auth") else None),
+        source=source,
     )
 
 
 def load_mcp_servers(
     workspace: Optional[str | Path] = None, *, secrets: Optional[SecretStore] = None
 ) -> list[MCPServerDef]:
-    """Merge global + workspace `mcpServers` (workspace wins) into parsed server defs."""
+    """Merge global + workspace `mcpServers` (workspace wins) into parsed server defs.
+
+    Each def carries its `source` ("global" / "workspace") so callers can apply
+    the workspace-trust gate to repo-provided stdio servers (H1)."""
     secrets = secrets or SecretStore()
-    merged: dict[str, dict[str, Any]] = {}
-    for path in _config_paths(workspace):
+    merged: dict[str, tuple[str, dict[str, Any]]] = {}
+    for path, source in _config_sources(workspace):
         for name, raw in (_read(path).get("mcpServers") or {}).items():
             if isinstance(raw, dict):
-                merged[name] = raw
-    return [_parse(name, raw, secrets) for name, raw in merged.items()]
+                merged[name] = (source, raw)
+    return [_parse(name, raw, secrets, source=src) for name, (src, raw) in merged.items()]
 
 
 # -- raw global-file mutation (REST) -------------------------------------------

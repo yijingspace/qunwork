@@ -67,6 +67,9 @@ class AuditStore:
             if isinstance(payload, dict)
             else (str(payload) if payload else "")
         )
+        # M10: every free-text column runs through the preview sanitizer (URL
+        # credential masking + truncation) — tool results and decision-trace
+        # payloads routinely echo signed URLs / webhook endpoints.
         with self._lock:
             self._conn.execute(
                 """
@@ -84,10 +87,10 @@ class AuditStore:
                     event.get("status") or "",
                     event.get("approval") or "",
                     json.dumps(args, default=str),
-                    _truncate(str(event.get("result_preview") or "")),
-                    _truncate(str(event.get("reason") or "")),
-                    _truncate(str(resource or "")),
-                    payload_json,
+                    _sanitize_preview(event.get("result_preview")),
+                    _sanitize_preview(event.get("reason")),
+                    _sanitize_preview(resource),
+                    _sanitize_preview(payload_json),
                 ),
             )
             self._conn.commit()
@@ -196,3 +199,47 @@ def _resource(tool: str, args: dict[str, Any], result: Any) -> str:
 def _truncate(text: str, limit: int = 500) -> str:
     text = text.replace("\n", "\\n")
     return text if len(text) <= limit else text[: limit - 3] + "..."
+
+
+# M10: URL query parameters that carry credentials — a tool result echoing a
+# signed/authenticated URL (web_fetch result, connector webhook URLs, OAuth
+# links) would otherwise leak the token straight into the audit log.
+_SECRET_QUERY_KEYS = (
+    "token", "key", "secret", "password", "passwd", "access_token",
+    "refresh_token", "api_key", "apikey", "sig", "signature", "code",
+    "authorization", "auth", "session", "credential", "webhook",
+)
+
+
+def _redact_url_secrets(text: str) -> str:
+    """Mask credential-bearing query params in any URL-like substring. Bare
+    text (no URL) passes through unchanged; only `key=value` pairs whose key
+    looks secret are masked."""
+    if not text or "=" not in text:
+        return text
+    import re as _re
+
+    # URL query: scheme://host/path?k1=v1&k2=v2 (also bare query strings).
+    def _mask_query(m: _re.Match) -> str:
+        query = m.group(2)
+        parts = []
+        for pair in query.split("&"):
+            if "=" in pair:
+                k, _, v = pair.partition("=")
+                if k.lower() in _SECRET_QUERY_KEYS or any(
+                    s in k.lower() for s in ("token", "key", "secret", "auth", "sig")
+                ):
+                    parts.append(f"{k}=[redacted]")
+                else:
+                    parts.append(pair)
+            else:
+                parts.append(pair)
+        return m.group(1) + "&".join(parts)
+
+    return _re.sub(r"([?&])([^&\s]+=[^&\s]*)", _mask_query, text)
+
+
+def _sanitize_preview(value: Any) -> str:
+    """Sanitize a free-text preview (result_preview / payload / resource) for
+    the audit log: truncate + mask credential query params."""
+    return _truncate(_redact_url_secrets(str(value or "")))
