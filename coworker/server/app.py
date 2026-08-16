@@ -1732,6 +1732,20 @@ def create_app(manager: SessionManager) -> FastAPI:
         ok = manager.record_swarm_template_run(template_id, success)
         return {"ok": ok, "id": template_id, "success": success}
 
+    # -- swarm lessons (Refine 机制: 蜂群经验进化闭环) ------------------------
+    @app.get("/v1/swarm-lessons")
+    def swarm_lessons_list(
+        kind: Optional[str] = None, limit: int = 50
+    ) -> dict[str, Any]:
+        """蜂群经验库 (自进化闭环的"学习成果"): lesson/skill_hint/task_template。
+        支持 kind 过滤; 供 GUI 蜂群面板的「蜂群经验」tab 展示。"""
+        return {"lessons": manager.list_swarm_lessons(kind=kind, limit=limit)}
+
+    @app.delete("/v1/swarm-lessons/{lesson_id}")
+    def swarm_lessons_delete(lesson_id: int) -> dict[str, Any]:
+        """删除一条蜂群经验 (学习成果纠正)。"""
+        return {"ok": manager.delete_swarm_lesson(lesson_id), "id": lesson_id}
+
     # -- team workspace (dev-plan P2) ----------------------------------------
     @app.get("/v1/team/export")
     def team_export() -> dict[str, Any]:

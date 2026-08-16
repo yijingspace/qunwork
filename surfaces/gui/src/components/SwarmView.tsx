@@ -2,11 +2,13 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   addSwarmTemplate,
   deleteSwarmTemplate,
+  deleteSwarmLesson,
   getCoordinationReport,
   getHealth,
   getOrchestrateHistory,
   dissolveRun,
   getOrchestrateRun,
+  listSwarmLessons,
   listSwarmTemplates,
   orchestrate,
   orchestrateControl,
@@ -14,6 +16,7 @@ import {
   type DecisionTraceEntry,
   type OrchestrationHistoryItem,
   type OrchestrationRunSnapshot,
+  type SwarmLesson,
   type SwarmTemplate,
 } from "../api";
 import { useT } from "../i18n";
@@ -176,6 +179,10 @@ export function SwarmView({ onBack, workspace }: { onBack: () => void; workspace
   const [tplTitle, setTplTitle] = useState("");
   const [tplError, setTplError] = useState<string | null>(null);
   const [showTemplateForm, setShowTemplateForm] = useState(false);
+  // Refine 机制: 蜂群经验 (自进化闭环的学习成果)
+  const [lessons, setLessons] = useState<SwarmLesson[]>([]);
+  const [lessonsOpen, setLessonsOpen] = useState(true);
+  const [lessonKind, setLessonKind] = useState<string>("");
   // G2 command deck
   const [paused, setPaused] = useState(false);
   const [deckMsg, setDeckMsg] = useState("");
@@ -215,8 +222,21 @@ export function SwarmView({ onBack, workspace }: { onBack: () => void; workspace
       .catch(() => {});
   };
 
+  // Refine 机制: 蜂群经验 (自进化闭环学习成果)
+  const loadLessons = () => {
+    listSwarmLessons(lessonKind || undefined)
+      .then((r) => mounted.current && setLessons(r.lessons ?? []))
+      .catch(() => {});
+  };
+
+  const removeLesson = async (id: number) => {
+    const ok = await deleteSwarmLesson(id);
+    if (ok.ok) setLessons((prev) => prev.filter((x) => x.id !== id));
+  };
+
   useEffect(() => {
     loadTemplates();
+    loadLessons();
   }, []);
 
   const loadHistory = async () => {
@@ -476,6 +496,8 @@ export function SwarmView({ onBack, workspace }: { onBack: () => void; workspace
             // (asset loop) — here we only refresh the cards.
             pendingTmplRef.current = null;
             loadTemplates();
+            // Refine 机制: run 结束后刷新蜂群经验 (本次运行蒸馏出的学习成果)。
+            loadLessons();
           }
         } catch {
           if (pollRef.current) clearInterval(pollRef.current);
@@ -970,6 +992,89 @@ export function SwarmView({ onBack, workspace }: { onBack: () => void; workspace
                 </button>
               </div>
             ))}
+          </div>
+        )}
+
+        {/* Refine 机制: 蜂群经验 (自进化闭环的学习成果) */}
+        {lessons.length > 0 && (
+          <div className="mb-3" data-testid="swarm-lessons">
+            <div className="flex items-center gap-2 mb-1.5">
+              <button
+                className="text-[11px] uppercase tracking-[0.07em] text-faint font-semibold flex items-center gap-1"
+                onClick={() => setLessonsOpen((v) => !v)}
+                aria-expanded={lessonsOpen}
+              >
+                <span className={lessonsOpen ? "" : "rotate-90"} aria-hidden>▶</span>
+                🧠 {t("Swarm lessons")}
+                <span className="text-[10px] text-faint normal-case font-normal">
+                  ({lessons.length})
+                </span>
+              </button>
+              <select
+                value={lessonKind}
+                onChange={(e) => {
+                  setLessonKind(e.target.value);
+                  listSwarmLessons(e.target.value || undefined)
+                    .then((r) => mounted.current && setLessons(r.lessons ?? []))
+                    .catch(() => {});
+                }}
+                className="ml-auto text-[11px] bg-panel border border-line rounded px-1.5 py-0.5 text-muted"
+                aria-label={t("Filter lessons")}
+              >
+                <option value="">{t("All")}</option>
+                <option value="lesson">{t("Lessons")}</option>
+                <option value="skill_hint">{t("Skill hints")}</option>
+                <option value="task_template">{t("Task templates")}</option>
+              </select>
+            </div>
+            {lessonsOpen && (
+              <div className="space-y-1.5">
+                {lessons.map((ls) => (
+                  <div
+                    key={ls.id}
+                    className="w-full rounded-lg border border-line bg-panel px-3 py-2 flex items-start gap-2"
+                  >
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-1.5 mb-0.5">
+                        <span
+                          className={
+                            "text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded " +
+                            (ls.kind === "lesson"
+                              ? "bg-emerald-500/10 text-emerald-600"
+                              : ls.kind === "skill_hint"
+                                ? "bg-indigo-500/10 text-indigo-500"
+                                : "bg-amber-500/10 text-amber-600")
+                          }
+                        >
+                          {ls.kind === "lesson"
+                            ? t("Lesson")
+                            : ls.kind === "skill_hint"
+                              ? t("Skill")
+                              : t("Template")}
+                        </span>
+                        <span className="text-[12px] font-medium truncate">{ls.title}</span>
+                      </div>
+                      <div className="text-[11.5px] text-muted whitespace-pre-wrap break-words">{ls.body}</div>
+                      {(ls.use_count ?? 0) > 0 && (
+                        <div className="text-[10.5px] text-faint mt-0.5">
+                          🔁 {ls.use_count} {t("reuses")}
+                          {ls.version && ls.version > 1 ? ` · v${ls.version}` : ""}
+                          {ls.source_run_id ? ` · ${ls.source_run_id}` : ""}
+                        </div>
+                      )}
+                    </div>
+                    <button
+                      className="shrink-0 text-[11px] text-muted hover:text-danger px-1.5 py-0.5 rounded"
+                      title={t("Delete lesson")}
+                      aria-label={t("Delete lesson")}
+                      onClick={() => void removeLesson(ls.id)}
+                    >
+                      ✕
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         )}
 

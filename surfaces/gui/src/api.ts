@@ -1030,6 +1030,39 @@ export async function recordSwarmTemplateRun(
   return await res.json();
 }
 
+// -- swarm lessons (Refine 机制: 蜂群经验进化闭环) ----------------------------
+export interface SwarmLesson {
+  id: number;
+  kind: "lesson" | "skill_hint" | "task_template";
+  title: string;
+  body: string;
+  source_run_id?: string;
+  intent?: string;
+  tags?: string[];
+  use_count?: number;
+  version?: number;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export async function listSwarmLessons(
+  kind?: string,
+  limit = 50,
+): Promise<{ lessons: SwarmLesson[] }> {
+  const q = new URLSearchParams();
+  if (kind) q.set("kind", kind);
+  q.set("limit", String(limit));
+  const res = await fetch(`${httpBase()}/v1/swarm-lessons?${q.toString()}`);
+  return await res.json();
+}
+
+export async function deleteSwarmLesson(id: number): Promise<{ ok: boolean }> {
+  const res = await fetch(`${httpBase()}/v1/swarm-lessons/${id}`, {
+    method: "DELETE",
+  });
+  return await res.json();
+}
+
 // G2 command deck: live control over a running swarm run.
 // P0 建议3 adds task_inject (fork a sub-task) + retarget (reassign agent).
 export type OrchestrateControlAction =
