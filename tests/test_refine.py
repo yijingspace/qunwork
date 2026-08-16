@@ -245,6 +245,53 @@ def test_refine_selfmade_dry_run(tmp_path):
     h.close()
 
 
+# -- S6 失败模式蒸馏 -----------------------------------------------------------
+
+
+def test_refine_failure_modes_distills_lesson(tmp_path):
+    """工具反复失败 (>=2 次) → 蒸馏成"失败模式教训"经验 (下次规避)。"""
+    h = _harness(tmp_path)
+    outcome = refine_run(
+        _result(status="failed"),
+        h,
+        failure_modes=[
+            {"tool": "web_fetch", "error_type": "TimeoutError", "count": 3},
+            {"tool": "read_file", "error_type": "FileNotFoundError", "count": 1},
+        ],
+    )
+    titles = [x["title"] for x in outcome["added"]]
+    assert any("失败模式" in t for t in titles)
+    lessons = h.list()
+    fm = [ls for ls in lessons if "failure_mode" in ls.tags]
+    assert fm and "web_fetch" in fm[0].body
+    h.close()
+
+
+def test_refine_single_failure_not_pattern(tmp_path):
+    """单次失败 (<2) 不构成失败模式 → 不蒸馏。"""
+    h = _harness(tmp_path)
+    outcome = refine_run(
+        _result(),
+        h,
+        failure_modes=[{"tool": "read_file", "error_type": "E", "count": 1}],
+    )
+    titles = [x["title"] for x in outcome["added"]]
+    assert not any("失败模式" in t for t in titles)
+    h.close()
+
+
+def test_orchestrator_failure_modes_helper(tmp_path):
+    """_failure_modes 从 failure_mode 库取失败模式 (best-effort)。"""
+    from coworker.orchestrator import Orchestrator
+
+    o = Orchestrator(
+        provider=_ScriptedProvider([]), model="m", workspace=str(tmp_path / "ws")
+    )
+    modes = o._failure_modes()
+    assert isinstance(modes, list)  # 不崩溃
+    o.harness = None
+
+
 # -- harness_context 注入 -------------------------------------------------------
 
 

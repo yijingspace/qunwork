@@ -283,6 +283,17 @@ class Orchestrator:
     # 写入持久化审计 (audit log 完整性), 安全干预可追溯。
     audit_sink: Optional[Callable[[dict[str, Any]], None]] = None
 
+    # -- S6 失败模式蒸馏辅助 --------------------------------------------------
+    def _failure_modes(self, limit: int = 5) -> list[dict[str, Any]]:
+        """本次 run 的工具失败模式 (来自进程级 failure_mode 库, S8)。
+        供 Refine 蒸馏成"失败模式教训"经验。best-effort。"""
+        try:
+            from ..tools.failure_mode import get_failure_registry
+
+            return get_failure_registry().failure_modes()[:limit]
+        except Exception:
+            return []
+
     def _emit(self, kind: str, payload: dict[str, Any]) -> None:
         if self.event_sink is not None:
             try:
@@ -1137,6 +1148,8 @@ class Orchestrator:
                     self.harness,
                     # 自造工具蒸馏: 本次 run executor 调用的工具清单。
                     tool_uses=list(self._tool_uses),
+                    # S6 失败模式蒸馏: 本次 run 反复失败的工具 (failure_mode 库)。
+                    failure_modes=self._failure_modes(),
                 )
                 n_added = len(refined.get("added", []))
                 if n_added:

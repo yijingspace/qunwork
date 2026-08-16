@@ -62,12 +62,16 @@ def refine_run(
     *,
     dry_run: bool = False,
     tool_uses: Optional[list[dict[str, Any]]] = None,
+    failure_modes: Optional[list[dict[str, Any]]] = None,
 ) -> dict[str, Any]:
     """从一次蜂群运行结果蒸馏经验并写入 harness。
 
     result: OrchestrationResult (含 plan.tasks, status, governance_report)。
     tool_uses: 可选 — 本次 run 中 executor 调用的工具清单
         [{"tool": name, "task_id": id, "task_desc": description}] (自造工具蒸馏)。
+    failure_modes: 可选 — 本次 run 的工具失败模式
+        [{"tool": name, "error_type": type, "count": n}] (S6 失败模式蒸馏,
+        来自 failure_mode 库 — 哪些工具总失败, 下次规避)。
     返回 {"added": [...], "existing": [...], "dry_run": bool} — added 为新增/
     更新的 lesson dict 列表。
     """
@@ -220,6 +224,39 @@ def refine_run(
                     dry_run,
                 )
                 (added if lesson2.get("new") else existing).append(lesson2)
+
+    # 5) 失败模式蒸馏 (S6): 本次 run 中反复失败的工具 → 教训经验,
+    #    下次同类任务提前规避 (来自 failure_mode 库, 失败模式可复用)。
+    failures = [
+        f
+        for f in (failure_modes or [])
+        if int(f.get("count") or 0) >= 2  # 至少失败 2 次才算"模式"
+    ]
+    if failures:
+        top = sorted(failures, key=lambda f: -int(f.get("count") or 0))[:3]
+        title = "[教训] 任务执行失败模式 (工具反复失败)"
+        body = (
+            f"本次运行 (来自 {source_run or 'swarm run'}) 中以下工具反复失败, "
+            f"已形成失败模式:\n"
+            + "\n".join(
+                f"- {f.get('tool')} ({f.get('error_type')}): "
+                f"失败 {f.get('count')} 次"
+                for f in top
+            )
+            + "\n\n下次遇到同类任务时: 优先检查这些工具的前置条件/配置/"
+            "权限, 或改用替代方案, 避免重复踩坑。"
+        )
+        lesson = _upsert(
+            harness,
+            "lesson",
+            title,
+            body,
+            source_run,
+            intent,
+            ["failure_mode", "risk"],
+            dry_run,
+        )
+        (added if lesson.get("new") else existing).append(lesson)
 
     return {"added": added, "existing": existing, "dry_run": dry_run}
 
