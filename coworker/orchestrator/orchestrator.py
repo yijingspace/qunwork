@@ -254,6 +254,9 @@ class Orchestrator:
     _last_plan: Optional[Plan] = field(default=None, init=False)
     _hornet_last_hits: list = field(default_factory=list, init=False)
     _hornet_last_phase: list = field(default_factory=list, init=False)
+    # 自造工具蒸馏: 本次 run 中 executor 调用的工具 (tool_used 事件捕获),
+    # run 结束时传给 refine_run 做经验蒸馏。
+    _tool_uses: list = field(default_factory=list, init=False)
 
     def _emit(self, kind: str, payload: dict[str, Any]) -> None:
         if self.event_sink is not None:
@@ -443,6 +446,19 @@ class Orchestrator:
                             "text": clean_thought(raw, "executor"),
                         },
                     )
+                elif kind == "tool_used":
+                    # 自造工具蒸馏: 记录 executor 调用的工具 (含 create_selfmade_tool)
+                    # 与该任务的关系 — run 结束后 refine 蒸馏"自造工具策略"经验。
+                    name = payload.get("name") or ""
+                    status = payload.get("status") or ""
+                    if name and status == "started":
+                        self._tool_uses.append(
+                            {
+                                "tool": name,
+                                "task_id": task.id,
+                                "task_desc": getattr(task, "description", ""),
+                            }
+                        )
                 elif kind == "tool_thought" and payload.get("text"):
                     # Tool heartbeat — show it on the deck but NEVER collect it
                     # as a draft (the timeout-degrade path uses collected[-1]
@@ -1036,7 +1052,12 @@ class Orchestrator:
                 # 不含), 用自增序号标记本次运行, 足以审计"这条经验来自哪次跑"。
                 if not hasattr(result, "run_id"):
                     result.run_id = f"run_{self._run_seq}"  # type: ignore[attr-defined]
-                refined = refine_run(result, self.harness)
+                refined = refine_run(
+                    result,
+                    self.harness,
+                    # 自造工具蒸馏: 本次 run executor 调用的工具清单。
+                    tool_uses=list(self._tool_uses),
+                )
                 n_added = len(refined.get("added", []))
                 if n_added:
                     self._emit(

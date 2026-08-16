@@ -12,7 +12,10 @@ governance report + status)。
   * 技能提示 (skill_hint): 同类型任务多次出现 (>= REPEAT_FOR_SKILL) →
     提示可固化为 skill 的模板 (供用户/管理者决定是否 create_skill);
   * 任务模板 (task_template): 完成度高的任务描述 → 通用模板 (意图模式),
-    供未来相似意图直接参考拆解方式。
+    供未来相似意图直接参考拆解方式;
+  * 自造工具 (tool_uses): executor 自造了工具 → 生成"自造工具策略"经验
+    (提示下次同类任务可直接复用 create_selfmade_tool / selfmade_tools 库);
+    同类型任务重复自造 → 额外生成"可技能化"提示 (固化成 skill)。
 
 幂等: 同 (kind, title) 的经验会更新版本而非重复插入 (harness.add 的
 version bump)。dry_run 不写库。
@@ -58,10 +61,13 @@ def refine_run(
     harness: HarnessStore,
     *,
     dry_run: bool = False,
+    tool_uses: Optional[list[dict[str, Any]]] = None,
 ) -> dict[str, Any]:
     """从一次蜂群运行结果蒸馏经验并写入 harness。
 
     result: OrchestrationResult (含 plan.tasks, status, governance_report)。
+    tool_uses: 可选 — 本次 run 中 executor 调用的工具清单
+        [{"tool": name, "task_id": id, "task_desc": description}] (自造工具蒸馏)。
     返回 {"added": [...], "existing": [...], "dry_run": bool} — added 为新增/
     更新的 lesson dict 列表。
     """
@@ -159,6 +165,61 @@ def refine_run(
             harness, "task_template", title, body, source_run, intent, ["template"], dry_run
         )
         (added if lesson.get("new") else existing).append(lesson)
+
+    # 4) 自造工具蒸馏 (工具自治): executor 在本次 run 中自造了工具 →
+    #    生成"自造工具策略"经验; 同类型任务重复自造 → "可技能化"提示。
+    selfmade = [
+        u
+        for u in (tool_uses or [])
+        if (u.get("tool") or "").startswith("create_selfmade_tool")
+    ]
+    if selfmade:
+        # 收集本次 run 自造的工具名 (从 harness 的 skill_hint 或 tool_uses)
+        # 任务描述 → 任务类型
+        by_type: dict[str, int] = {}
+        for u in selfmade:
+            ttype = _task_type(u.get("task_desc") or "")
+            if ttype:
+                by_type[ttype] = by_type.get(ttype, 0) + 1
+        for ttype, count in by_type.items():
+            title = f"[自造工具] {ttype} 任务自制工具策略"
+            body = (
+                f"任务类型「{ttype}」在本次运行中自造了 {count} 次工具"
+                f"(来自 {source_run or 'swarm run'}):\n"
+                + "  - 工具不足时可直接用 create_selfmade_tool 编写 Python 实现, "
+                "立即注册并持久化到 workspace/selfmade_tools/, 下次会话自动加载。\n"
+                + "  - 自造工具后, 同类型的后续任务可直接复用, 无需重新发明。"
+            )
+            lesson = _upsert(
+                harness,
+                "lesson",
+                title,
+                body,
+                source_run,
+                intent,
+                [ttype, "selfmade_tool"],
+                dry_run,
+            )
+            (added if lesson.get("new") else existing).append(lesson)
+            # 重复自造 (>1 次) → 技能提示: 该任务类型的自造工具可固化成 skill
+            if count >= 2:
+                title2 = f"[可技能化] {ttype} 自造工具流程"
+                body2 = (
+                    f"「{ttype}」类任务在本次运行中自造了 {count} 个工具, 已形成"
+                    f"固定模式。建议将自造工具流程固化为 skill (create_skill), "
+                    f"或直接复用 workspace/selfmade_tools/ 下已持久化的工具。"
+                )
+                lesson2 = _upsert(
+                    harness,
+                    "skill_hint",
+                    title2,
+                    body2,
+                    source_run,
+                    intent,
+                    [ttype, "selfmade_tool", "skill"],
+                    dry_run,
+                )
+                (added if lesson2.get("new") else existing).append(lesson2)
 
     return {"added": added, "existing": existing, "dry_run": dry_run}
 

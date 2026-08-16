@@ -225,9 +225,19 @@ async def _run_engine_async(
                 name = event.data.get("name") or "tool"
                 if event.type == EventType.TOOL_STARTED:
                     on_event("tool_thought", {"text": f"⚙ {name}…"})
+                    # 自造工具蒸馏: 结构化通知工具调用 (name), 供 orchestrator
+                    # 捕获 create_selfmade_tool 等事件做经验蒸馏。
+                    on_event(
+                        "tool_used",
+                        {"name": name, "status": "started"},
+                    )
                 else:
                     status = event.data.get("status") or ""
                     on_event("tool_thought", {"text": f"✓ {name} {status}".strip()})
+                    on_event(
+                        "tool_used",
+                        {"name": name, "status": status or "finished"},
+                    )
         elif event.type == EventType.TURN_END:
             status = event.data.get("status", "unknown")
         elif event.type == EventType.ERROR:
