@@ -69,6 +69,19 @@ class PersistentVectorMemory:
             self._db.commit()
         except sqlite3.OperationalError:
             pass  # column already present
+        # P1 记忆维护 (GuaAgent/OpenClaw 文档): use_count 访问频率 + last_used_at
+        # 最后命中时间 — FADEMEM 衰减公式的输入; 幂等迁移 (列已存在则跳过)。
+        for col, ddl in (
+            ("use_count", "INTEGER NOT NULL DEFAULT 0"),
+            ("last_used_at", "REAL"),
+        ):
+            try:
+                self._db.execute(
+                    f"ALTER TABLE vector_memories ADD COLUMN {col} {ddl}"
+                )
+                self._db.commit()
+            except sqlite3.OperationalError:
+                pass  # column already present
         self._load()
 
     # -- persistence --------------------------------------------------------
@@ -79,7 +92,15 @@ class PersistentVectorMemory:
                 (self.scope,),
             ).fetchall()
         for text, meta, vec in rows:
-            item = self._mem._new_item(text, json.loads(meta))
+            # P1 衰减遗忘: stale 条目 (meta.stale=true) 不载入内存 → 检索自动
+            # 排除; 数据保留在库中 (Manus 降级而非抹除), 可手动恢复。
+            try:
+                meta_obj = json.loads(meta)
+            except (json.JSONDecodeError, TypeError):
+                meta_obj = {}
+            if meta_obj.get("stale"):
+                continue
+            item = self._mem._new_item(text, meta_obj)
             if vec:
                 try:
                     item.vector = json.loads(vec)
@@ -124,6 +145,17 @@ class PersistentVectorMemory:
         # a concurrent add() never mutates it mid-iteration.
         with self._lock:
             hits = self._mem.search(query, k=k)
+            # P1 衰减遗忘 (FADEMEM): 命中的记忆刷新 use_count — 高频使用的
+            # 记忆在衰减 pass 中获得新鲜度地板, 不会被误标 stale。
+            if hits:
+                text_ids = {h.text: None for h in hits}
+                placeholders = ",".join("?" * len(text_ids))
+                self._db.execute(
+                    f"UPDATE vector_memories SET use_count = use_count + 1, "
+                    f"last_used_at = ? WHERE scope = ? AND text IN ({placeholders})",
+                    [time.time(), self.scope, *text_ids.keys()],
+                )
+                self._db.commit()
         if phase is None:
             return hits
         with self._lock:

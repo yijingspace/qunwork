@@ -28,6 +28,8 @@ class MemoryItem:
     workspace: Optional[str] = None
     session_id: Optional[str] = None
     created_at: Optional[str] = None
+    use_count: int = 0
+    stale: bool = False
 
 
 class MemoryStore(ABC):
@@ -52,6 +54,7 @@ class MemoryStore(ABC):
         scope: Optional[Scope] = None,
         workspace: Optional[str] = None,
         session_id: Optional[str] = None,
+        include_stale: bool = False,
     ) -> list[MemoryItem]: ...
 
     @abstractmethod
@@ -59,6 +62,15 @@ class MemoryStore(ABC):
 
     @abstractmethod
     def delete(self, item_id: int) -> bool: ...
+
+    def mark_stale(self, item_id: int, stale: bool = True) -> bool:
+        """P1 衰减遗忘: 标记/清除冷记忆的 stale 状态 (Manus"降级而非抹除")。
+        基类提供默认 no-op, 具体适配器 (SQLite) 实现持久化。"""
+        return False
+
+    def bump_usage(self, item_id: int) -> None:
+        """P1 衰减遗忘: 记忆被命中时刷新 use_count 与 last_used_at。
+        基类提供默认 no-op。"""
 
 
 def format_memories(items: list[MemoryItem]) -> str:

@@ -5567,6 +5567,26 @@ class SessionManager:
             for m in self.memory_store.list()
         ]
 
+    def memory_maintenance(
+        self, *, dry_run: bool = False, vector_db_path: Optional[str | Path] = None
+    ) -> dict[str, Any]:
+        """P1 记忆维护 (GuaAgent/OpenClaw 文档): 自动去重合并 + 衰减遗忘。
+
+        结构化记忆 (memories 表) 始终覆盖; 向量记忆 (vector_memories) 在提供
+        db 路径时覆盖 (默认取默认工作区的 .qunwork/memory.db)。返回各步骤摘要。
+        """
+        from ..memory.maintenance import run_maintenance
+
+        if vector_db_path is None:
+            ws = self.default_workspace
+            if ws:
+                candidate = Path(ws) / ".qunwork" / "memory.db"
+                if candidate.exists():
+                    vector_db_path = candidate
+        return run_maintenance(
+            self.memory_store, vector_db_path=vector_db_path, dry_run=dry_run
+        )
+
     def search_memory(self, query: str, k: int = 10) -> list[dict[str, Any]]:
         """Team memory search (strategy report 5.2.2): keyword relevance over the
         durable memory pool. SQL LIKE scoring now; swap in embeddings behind the

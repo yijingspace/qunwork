@@ -229,6 +229,40 @@ def create_app(manager: SessionManager) -> FastAPI:
                         traceback.print_exc()
 
         warm_task = asyncio.create_task(_cache_warm_loop())
+        # P1 记忆维护 (GuaAgent/OpenClaw 文档): 自动去重合并 + 衰减遗忘 —
+        # 低频周期 (24h) 后台整理 memories + vector_memories, 保持记忆库
+        # 不膨胀、冷记忆自动降级。仿 _hornet_observer_loop 的 to_thread 模式。
+        _memory_loop_stop = asyncio.Event()
+
+        async def _memory_maintenance_loop() -> None:
+            await asyncio.sleep(30.0)  # let manager finish wiring + first boot settle
+            while not _memory_loop_stop.is_set():
+                try:
+                    await asyncio.wait_for(
+                        _memory_loop_stop.wait(), timeout=24 * 3600
+                    )
+                except asyncio.TimeoutError:
+                    try:
+                        summary = await asyncio.to_thread(
+                            manager.memory_maintenance
+                        )
+                        removed = (
+                            len(summary.get("memories_dedupe", {}).get("removed", []))
+                            + len(summary.get("vector_dedupe", {}).get("removed", []))
+                        )
+                        stale = (
+                            len(summary.get("memories_decay", {}).get("stale", []))
+                            + len(summary.get("vector_decay", {}).get("stale", []))
+                        )
+                        if removed or stale:
+                            print(
+                                f"[coworker] memory maintenance: "
+                                f"merged/removed {removed}, decayed {stale}"
+                            )
+                    except Exception:
+                        pass
+
+        memory_task = asyncio.create_task(_memory_maintenance_loop())
         try:
             live = (
                 await manager.start_gateway()
@@ -244,6 +278,8 @@ def create_app(manager: SessionManager) -> FastAPI:
         task.cancel()
         _cache_warm_stop.set()
         warm_task.cancel()
+        _memory_loop_stop.set()
+        memory_task.cancel()
         await manager.aclose()  # stop gateway + close MCP connections on shutdown
 
     app = FastAPI(title="coworker", version="0.0.0", lifespan=lifespan)
