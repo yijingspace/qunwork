@@ -803,10 +803,35 @@ class TurnEngine:
         yield True
 
     def _execute_sync(self, tool_call: ToolCall) -> tuple[Any, str]:
-        """Execute one authorized call (runs in a worker thread)."""
+        """Execute one authorized call (runs in a worker thread).
+
+        S8 工具失败模式库: 熔断检查 (该工具连续失败 → 短路, 不执行) +
+        成功/失败记录 (失败模式库供审计/Refine 蒸馏)。
+        """
+        # 熔断检查: circuit-open 且未过冷却 → 直接返回熔断错误 (不执行)
         try:
-            return self.registry.execute(tool_call.name, tool_call.arguments), "ok"
+            from .tools.failure_mode import get_failure_registry
+
+            registry = get_failure_registry()
+            reason = registry.check(tool_call.name)
+            if reason is not None:
+                return {"error": reason, "error_type": "CircuitOpen"}, "error"
+        except Exception:
+            pass  # 失败模式库故障绝不影响执行
+        try:
+            result = self.registry.execute(tool_call.name, tool_call.arguments)
+            try:
+                get_failure_registry().record_success(tool_call.name)
+            except Exception:
+                pass
+            return result, "ok"
         except Exception as exc:
+            try:
+                get_failure_registry().record_failure(
+                    tool_call.name, type(exc).__name__
+                )
+            except Exception:
+                pass
             return {"error": str(exc), "error_type": type(exc).__name__}, "error"
 
     def _record_result(self, tool_call: ToolCall, result: Any, status: str) -> Event:
