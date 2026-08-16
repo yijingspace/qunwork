@@ -778,12 +778,24 @@ class TurnEngine:
             return
 
         if spec is None:
-            self.messages.append(
-                _tool_error_message(tool_call, f"unknown tool: {tool_call.name}")
+            # 工具自治 (Self-made tools): 模型调用了一个不存在的工具 —
+            # 明确提示"工具不足", 并指引 Agent 可以用 create_selfmade_tool
+            # 自造工具 (DSH 愿景: 发现没有工具时自己创造工具)。
+            from .tools.selfmade import selfmade_available
+
+            hint = (
+                f"unknown tool: {tool_call.name} — this tool does not exist. "
+                "If the task genuinely needs this capability and no existing "
+                "tool provides it, you can CREATE it yourself with "
+                "`create_selfmade_tool` (write the Python implementation) "
+                "and then call it."
+                if selfmade_available(self.registry)
+                else f"unknown tool: {tool_call.name}"
             )
+            self.messages.append(_tool_error_message(tool_call, hint))
             yield Event(
                 EventType.TOOL_FINISHED,
-                {"name": tool_call.name, "status": "error", "reason": "unknown tool"},
+                {"name": tool_call.name, "status": "error", "reason": hint},
             )
             yield False
             return

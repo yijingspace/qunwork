@@ -344,8 +344,41 @@ def build_engine(
         if block:
             instructions = f"{instructions}\n\n{block}"
 
+    # 工具自治 (Self-made tools) 指引: Agent 在任务中发现没有可用工具时,
+    # 应自己创造工具 (DSH 愿景) — 工具不足是能力缺口, 不是任务失败。
+    if ws is not None:
+        instructions = (
+            f"{instructions}\n\n"
+            "Tool autonomy: when the task needs a capability no existing tool "
+            "provides (an unknown tool error, or repeated failures from missing "
+            "functionality), CREATE the tool yourself with `create_selfmade_tool` "
+            "— write a short Python snippet (TOOL_NAME / TOOL_DESCRIPTION / "
+            "TOOL_PARAMETERS / def run(**kwargs)), it is validated, registered "
+            "live for this session, and persisted for future sessions. Prefer "
+            "building on existing tools first; self-create only for genuine "
+            "capability gaps."
+        )
+
     skill_loader = SkillLoader(_skill_dirs(ws))
     registry.register_all(skill_tools(skill_loader))
+
+    # 工具自治 (Self-made tools, DSH 愿景): Agent 发现工具不足时自造新工具。
+    # 提供 create_selfmade_tool (需审批) 让 Agent 写 Python 实现并即时注册;
+    # 同时加载 workspace 已持久化的自造工具 (跨会话复用, 自进化资产)。
+    if ws is not None:
+        from .tools.selfmade import load_tools, make_selfmade_tool_tools
+
+        try:
+            registry.register_all(make_selfmade_tool_tools(ws, registry))
+            persisted = load_tools(ws)
+            if persisted:
+                registry.register_all(persisted)
+        except Exception:
+            import logging
+
+            logging.getLogger("coworker.agent").exception(
+                "selfmade tools setup failed (best-effort)"
+            )
 
     # User-local risk overrides (mainly to relax MCP's conservative default). Empty store →
     # no-op; never written by persona loading (the no-self-grant rule).
