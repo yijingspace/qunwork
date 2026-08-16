@@ -39,6 +39,10 @@ class Config:
     port: int = 8765
     # Web search provider: "duckduckgo" (keyless default) | "tavily" | "brave" (need a key).
     web_search_provider: str = "duckduckgo"
+    # P0 结构无损裁剪 (GuaAgent 研究文档 #112): 发送给模型前对超大工具输出 /
+    # base64 数据 / 元数据块做结构无损剪枝, 平均省 ~20% token。持久化历史不变,
+    # 只裁剪 provider feed; 关闭后逐字节恢复旧行为。
+    trim_tool_outputs: bool = True
     # QunWork Cloud (sign-in + managed connectors). Config, never constants:
     # dev/staging/BYO-VPC deployments point these at their own instances.
     cloud_base_url: str = "https://api.openworker.com"
@@ -67,6 +71,7 @@ _FIELDS = {
     "host",
     "port",
     "web_search_provider",
+    "trim_tool_outputs",
     "cloud_base_url",
     "cloud_auth_domain",
     "cloud_client_id",

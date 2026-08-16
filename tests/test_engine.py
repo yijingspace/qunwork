@@ -598,3 +598,106 @@ def test_build_engine_wires_usage_sink(tmp_path):
     _collect(engine, "hello")
     assert len(calls) >= 1
     assert "prompt_tokens" in calls[0]
+
+
+# -- P0 结构无损裁剪 (GuaAgent 研究文档 #112) engine 集成 -----------------------
+
+def test_outbound_trims_tool_output_but_keeps_user_and_assistant_verbatim(tmp_path):
+    """结构无损裁剪: 超大 tool 输出被裁剪; user/assistant 消息原文 100% 保留。"""
+    from coworker.trim import TOOL_TRIM_MIN_LEN
+
+    engine, _ = _engine(tmp_path, [_text_turn("ok")])
+    big = "D" * (TOOL_TRIM_MIN_LEN * 4)
+    engine.messages = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "用户的原始问题：请保留我。"},
+        {
+            "role": "assistant",
+            "content": "助手原始回复：好的，我保留。",
+            "tool_calls": [
+                {"id": "call_x", "type": "function", "function": {"name": "read_file", "arguments": "{}"}}
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call_x", "content": big},
+    ]
+    out = engine._outbound_messages()
+    # user / assistant 原文逐字保留
+    assert out[1]["content"] == "用户的原始问题：请保留我。"
+    assert out[2]["content"] == "助手原始回复：好的，我保留。"
+    # tool 输出被裁剪
+    tool = out[3]
+    assert tool["role"] == "tool" and tool["tool_call_id"] == "call_x"
+    assert "trimmed" in tool["content"] and len(tool["content"]) < len(big)
+    # 持久化历史保持完整输出 (结构无损 = 磁盘不丢)
+    assert engine.messages[3]["content"] == big
+
+
+def test_outbound_trims_base64_in_tool_output(tmp_path):
+    engine, _ = _engine(tmp_path, [_text_turn("ok")])
+    engine.messages = [
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": "", "tool_calls": [
+            {"id": "call_y", "type": "function", "function": {"name": "f", "arguments": "{}"}}
+        ]},
+        {"role": "tool", "tool_call_id": "call_y", "content": "pic: data:image/png;base64," + "Q" * 3000},
+    ]
+    out = engine._outbound_messages()
+    assert "base64," not in out[-1]["content"]
+    assert "collapsed" in out[-1]["content"]
+
+
+def test_outbound_keeps_short_tool_output_verbatim(tmp_path):
+    engine, _ = _engine(tmp_path, [_text_turn("ok")])
+    engine.messages = [
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": "", "tool_calls": [
+            {"id": "call_z", "type": "function", "function": {"name": "f", "arguments": "{}"}}
+        ]},
+        {"role": "tool", "tool_call_id": "call_z", "content": "short result"},
+    ]
+    out = engine._outbound_messages()
+    assert out[-1]["content"] == "short result"
+
+
+def test_trim_disabled_restores_verbatim_feed(tmp_path):
+    """trim_tool_outputs=False → provider feed 与旧行为逐字节一致。"""
+    from coworker.trim import TOOL_TRIM_MIN_LEN
+
+    engine, _ = _engine(tmp_path, [_text_turn("ok")])
+    engine.trim_tool_outputs = False
+    big = "E" * (TOOL_TRIM_MIN_LEN * 4)
+    engine.messages = [
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": "", "tool_calls": [
+            {"id": "call_w", "type": "function", "function": {"name": "f", "arguments": "{}"}}
+        ]},
+        {"role": "tool", "tool_call_id": "call_w", "content": big},
+    ]
+    out = engine._outbound_messages()
+    assert out[-1]["content"] == big  # 未裁剪
+
+
+def test_build_engine_wires_trim_switch_from_config(tmp_path, monkeypatch):
+    """build_engine 从 config 读取 trim_tool_outputs 开关。"""
+    from coworker.agent import build_engine
+    from coworker.agents import chat_agent
+
+    engine = build_engine(
+        agent=chat_agent(),
+        workspace=str(tmp_path / "ws"),
+        provider=ScriptedProvider([_text_turn("hi")]),
+    )
+    assert engine.trim_tool_outputs is True  # 默认开启
+
+    # config.toml 显式关闭 → 开关为 False
+    (tmp_path / "ws").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "ws" / ".coworker").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "ws" / ".coworker" / "config.toml").write_text(
+        "trim_tool_outputs = false\n", encoding="utf-8"
+    )
+    engine2 = build_engine(
+        agent=chat_agent(),
+        workspace=str(tmp_path / "ws"),
+        provider=ScriptedProvider([_text_turn("hi")]),
+    )
+    assert engine2.trim_tool_outputs is False

@@ -14,6 +14,14 @@ def test_defaults_when_no_files(tmp_path):
     assert cfg.mode == "interactive"
     assert cfg.max_iterations == 150
     assert cfg.allowed_commands == []
+    assert cfg.trim_tool_outputs is True  # P0 结构无损裁剪默认开启
+
+
+def test_trim_tool_outputs_switch(tmp_path):
+    g = tmp_path / "global.toml"
+    g.write_text("trim_tool_outputs = false\n")
+    cfg = load_config(global_path=g)
+    assert cfg.trim_tool_outputs is False
 
 
 def test_global_and_workspace_override(tmp_path):

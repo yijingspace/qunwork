@@ -416,6 +416,7 @@ def build_engine(
         skill_loader=skill_loader,
         persist_callback=persist_callback,
         scope_store=scope_store,
+        trim_tool_outputs=config.trim_tool_outputs,
     )
     engine.executor = executor  # type: ignore[attr-defined]
     engine.todo = todo  # type: ignore[attr-defined]

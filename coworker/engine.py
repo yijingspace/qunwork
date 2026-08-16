@@ -90,6 +90,10 @@ class TurnEngine:
         # P1-5 零信任能力袋: persona scope 检查器 (可选)。传入后 _authorize 会在
         # 工具调用前检查 scope, 越权自动升级为审批。
         scope_store: Optional[Any] = None,
+        # P0 结构无损裁剪: 发送给 provider 前, 对超大工具输出 / base64 数据 /
+        # 元数据块做"结构无损剪枝"(GuaAgent 研究文档 #112), 平均省 ~20% token。
+        # 只在 provider feed 上生效 —— 持久化的 self.messages 始终保留完整输出。
+        trim_tool_outputs: bool = True,
     ) -> None:
         self.provider = provider
         self.registry = registry
@@ -106,6 +110,7 @@ class TurnEngine:
         self.usage_sink = usage_sink
         self.persist_callback = persist_callback
         self.scope_store = scope_store  # P1-5 PersonaScopeStore or None
+        self.trim_tool_outputs = bool(trim_tool_outputs)  # P0 结构无损裁剪开关
         # Returns an ephemeral `<system-context>` block appended to the LAST user message at
         # send-time only (never persisted). We can't reliably inject system messages mid-thread
         # across providers, so dynamic per-turn context (e.g. the live directory list) rides on
@@ -1183,6 +1188,20 @@ class TurnEngine:
             for msg in self.messages
             if msg.get("role") != "notice"
         ]
+        # P0 结构无损裁剪 (GuaAgent 研究文档 #112): 只裁剪 tool 消息的超大输出 /
+        # base64 数据 / 元数据块; user / assistant 原文 100% 保留。只在 provider
+        # feed 生效 —— self.messages 持久化完整输出, 磁盘/审计链不丢任何内容。
+        if self.trim_tool_outputs:
+            from .trim import trim_tool_content
+
+            out = [
+                (
+                    {**msg, "content": trim_tool_content(msg.get("content"))}
+                    if msg.get("role") == "tool"
+                    else msg
+                )
+                for msg in out
+            ]
         out = _heal_tool_pairing(out)
         # PDF attachments (stored as `file` parts) are adapted to the ACTIVE model right
         # here — never in the persisted history — so a mid-session model switch always
