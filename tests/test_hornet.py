@@ -44,6 +44,8 @@ def test_resonate_finds_topic_and_explains_path(tmp_path):
     titles = [h["title"] for h in out["hits"]]
     assert all("DPNN" in t for t in titles)
     assert out["hits"][0]["path"]  # propagation path present
+    # 问题3: every hit carries its source knowledge item id
+    assert all("kb_item_id" in h for h in out["hits"])
     # resonance is recorded
     assert store.recent_resonance(10)
 

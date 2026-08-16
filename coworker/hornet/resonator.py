@@ -167,6 +167,7 @@ class HornetResonator:
             hits.append(
                 {
                     "node_id": nid,
+                    "kb_item_id": n.get("kb_item_id"),  # 问题3: 关联原文知识条目
                     "title": n["title"],
                     "amplitude": round(a / amp_max, 4),
                     "path": path.get(nid, [])[-6:],

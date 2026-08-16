@@ -74,6 +74,50 @@ def test_index_file_and_scan(tmp_path: Path):
     assert summary3["updated"] == 1
 
 
+def test_scan_without_workspace_aggregates_all_indexed_dirs(tmp_path: Path):
+    """问题1: scan_workspace() with NO workspace arg (no default set) must scan
+    every already-indexed directory — the old code returned 0 added silently."""
+    store = KnowledgeStore(tmp_path / "kb.db", workspace=None)
+
+    ws_a = tmp_path / "proj-a"
+    ws_a.mkdir(parents=True)
+    (ws_a / "doc1.md").write_text("alpha beta gamma", encoding="utf-8")
+    store.index_file(ws_a / "doc1.md", workspace=str(ws_a))
+
+    # no workspace given -> should still scan proj-a (from its indexed source_path)
+    res = store.scan_workspace()
+    assert res.get("workspaces_scanned", 0) >= 1, res
+    assert res["added"] == 0  # doc1 unchanged
+
+    # a NEW doc in the same indexed dir is picked up
+    (ws_a / "doc2.md").write_text("delta epsilon", encoding="utf-8")
+    res2 = store.scan_workspace()
+    assert res2["added"] == 1, res2
+
+    # a second indexed workspace is scanned too
+    ws_b = tmp_path / "proj-b"
+    ws_b.mkdir(parents=True)
+    (ws_b / "doc3.md").write_text("zeta eta", encoding="utf-8")
+    store.index_file(ws_b / "doc3.md", workspace=str(ws_b))
+    (ws_b / "doc4.md").write_text("theta iota", encoding="utf-8")
+    res3 = store.scan_workspace()
+    assert res3["added"] == 1, res3
+    assert res3.get("workspaces_scanned", 0) >= 2, res3
+
+
+def test_get_item_meta(tmp_path: Path):
+    """问题3: get_item_meta returns the metadata a HORNET hit needs to link
+    back to its source knowledge entry."""
+    store = KnowledgeStore(tmp_path / "kb.db", workspace="/tmp/ws")
+    item_id = store.add_text("标题A", "正文内容", workspace="/tmp/ws")
+    meta = store.get_item_meta(item_id)
+    assert meta is not None
+    assert meta["title"] == "标题A"
+    assert meta["kind"] == "manual"
+    assert "workspace" in meta
+    assert store.get_item_meta(999999) is None
+
+
 def test_delete_item(store: KnowledgeStore):
     item_id = store.add_text("标题", "内容", workspace="ws")
     assert store.list_items(workspace="ws")
@@ -199,3 +243,32 @@ def test_list_items_pagination_and_total(tmp_path: Path):
     assert len(page1) == 100 and len(page2) == 100 and len(page3) == 50
     ids = {it["id"] for it in page1 + page2 + page3}
     assert len(ids) == 250  # no overlap, all 250 reachable via paging
+
+
+def test_hornet_resonate_attaches_kb_metadata(tmp_path, monkeypatch):
+    """问题3: manager.hornet_resonate must attach the source knowledge metadata
+    (kb_item_id / source_path / kb_title) to every hit so the UI can offer
+    'view source / research' like it does for emergent structures."""
+    monkeypatch.setenv("COWORKER_STATE_DIR", str(tmp_path / "state"))
+    from coworker.hornet import HornetBuilder
+    from coworker.server.manager import SessionManager
+
+    mgr = SessionManager(data_dir=tmp_path / "data")
+    kid = mgr.knowledge.add_text(
+        "DPNN 相位记忆研究",
+        "离散周期神经网络 皮萨诺周期 相位 共振 记忆",
+        workspace="ws1",
+    )
+    HornetBuilder(mgr.hornet).build(
+        [(kid, "DPNN 相位记忆研究", "离散周期神经网络 皮萨诺周期 相位 共振 记忆", 1700000000)]
+    )
+    r = mgr.hornet_resonate("DPNN 相位", k=3)
+    assert r.get("hits"), "no resonance hits"
+    for h in r["hits"]:
+        assert "kb_item_id" in h
+        assert h.get("kb_title") == "DPNN 相位记忆研究"
+    # a deleted knowledge item degrades gracefully (no meta, no crash)
+    mgr.knowledge.delete(kid)
+    r2 = mgr.hornet_resonate("DPNN 相位", k=3)
+    assert "hits" in r2
+

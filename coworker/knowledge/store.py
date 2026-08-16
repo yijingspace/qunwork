@@ -252,12 +252,57 @@ class KnowledgeStore:
         return item_id
 
     def scan_workspace(self, workspace: Optional[str] = None) -> dict:
-        """Index every md/txt document under the workspace. Returns a summary
-        (added = new files indexed, updated = changed files re-indexed, skipped = unchanged)."""
-        ws = str(workspace) if workspace else self._default_workspace
-        if not ws:
+        """Index every md/txt document under the workspace(s). Returns a summary
+        (added = new files indexed, updated = changed files re-indexed, skipped = unchanged).
+
+        When `workspace` is omitted, scans EVERY directory that has already been
+        indexed (from `source_path` of existing file items) plus the default
+        workspace — fixing "scan shows 0 added" when no default is set: the
+        library is multi-workspace, so the scan must be too, not silently no-op."""
+        if workspace:
+            ws = str(workspace)
+            return self._scan_tree(Path(ws), ws)
+        targets = self._scan_targets()
+        if not targets:
             return {"added": 0, "updated": 0, "skipped": 0, "failed": 0}
-        return self._scan_tree(Path(ws), ws)
+        total = {"added": 0, "updated": 0, "skipped": 0, "failed": 0, "failures": []}
+        for target in targets:
+            part = self._scan_tree(target["path"], target["ws"])
+            for k in ("added", "updated", "skipped", "failed"):
+                total[k] += part.get(k, 0)
+            total["failures"].extend(part.get("failures", []) or [])
+        total["workspaces_scanned"] = len(targets)
+        return total
+
+    def _scan_targets(self) -> list[dict]:
+        """Directories to scan when no explicit workspace is given: the default
+        workspace (if set) plus every parent directory of an already-indexed
+        file item. Deduped by resolved path, skipping _SKIP_DIRS members."""
+        seen: dict[str, str] = {}  # resolved path -> workspace label
+        if self._default_workspace:
+            seen[str(Path(self._default_workspace).resolve())] = self._default_workspace
+        try:
+            rows = self._con.execute(
+                "SELECT DISTINCT source_path FROM knowledge_items WHERE kind='file'"
+                " AND source_path IS NOT NULL AND source_path != ''"
+            ).fetchall()
+        except sqlite3.Error:
+            rows = []
+        for (sp,) in rows:
+            try:
+                d = Path(sp).parent
+                if any(part in _SKIP_DIRS for part in d.parts):
+                    continue
+                key = str(d.resolve())
+                if key not in seen:
+                    seen[key] = str(d)
+            except (OSError, ValueError):
+                continue
+        return [
+            {"path": Path(ws), "ws": ws}
+            for ws in sorted(seen.values())
+            if Path(ws).is_dir()
+        ]
 
     def index_folder(
         self,
@@ -383,6 +428,32 @@ class KnowledgeStore:
                 (item_id,),
             ).fetchall()
         return "\n".join(r[0] for r in rows)
+
+    def get_item_meta(self, item_id: int) -> Optional[dict]:
+        """One item's metadata row (no body) — for cross-referencing a HORNET
+        node back to its source knowledge entry (问题3: 共振命中→原文)."""
+        with self._lock:
+            row = self._con.execute(
+                "SELECT id, kind, source_path, source_run_id, parent_id, title,"
+                " created_at, updated_at, use_count, retired, workspace"
+                " FROM knowledge_items WHERE id=?",
+                (item_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "id": row[0],
+            "kind": row[1],
+            "source_path": row[2],
+            "source_run_id": row[3],
+            "parent_id": row[4],
+            "title": row[5],
+            "created_at": row[6],
+            "updated_at": row[7],
+            "use_count": row[8],
+            "retired": row[9],
+            "workspace": row[10],
+        }
 
     def count_items(self, workspace: Optional[str] = None) -> int:
         """Total number of knowledge items for the workspace (or all workspaces)."""

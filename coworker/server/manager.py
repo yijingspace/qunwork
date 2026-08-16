@@ -4291,9 +4291,13 @@ class SessionManager:
 
     # -- HORNET (蜂巢共振神经拓扑) 2D layer ----------------------------------
     def hornet_build(self, rebuild: bool = True, topo: bool = False) -> dict:
-        """Map every knowledge item into hive cells + auto-build six semantic edges."""
+        """Map every knowledge item into hive cells + auto-build six semantic edges.
+
+        Items are pulled from ALL workspaces (workspace=None → list_items returns
+        every entry, not just the current default workspace) so a rebuild never
+        drops knowledge from other projects/imports (问题2: 跨工作区知识缺失)."""
         items = []
-        rows = self.knowledge.list_items(limit=5000)
+        rows = self.knowledge.list_items(limit=5000, workspace=None)
         for r in rows:
             items.append(
                 (r.get("id"), r.get("title") or f"item-{r.get('id')}",
@@ -4306,7 +4310,18 @@ class SessionManager:
     def hornet_resonate(self, query: str, k: int = 10, hops: Optional[int] = None) -> dict:
         if not query or not query.strip():
             return {"hits": [], "query_phase": [], "warnings": ["empty query"]}
-        return self._hornet_resonator.resonate(query.strip(), k=k, hops=hops)
+        result = self._hornet_resonator.resonate(query.strip(), k=k, hops=hops)
+        # 问题3: 把每个命中所关联的原文知识条目元数据附上 (原文路径/详情可点) —
+        # resonator 只返回节点字段, 这里补齐 kb 侧信息供前端"查看详情/继续研究"。
+        for hit in result.get("hits", []):
+            kid = hit.get("kb_item_id")
+            if kid:
+                meta = self.knowledge.get_item_meta(kid)
+                if meta:
+                    hit["source_path"] = meta.get("source_path")
+                    hit["source_kind"] = meta.get("kind")
+                    hit["kb_title"] = meta.get("title")
+        return result
 
     def hornet_evolve(self, limit: int = 20) -> dict:
         return self._hornet_observer.evolve(limit=limit)

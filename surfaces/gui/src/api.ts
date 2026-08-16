@@ -906,6 +906,8 @@ export async function scanKnowledge(): Promise<{
   skipped?: number;
   failed?: number;
   error?: string;
+  workspaces_scanned?: number;
+  failures?: { path?: string; reason?: string }[];
 }> {
   const res = await fetch(`${httpBase()}/v1/knowledge/scan`, { method: "POST" });
   return await res.json();
@@ -2591,12 +2593,17 @@ export interface HornetEdge {
 
 export interface HornetHit {
   node_id: number;
+  kb_item_id?: number | null; // 问题3: 关联的原文知识条目
   title: string;
   amplitude: number;
   path: string[];
   x: number;
   y: number;
   similarity: number;
+  // manager 层附加的原文元数据 (问题3: 查看详情/打开原文)
+  source_path?: string | null;
+  source_kind?: string | null;
+  kb_title?: string | null;
 }
 
 export async function hornetBuild(rebuild = true, topo = false): Promise<{ nodes: number; edges: number; topo?: boolean }> {

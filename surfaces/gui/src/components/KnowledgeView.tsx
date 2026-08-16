@@ -33,6 +33,10 @@ export default function KnowledgeView({ onResume }: KnowledgeViewProps) {
   const [expanded, setExpanded] = useState<number | null>(null);
   const [detail, setDetail] = useState<{ title: string; content: string; source_path?: string | null } | null>(null);
   const [detailBusy, setDetailBusy] = useState(false);
+  // 排序需求: 更新时间倒序(默认)/正序 / 名称 A→Z / 名称 Z→A。
+  const [sortBy, setSortBy] = useState<"updated_desc" | "updated_asc" | "title_asc" | "title_desc">(
+    "updated_desc",
+  );
 
   const handleExpand = async (id: number) => {
     if (expanded === id) {
@@ -91,10 +95,31 @@ export default function KnowledgeView({ onResume }: KnowledgeViewProps) {
 
   const [loadError, setLoadError] = useState(false);
 
+  const sortItems = useCallback(
+    (list: KnowledgeItem[]): KnowledgeItem[] => {
+      const arr = [...list];
+      switch (sortBy) {
+        case "updated_asc":
+          return arr.sort((a, b) => (a.updated_at ?? 0) - (b.updated_at ?? 0));
+        case "title_asc":
+          return arr.sort((a, b) =>
+            (a.title || "").localeCompare(b.title || "", "zh-Hans-CN"),
+          );
+        case "title_desc":
+          return arr.sort((a, b) =>
+            (b.title || "").localeCompare(a.title || "", "zh-Hans-CN"),
+          );
+        default:
+          return arr.sort((a, b) => (b.updated_at ?? 0) - (a.updated_at ?? 0));
+      }
+    },
+    [sortBy],
+  );
+
   const refresh = useCallback(async () => {
     try {
       const data = await listKnowledge();
-      setItems(data.items ?? []);
+      setItems(sortItems(data.items ?? []));
       setTotal(data.total ?? 0);
       setLoadError(false);
     } catch {
@@ -102,7 +127,7 @@ export default function KnowledgeView({ onResume }: KnowledgeViewProps) {
       setTotal(0);
       setLoadError(true);
     }
-  }, []);
+  }, [sortItems]);
 
   useEffect(() => {
     refresh();
@@ -110,19 +135,32 @@ export default function KnowledgeView({ onResume }: KnowledgeViewProps) {
 
   const loadMore = async () => {
     const data = await listKnowledge(100, items.length);
-    setItems((prev) => [...prev, ...(data.items ?? [])]);
+    setItems((prev) => sortItems([...prev, ...(data.items ?? [])]));
   };
 
   const handleScan = async () => {
     setScanning(true);
     try {
       const res = await scanKnowledge();
-      if (res.ok)
-        flash(
-          t("Scan complete") +
-            `: +${res.added ?? 0} ${t("added")}, ${res.skipped ?? 0} ${t("skipped")}, ${res.failed ?? 0} ${t("failed")}`,
-        );
-      else flash(t("Scan failed") + (res.error ? `: ${res.error}` : ""));
+      if (res.ok) {
+        let msg = `${t("Scan complete")}: +${res.added ?? 0} ${t("added")}, ${res.skipped ?? 0} ${t("skipped")}, ${res.failed ?? 0} ${t("failed")}`;
+        const ws = (res as any).workspaces_scanned;
+        if (typeof ws === "number" && ws > 1) msg += ` (${ws} ${t("workspaces")})`;
+        flash(msg);
+        // 优化: 展示具体失败原因 (如无文本层的 PDF)
+        const failures = (res as any).failures as { path?: string; reason?: string }[] | undefined;
+        if (failures && failures.length > 0) {
+          const reasons = new Map<string, number>();
+          for (const f of failures) {
+            const r = f.reason || "unknown";
+            reasons.set(r, (reasons.get(r) ?? 0) + 1);
+          }
+          const top = [...reasons.entries()].slice(0, 3);
+          const detail = top.map(([r, c]) => `${r} (${c})`).join("; ");
+          setNotice(`${t("Scan issues")}: ${detail}`);
+          window.setTimeout(() => setNotice(""), 8000);
+        }
+      } else flash(t("Scan failed") + (res.error ? `: ${res.error}` : ""));
       refresh();
     } finally {
       setScanning(false);
@@ -283,8 +321,25 @@ export default function KnowledgeView({ onResume }: KnowledgeViewProps) {
       </div>
 
       {/* items */}
-      <div className="text-[12.5px] text-muted mb-2">
-        {t("Entries")} ({items.length}/{total})
+      <div className="flex items-center gap-2 mb-2">
+        <div className="text-[12.5px] text-muted">
+          {t("Entries")} ({items.length}/{total})
+        </div>
+        {/* 排序需求: 更新时间 / 名称 */}
+        <select
+          className="ml-auto input !py-1 !text-[11.5px] w-auto"
+          value={sortBy}
+          onChange={(e) => {
+            setSortBy(e.target.value as typeof sortBy);
+            setItems((prev) => sortItems(prev));
+          }}
+          data-testid="knowledge-sort"
+        >
+          <option value="updated_desc">{t("Newest first")}</option>
+          <option value="updated_asc">{t("Oldest first")}</option>
+          <option value="title_asc">{t("Title A→Z")}</option>
+          <option value="title_desc">{t("Title Z→A")}</option>
+        </select>
       </div>
       {items.length > 0 && items.length < total && (
         <button className="btn-secondary mb-2 self-start" onClick={loadMore}>

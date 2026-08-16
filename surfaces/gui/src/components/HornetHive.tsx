@@ -135,9 +135,12 @@ export function HornetHive({ onResume }: HornetHiveProps) {
   const [query, setQuery] = useState("");
   const [hits, setHits] = useState<HornetHit[] | null>(null);
   const [error, setError] = useState("");
+  const [notice, setNotice] = useState(""); // 构建/演化成功反馈
   const [view, setView] = useState<ViewMode>("iso");
   const [useTopo, setUseTopo] = useState(false);
   const [selEmergent, setSelEmergent] = useState<{ id: number; kind: string; title: string; detail?: string; kbId?: number } | null>(null);
+  // 问题3: 共振命中的"查看详情"弹窗 — 复用 emergent 的 modal 容器, 显示原文/继续研究。
+  const [selHit, setSelHit] = useState<{ title: string; detail?: string; source?: string | null; kbId?: number | null } | null>(null);
   const [health, setHealth] = useState<{ score: number; rating: string; dimensions: { structure: number; dynamics: number; evolution: number } } | null>(null);
   const [soundOn, setSoundOn] = useState(false);
   const [genSkillIdx, setGenSkillIdx] = useState<number | null>(null); // P1-8: 正在转技能的 emergence 索引
@@ -205,12 +208,16 @@ export function HornetHive({ onResume }: HornetHiveProps) {
   const handleBuild = async () => {
     setBusy("build");
     setError("");
+    setNotice("");
     try {
       const r = await hornetBuild(true, useTopo);
-      void r;
       setQuery("");
       setHits(null);
       await refresh();
+      // 构建反馈: 蜂巢节点/边数变化可见 (之前构建结果被丢弃)
+      if (typeof r.nodes === "number" && typeof r.edges === "number") {
+        setNotice(`${t("Hive rebuilt")}: ${r.nodes} ${t("cells")} · ${r.edges} ${t("edges")}`);
+      }
     } catch {
       setError(t("Build failed — check the engine connection."));
     } finally {
@@ -221,9 +228,12 @@ export function HornetHive({ onResume }: HornetHiveProps) {
   const handleEvolve = async () => {
     setBusy("evolve");
     setError("");
+    setNotice("");
     try {
-      await hornetEvolve();
+      const r = await hornetEvolve();
       await refresh();
+      const n = typeof r?.emerged === "number" ? r.emerged : 0;
+      setNotice(`${t("Evolved")}: ${n} ${t("new findings")}`);
     } catch {
       setError(t("Evolve failed — check the engine connection."));
     } finally {
@@ -354,6 +364,12 @@ export function HornetHive({ onResume }: HornetHiveProps) {
         </div>
       )}
 
+      {notice && (
+        <div className="mb-3 px-3 py-2 rounded-lg border border-emerald-500/30 bg-emerald-500/10 text-[12px] text-emerald-600" role="status">
+          ✓ {notice}
+        </div>
+      )}
+
       {nodes.length === 0 && !busy ? (
         <div className="text-[12.5px] text-muted py-6 text-center">
           {t("Hive empty — click Build hive to map your knowledge into hexagonal cells.")}
@@ -432,13 +448,69 @@ export function HornetHive({ onResume }: HornetHiveProps) {
             {hits.map((h) => (
               <div key={h.node_id} className="flex items-center gap-2 text-[12px]">
                 <span className="text-[11px] text-rose-400">◉</span>
-                <span className="truncate text-ink flex-1">{h.title}</span>
-                <span className="text-[10.5px] text-faint font-mono">
+                {/* 问题3: 标题可点击查看详情 (与涌现结构同样做法) */}
+                <button
+                  className="truncate text-ink hover:text-accent text-left min-w-0 flex-1"
+                  title={t("Click to view this hit's source")}
+                  onClick={async () => {
+                    let detail = "";
+                    let source = h.source_path ?? null;
+                    try {
+                      const { knowledgeResumePack } = await import("../api");
+                      if (h.kb_item_id) {
+                        const pk = await knowledgeResumePack(h.kb_item_id);
+                        if (pk.ok && pk.pack) {
+                          detail = pk.pack.content || "";
+                          source = pk.pack.source ?? source;
+                        }
+                      }
+                    } catch {
+                      /* fall through */
+                    }
+                    setSelHit({ title: h.title, detail, source, kbId: h.kb_item_id });
+                  }}
+                  data-testid={`hornet-hit-detail-${h.node_id}`}
+                >
+                  {h.title}
+                </button>
+                {h.source_path ? (
+                  <span className="text-[10px] text-faint truncate max-w-[160px] shrink-0" title={h.source_path}>
+                    {h.source_path.split(/[\\/]/).pop()}
+                  </span>
+                ) : null}
+                <span className="text-[10.5px] text-faint font-mono shrink-0">
                   {t("amp")} {h.amplitude.toFixed(1)}
                 </span>
-                <span className="text-[10px] text-faint shrink-0">
+                <span className="text-[10px] text-faint shrink-0 hidden sm:inline">
                   {(h.path ?? []).slice(-3).join(" → ")}
                 </span>
+                {/* 问题3: 继续研究/创作 */}
+                <button
+                  className="text-[10.5px] px-1.5 py-0.5 rounded-md border border-line text-accent hover:border-accent shrink-0"
+                  disabled={!h.kb_item_id}
+                  onClick={() => {
+                    if (!h.kb_item_id) return;
+                    void (async () => {
+                      try {
+                        const { knowledgeResumePack } = await import("../api");
+                        const pk = await knowledgeResumePack(h.kb_item_id as number);
+                        if (pk.ok && pk.pack) {
+                          onResume?.({
+                            title: pk.pack.title,
+                            content: pk.pack.content,
+                            source: pk.pack.source ?? undefined,
+                            id: h.kb_item_id as number,
+                          });
+                        }
+                      } catch {
+                        /* noop */
+                      }
+                    })();
+                  }}
+                  data-testid={`hornet-hit-research-${h.node_id}`}
+                >
+                  🧠 {t("Research")}
+                </button>
               </div>
             ))}
           </div>
@@ -570,6 +642,71 @@ ${t("Auto-surfaced by the hive")}`;
                   setSelEmergent(null);
                 }}
                 data-testid="emergent-modal-research"
+              >
+                🧠 {t("Research")}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 问题3: 共振命中详情 modal — 与涌现结构同样的"查看详情 + 继续研究"体验 */}
+      {selHit && (
+        <div
+          className="fixed inset-0 z-[60] bg-black/40 flex items-center justify-center p-6"
+          onClick={() => setSelHit(null)}
+          data-testid="hornet-hit-modal"
+        >
+          <div
+            className="max-w-xl w-full rounded-xl2 border border-line bg-panel p-4 shadow-xl"
+            onClick={(ev) => ev.stopPropagation()}
+          >
+            <div className="flex items-center gap-2 mb-2">
+              <span className="text-[14px]">◉</span>
+              <span className="text-[13.5px] font-semibold text-ink flex-1">{selHit.title}</span>
+              <button className="text-muted hover:text-ink shrink-0" onClick={() => setSelHit(null)} aria-label={t("Dismiss")}>
+                ✕
+              </button>
+            </div>
+            {selHit.source && (
+              <div className="mb-2 flex items-center gap-1.5 text-[11px] text-faint">
+                <span>🔗</span>
+                {/^https?:\/\//i.test(selHit.source) ? (
+                  <a href={selHit.source} target="_blank" rel="noreferrer" className="text-accent hover:underline break-all">
+                    {selHit.source}
+                  </a>
+                ) : (
+                  <span className="break-all">{selHit.source}</span>
+                )}
+              </div>
+            )}
+            <div className="whitespace-pre-wrap max-h-72 overflow-y-auto hairline-scroll text-[12.5px] text-ink mb-3 bg-surface rounded-lg border border-line p-3">
+              {selHit.detail || t("No content")}
+            </div>
+            <div className="flex justify-end gap-2">
+              <button className="btn-secondary text-[12px]" onClick={() => setSelHit(null)}>
+                {t("Dismiss")}
+              </button>
+              <button
+                className="btn-primary text-[12px]"
+                disabled={!selHit.kbId}
+                onClick={() => {
+                  if (selHit.kbId) {
+                    void (async () => {
+                      try {
+                        const { knowledgeResumePack } = await import("../api");
+                        const pk = await knowledgeResumePack(selHit.kbId as number);
+                        if (pk.ok && pk.pack) {
+                          onResume?.({ title: pk.pack.title, content: pk.pack.content, source: pk.pack.source ?? undefined, id: selHit.kbId as number });
+                          setSelHit(null);
+                        }
+                      } catch {
+                        /* noop */
+                      }
+                    })();
+                  }
+                }}
+                data-testid="hornet-hit-modal-research"
               >
                 🧠 {t("Research")}
               </button>
