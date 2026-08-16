@@ -5588,6 +5588,34 @@ class SessionManager:
             self.memory_store, vector_db_path=vector_db_path, dry_run=dry_run
         )
 
+    # -- Refine 机制 (蜂群经验进化闭环, 对标 Prime Agent Continual Harness) ---
+    def _harness(self, workspace: Optional[str] = None) -> Any:
+        """当前工作区的蜂群经验库 (harness.db), 不存在则创建。"""
+        from ..orchestrator.harness import HarnessStore
+
+        ws = self.resolve_workspace(workspace) or self.default_workspace or "."
+        return HarnessStore(Path(ws) / ".qunwork")
+
+    def list_swarm_lessons(
+        self, *, workspace: Optional[str] = None, kind: Optional[str] = None, limit: int = 50
+    ) -> list[dict[str, Any]]:
+        """列出蜂群经验库 (自进化闭环的"学习成果")。"""
+        harness = self._harness(workspace)
+        try:
+            return [ls.to_dict() for ls in harness.list(kind=kind, limit=limit)]
+        finally:
+            harness.close()
+
+    def delete_swarm_lesson(
+        self, lesson_id: int, *, workspace: Optional[str] = None
+    ) -> bool:
+        """删除一条蜂群经验 (学习成果纠正)。"""
+        harness = self._harness(workspace)
+        try:
+            return harness.delete(lesson_id)
+        finally:
+            harness.close()
+
     def search_memory(self, query: str, k: int = 10) -> list[dict[str, Any]]:
         """Team memory search (strategy report 5.2.2): keyword relevance over the
         durable memory pool. SQL LIKE scoring now; swap in embeddings behind the

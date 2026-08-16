@@ -218,6 +218,12 @@ class Orchestrator:
     # #2 cognitive-action loop: HORNET resonator injects knowledge topology
     # context into planning and receives execution feedback to modulate phases.
     hornet_resonator: Optional[Any] = None
+    # Refine 机制 (自进化闭环, 对标 Prime Agent Continual Harness): 持久化的
+    # 蜂群经验库。提供时: _plan 注入历史经验上下文; run 结束后自动蒸馏本次
+    # 经验回写 (成功策略/教训/技能提示/任务模板)。
+    harness: Optional[Any] = None
+    # Refine 是否在每次 run 后自动蒸馏 (默认开; 测试/headless 可关)。
+    refine_auto: bool = True
     max_parallel: int = 4  # how many independent tasks run concurrently
     timeout_seconds: Optional[int] = 600  # whole-run timeout (None = no limit)
     task_timeout_seconds: Optional[int] = 240  # per-task timeout; timeout degrades to a partial result
@@ -327,6 +333,18 @@ class Orchestrator:
             self._hornet_last_phase = []
 
         planner_input = resonance_ctx + intent if resonance_ctx else intent
+        # Refine 机制 (自进化): 注入与意图相关的历史蜂群经验 — 上次跑同类
+        # 任务的教训与成功策略, 让本次规划直接站在前人的肩膀上 (与 HORNET
+        # 共振上下文同机制)。
+        if self.harness is not None:
+            try:
+                from .refine import harness_context
+
+                exp_ctx = harness_context(self.harness, intent, k=5)
+                if exp_ctx:
+                    planner_input = planner_input + "\n" + exp_ctx
+            except Exception:
+                pass
         last_err: Exception | None = None
         for attempt in range(3):  # planner JSON can be flaky — retry before giving up
             try:
@@ -1007,6 +1025,29 @@ class Orchestrator:
                 )
             except Exception:
                 pass
+        # Refine 机制 (自进化闭环): 运行结束后自动把本次经验蒸馏进 harness —
+        # 成功策略/教训/技能提示/任务模板, 下次同类任务直接受益。best-effort,
+        # 绝不因蒸馏失败影响运行结果返回。
+        if self.refine_auto and self.harness is not None and not planner_timed_out:
+            try:
+                from .refine import refine_run
+
+                # source run 标记: 有 run_store 时用真实 run_id 不可得 (result
+                # 不含), 用自增序号标记本次运行, 足以审计"这条经验来自哪次跑"。
+                if not hasattr(result, "run_id"):
+                    result.run_id = f"run_{self._run_seq}"  # type: ignore[attr-defined]
+                refined = refine_run(result, self.harness)
+                n_added = len(refined.get("added", []))
+                if n_added:
+                    self._emit(
+                        "refined",
+                        {
+                            "added": n_added,
+                            "existing": len(refined.get("existing", [])),
+                        },
+                    )
+            except Exception:
+                logger.exception("refine_run failed (best-effort)")
         return result
 
     def _persist_report(self, result: OrchestrationResult) -> None:

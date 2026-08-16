@@ -63,6 +63,7 @@ def run_orchestration(
     timeout_seconds: Optional[int] = None,
     max_parallel: int = 1,
     usage_sink: Optional[Callable[[dict, None]]] = None,
+    harness: Optional[Any] = None,
 ) -> OrchestrationResult:
     """Run one orchestrated goal synchronously (worker-thread context)."""
     orch = Orchestrator(
@@ -78,6 +79,7 @@ def run_orchestration(
         timeout_seconds=timeout_seconds,
         max_parallel=max_parallel,
         usage_sink=usage_sink,
+        harness=harness,
     )
     import asyncio
 
@@ -114,6 +116,11 @@ def orchestration_tools(
 
         store = OrchestrationRunStore(Path(workspace) / ".qunwork" / "orchestration.db")
         run_id = store.create_run(intent)
+        # Refine 机制 (自进化闭环): 每个 workspace 自动挂载持久化经验库
+        # (.qunwork/harness.db) — 规划注入历史经验, run 后蒸馏新经验。
+        from .harness import HarnessStore
+
+        harness = HarnessStore(Path(workspace) / ".qunwork")
         try:
             result = run_orchestration(
                 intent=intent,
@@ -131,6 +138,7 @@ def orchestration_tools(
                 event_sink=lambda kind, payload: store.append_event(run_id, kind, payload),
                 executor_agent=executor_agent,
                 usage_sink=usage_sink,
+                harness=harness,
             )
             store.update_status(run_id, result.status, final=result.final_report())
             out: dict[str, Any] = {
@@ -155,6 +163,10 @@ def orchestration_tools(
             # connection doesn't leak across many orchestrate() invocations.
             try:
                 store.close()
+            except Exception:
+                pass
+            try:
+                harness.close()
             except Exception:
                 pass
 

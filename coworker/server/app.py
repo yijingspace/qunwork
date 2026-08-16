@@ -511,7 +511,12 @@ def create_app(manager: SessionManager) -> FastAPI:
                 initial_plan = None  # a broken snapshot falls back to fresh planning
 
         def _build() -> "Orchestrator":
-            return Orchestrator(
+            # Refine 机制 (自进化闭环): GUI 蜂群 run 自动挂载 workspace 级经验库
+            # (.qunwork/harness.db) — 规划注入历史经验, run 后蒸馏新经验。
+            from ..orchestrator.harness import HarnessStore
+
+            _harness = HarnessStore(Path(workspace) / ".qunwork")
+            orch = Orchestrator(
                 provider=manager.provider,
                 model=body.get("model") or manager.model,
                 workspace=workspace,
@@ -534,6 +539,7 @@ def create_app(manager: SessionManager) -> FastAPI:
                     else None
                 ),
                 hornet_resonator=manager._hornet_resonator,
+                harness=_harness,
                 event_sink=lambda kind, payload: store.append_event(run_id, kind, payload),
                 # G2: command deck wiring (pause/resume/message/requeue approval).
                 controller=controller,
@@ -553,6 +559,8 @@ def create_app(manager: SessionManager) -> FastAPI:
                 agent_pool=getattr(manager, "agent_pool", None),
                 task_group_id=body.get("task_group_id") or None,
             )
+            orch._harness_ref = _harness  # type: ignore[attr-defined]  # close after run
+            return orch
 
         async def _finalize(orch: "Orchestrator") -> dict[str, Any]:
             try:
@@ -605,6 +613,13 @@ def create_app(manager: SessionManager) -> FastAPI:
                 return {"ok": False, "run_id": run_id, "error": str(exc)}
             finally:
                 manager.active_orchestration_controls.pop(run_id, None)
+                # Refine 机制: run 结束后关闭 harness 连接 (蒸馏已完成)。
+                _h = getattr(orch, "_harness_ref", None)
+                if _h is not None:
+                    try:
+                        _h.close()
+                    except Exception:
+                        pass
         if sync:
             return await _finalize(_build())
         import asyncio

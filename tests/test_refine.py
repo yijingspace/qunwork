@@ -1,0 +1,293 @@
+"""Refine 机制 — 蜂群经验进化闭环 (对标 Prime Agent Continual Harness).
+
+契约:
+  * HarnessStore: 持久化 swarm 经验 (lesson/skill_hint/task_template), 版本链
+    递增 (同 title 更新而非重复), use_count 正反馈, 搜索注入;
+  * refine_run: 从 OrchestrationResult 蒸馏经验 (成功策略/教训/技能提示/模板),
+    dry_run 不写库;
+  * harness_context: 为下次规划生成经验注入块 (自进化正反馈);
+  * Orchestrator 集成: run 后自动蒸馏 + _plan 注入历史经验。
+"""
+
+from __future__ import annotations
+
+import json
+
+import pytest
+
+from coworker.orchestrator.harness import HarnessStore, SwarmLesson
+from coworker.orchestrator.models import OrchestrationResult, Plan, Task
+from coworker.orchestrator.refine import (
+    harness_context,
+    refine_run,
+)
+from coworker.providers import AssistantTurn
+
+
+def _harness(tmp_path):
+    return HarnessStore(tmp_path)
+
+
+def _result(status="completed", tasks=None):
+    return OrchestrationResult(
+        intent="撰写市场报告，包含调研、起草和评审步骤",
+        plan=Plan(
+            goal="撰写市场报告",
+            tasks=tasks
+            or [
+                Task(id="t0", description="调研市场数据", deps=[], status="done", result="data"),
+                Task(id="t1", description="起草报告正文", deps=["t0"], status="done", result="draft"),
+                Task(id="t2", description="评审并定稿", deps=["t1"], status="done", result="final"),
+            ],
+        ),
+        status=status,
+    )
+
+
+# -- HarnessStore ---------------------------------------------------------------
+
+
+def test_harness_add_and_get(tmp_path):
+    h = _harness(tmp_path)
+    ls = h.add(kind="lesson", title="[成功] 报告任务策略", body="先调研再起草", source_run_id="run_1")
+    assert ls.id is not None
+    assert ls.kind == "lesson"
+    assert ls.version == 1
+    assert h.get(ls.id).body == "先调研再起草"
+    h.close()
+
+
+def test_harness_same_title_bumps_version(tmp_path):
+    h = _harness(tmp_path)
+    h.add(kind="lesson", title="策略", body="v1", source_run_id="run_1")
+    ls2 = h.add(kind="lesson", title="策略", body="v2 refined", source_run_id="run_2")
+    assert ls2.version == 2  # 同标题 → 版本递增 (refine 的小步更新)
+    assert h.get(ls2.id).body == "v2 refined"
+    assert len(h.list()) == 1  # 不重复插入
+    h.close()
+
+
+def test_harness_kind_filter_and_list(tmp_path):
+    h = _harness(tmp_path)
+    h.add(kind="lesson", title="A", body="x")
+    h.add(kind="skill_hint", title="B", body="y")
+    h.add(kind="task_template", title="C", body="z")
+    assert len(h.list()) == 3
+    assert len(h.list(kind="lesson")) == 1
+    assert len(h.list(kind="skill_hint")) == 1
+    h.close()
+
+
+def test_harness_search_and_usage_bump(tmp_path):
+    h = _harness(tmp_path)
+    ls = h.add(kind="lesson", title="部署经验", body="先跑测试再部署", tags=["部署", "测试"])
+    h.add(kind="lesson", title="其他", body="不相关内容", tags=["其他"])
+    hits = h.search("部署测试流程")
+    assert hits and hits[0].id == ls.id
+    h.bump_usage(ls.id)
+    assert h.get(ls.id).use_count == 1
+    h.close()
+
+
+def test_harness_requires_title_body(tmp_path):
+    h = _harness(tmp_path)
+    with pytest.raises(ValueError):
+        h.add(kind="lesson", title="", body="x")
+    with pytest.raises(ValueError):
+        h.add(kind="lesson", title="t", body="")
+    h.close()
+
+
+# -- refine_run 蒸馏 ------------------------------------------------------------
+
+
+def test_refine_success_distills_lessons(tmp_path):
+    h = _harness(tmp_path)
+    result = _result(status="completed")
+    outcome = refine_run(result, h)
+    # 成功 → 成功策略 lesson + 任务模板
+    kinds = {x["kind"] for x in outcome["added"]}
+    assert "lesson" in kinds
+    assert "task_template" in kinds
+    assert outcome["dry_run"] is False
+    # 已写入
+    assert len(h.list()) >= 2
+    h.close()
+
+
+def test_refine_failure_distills_lesson(tmp_path):
+    h = _harness(tmp_path)
+    result = _result(
+        status="failed",
+        tasks=[
+            Task(id="t0", description="调研市场数据", deps=[], status="needs_human"),
+            Task(id="t1", description="起草报告", deps=["t0"], status="pending"),
+        ],
+    )
+    outcome = refine_run(result, h)
+    titles = [x["title"] for x in outcome["added"]]
+    assert any("教训" in t for t in titles)  # 失败 → 教训经验
+    h.close()
+
+
+def test_refine_skill_hint_on_repeated_type(tmp_path):
+    h = _harness(tmp_path)
+    result = _result(
+        status="completed",
+        tasks=[
+            Task(id="t0", description="编写模块A", deps=[], status="done", result="a"),
+            Task(id="t1", description="编写模块B", deps=[], status="done", result="b"),
+            Task(id="t2", description="编写模块C", deps=[], status="done", result="c"),
+        ],
+    )
+    outcome = refine_run(result, h)
+    assert any(x["kind"] == "skill_hint" for x in outcome["added"])  # 重复类型 → 技能提示
+    h.close()
+
+
+def test_refine_dry_run_does_not_write(tmp_path):
+    h = _harness(tmp_path)
+    outcome = refine_run(_result(), h, dry_run=True)
+    assert outcome["dry_run"] is True
+    assert len(h.list()) == 0  # 未写库
+    h.close()
+
+
+def test_refine_no_tasks_noop(tmp_path):
+    h = _harness(tmp_path)
+    result = OrchestrationResult(intent="x", plan=Plan(goal="x", tasks=[]))
+    outcome = refine_run(result, h)
+    assert outcome["added"] == []
+    h.close()
+
+
+# -- harness_context 注入 -------------------------------------------------------
+
+
+def test_harness_context_injects_relevant_experience(tmp_path):
+    h = _harness(tmp_path)
+    h.add(kind="lesson", title="[成功] 报告任务策略", body="先调研再起草再评审", tags=["报告"])
+    h.add(kind="lesson", title="[教训] 部署易失败", body="权限问题", tags=["部署"])
+    ctx = harness_context(h, "写一份市场报告")
+    assert "蜂群经验" in ctx
+    assert "报告任务策略" in ctx
+    assert "部署易失败" not in ctx  # 不相关的经验不注入
+    h.close()
+
+
+def test_harness_context_empty_without_harness():
+    assert harness_context(None, "anything") == ""
+
+
+def test_harness_context_empty_query():
+    h = _harness("__unused__") if False else None
+    # 不传 harness 或空 intent → 空
+    assert harness_context(h, "") == ""
+    assert harness_context(None, "") == ""
+
+
+# -- manager 集成 ---------------------------------------------------------------
+
+
+def test_manager_list_swarm_lessons(tmp_path):
+    from coworker.conversations import ConversationStore
+    from coworker.server.manager import SessionManager
+
+    mgr = SessionManager.__new__(SessionManager)
+    mgr.session_store = ConversationStore(tmp_path / "conv.db")
+    mgr.default_workspace = str(tmp_path)
+    harness = HarnessStore(tmp_path / ".qunwork")
+    harness.add(kind="lesson", title="经验A", body="内容A", source_run_id="run_1")
+    harness.close()
+
+    lessons = mgr.list_swarm_lessons()
+    assert lessons and lessons[0]["title"] == "经验A"
+    assert lessons[0]["kind"] == "lesson"
+    # delete
+    assert mgr.delete_swarm_lesson(lessons[0]["id"]) is True
+    assert mgr.list_swarm_lessons() == []
+
+
+def test_harness_persists_across_instances(tmp_path):
+    h1 = HarnessStore(tmp_path)
+    h1.add(kind="lesson", title="持久经验", body="跨实例可见", source_run_id="run_1")
+    h1.close()
+    h2 = HarnessStore(tmp_path)  # fresh instance, same db
+    lessons = h2.list()
+    assert len(lessons) == 1 and lessons[0].title == "持久经验"
+    h2.close()
+
+
+# -- Orchestrator 端到端: 自进化闭环 -------------------------------------------
+
+class _ScriptedProvider:
+    """Pops scripted turns in order; each worker engine consumes one turn."""
+
+    def __init__(self, turns):
+        self._turns = list(turns)
+        self.prompts: list[str] = []
+
+    def complete(self, *, model, messages, tools=None, **settings):
+        assert self._turns, "no scripted turn left"
+        self.prompts.append(str((messages or [{}])[-1].get("content", "")))
+        return self._turns.pop(0)
+
+    def stream(self, *, model, messages, tools=None, **settings):
+        # worker engine 走 provider.stream (默认实现经 complete 单 chunk)
+        from coworker.providers import StreamChunk
+
+        turn = self.complete(model=model, messages=messages, tools=tools, **settings)
+        yield StreamChunk(turn=turn)
+
+    def capabilities(self, model):
+        from coworker.providers import ModelCapabilities
+
+        return ModelCapabilities()
+
+
+async def test_orchestrator_run_distills_then_injects_experience(tmp_path):
+    """自进化闭环: run 1 结束后 harness 自动获得经验; run 2 的 planner 输入
+    注入 run 1 的经验 (成功策略)。"""
+    from coworker.orchestrator import Orchestrator
+
+    turns = [
+        # run 1: planner + executor + reviewer
+        AssistantTurn(text='[{"id":"t0","description":"撰写报告","deps":[]}]'),
+        AssistantTurn(text="报告正文", finish_reason="stop"),
+        AssistantTurn(text='{"accepted":true,"confidence":0.9,"reason":"ok","needs_human":false}'),
+    ]
+    p1 = _ScriptedProvider(list(turns))
+    o1 = Orchestrator(
+        provider=p1,
+        model="m",
+        workspace=str(tmp_path / "ws"),
+        harness=HarnessStore(tmp_path / ".qunwork"),
+    )
+    r1 = await o1.run("撰写一份市场报告")
+    assert r1.status == "completed"
+
+    # run 1 后 harness 有经验 (成功策略 lesson + 任务模板)
+    h = HarnessStore(tmp_path / ".qunwork")
+    lessons = h.list()
+    assert len(lessons) >= 2
+    kinds = {ls.kind for ls in lessons}
+    assert "lesson" in kinds and "task_template" in kinds
+    h.close()
+
+    # run 2: 同样的意图 → planner 输入应含 run 1 蒸馏的经验
+    turns2 = [
+        AssistantTurn(text='[{"id":"t0","description":"撰写报告","deps":[]}]'),
+        AssistantTurn(text="报告正文2", finish_reason="stop"),
+        AssistantTurn(text='{"accepted":true,"confidence":0.9,"reason":"ok","needs_human":false}'),
+    ]
+    p2 = _ScriptedProvider(list(turns2))
+    o2 = Orchestrator(
+        provider=p2,
+        model="m",
+        workspace=str(tmp_path / "ws"),
+        harness=HarnessStore(tmp_path / ".qunwork"),
+    )
+    await o2.run("撰写一份市场报告")
+    planner_prompt = p2.prompts[0]
+    assert "蜂群经验" in planner_prompt  # run 1 的经验注入了 run 2 的规划
+    assert "报告" in planner_prompt
