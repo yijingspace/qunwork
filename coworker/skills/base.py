@@ -491,6 +491,67 @@ class SkillLoader:
         with self._lock:
             return [s.catalog_row() for s in self._skills.values()]
 
+    # -- S13 技能健康检查常态化 (蜂群审计报告 G8) -----------------------------
+    def health_check(self) -> dict:
+        """技能生态健康检查: 触发碰撞检测 (同名多目录) + 过期技能扫描
+        (draft 未转正 / 长时间未更新) + 完整性 (缺 SKILL.md 的孤儿目录)。
+
+        返回 {"collisions": [...], "stale": [...], "orphans": [...],
+        "total": n, "healthy": bool}。供 UI 技能页与周期巡检展示。
+        """
+        import time as _t
+
+        collisions: list[dict] = []
+        stale: list[dict] = []
+        orphans: list[dict] = []
+        seen: dict[str, list[str]] = {}
+        total = 0
+        now = _t.time()
+
+        # 1) 触发碰撞检测: 同名技能出现在多个目录 → 后者覆盖前者 (隐患)
+        for directory in self._dirs:
+            if not directory.is_dir():
+                continue
+            for sub in sorted(directory.iterdir()):
+                md = sub / "SKILL.md"
+                if md.is_file():
+                    total += 1
+                    name = _parse_skill(md).name
+                    seen.setdefault(name, []).append(str(sub))
+                elif sub.is_dir() and not sub.name.startswith("."):
+                    # 2) 完整性: 目录存在但缺 SKILL.md → 孤儿目录
+                    orphans.append({"path": str(sub), "reason": "missing SKILL.md"})
+        for name, paths in seen.items():
+            if len(paths) > 1:
+                collisions.append({"name": name, "paths": paths})
+
+        # 3) 过期技能扫描: draft 状态或 SKILL.md 久未更新 (>180 天)
+        for skill in self._skills.values():
+            if skill.path is None:
+                continue
+            md = Path(skill.path) / "SKILL.md"
+            age_days = 0.0
+            try:
+                age_days = (now - md.stat().st_mtime) / 86400.0
+            except OSError:
+                pass
+            if getattr(skill, "draft", False) or age_days > 180:
+                stale.append(
+                    {
+                        "name": skill.name,
+                        "draft": bool(getattr(skill, "draft", False)),
+                        "age_days": round(age_days, 1),
+                    }
+                )
+
+        return {
+            "collisions": collisions,
+            "stale": stale,
+            "orphans": orphans,
+            "total": total,
+            "healthy": not collisions and not orphans,
+        }
+
     def detail(self, name: str) -> Optional[dict]:
         """Full catalog row (metadata only — no instructions body)."""
         skill = self.get(name)
