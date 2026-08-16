@@ -1741,6 +1741,10 @@ export function App() {
             setSearchOpen(false);
             selectSession(id, ws, ag);
           }}
+          onOpenKnowledge={() => {
+            setSearchOpen(false);
+            setSurface("knowledge");
+          }}
           onClose={() => setSearchOpen(false)}
         />
       )}

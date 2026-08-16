@@ -416,13 +416,26 @@ def create_app(manager: SessionManager) -> FastAPI:
         def _ingest_swarm_assets(rid: str, final_report: str, ws: str) -> None:
             """Asset loop (Phase 1): a completed swarm run sinks its deliverable
             into the unified knowledge library (kind=swarm_report) and tallies
-            the originating template's track record automatically."""
+            the originating template's track record automatically.
+
+            产物无损 (S3/S4 修复): 完整入库 (不截断 report) + 提取真实标题
+            (首个 '# ' 标题行), 解决"蜂群报告 orch_xxx 标题泛化、内容被截断
+            导致知识库搜不到/搜到也残缺"。
+            """
             try:
                 report = (final_report or "").strip()
                 if report and len(report) > 40:
+                    # 提取真实标题: 首个 '# ' 或 '## ' 标题行 (去 Markdown 标记)
+                    title = f"蜂群报告 {rid[:8]}"
+                    for line in report.splitlines():
+                        s = line.strip()
+                        if s.startswith("# ") and len(s) > 2:
+                            title = s[2:].strip()[:120]
+                            break
                     manager.knowledge.add_text(
-                        title=f"蜂群报告 {rid[:8]}",
-                        content=report[:4000],
+                        title=title,
+                        # 完整入库 — 报告是正式资产, 绝不截断 (产物无损原则)。
+                        content=report,
                         kind="swarm_report",
                         workspace=ws,
                         source_run_id=rid,

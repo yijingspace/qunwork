@@ -1377,6 +1377,10 @@ export function Sidebar(props: Props) {
             setSearchModalOpen(false);
             props.onSelectSession(id, ws, ag);
           }}
+          onOpenKnowledge={() => {
+            setSearchModalOpen(false);
+            props.onOpenKnowledge();
+          }}
           onClose={() => setSearchModalOpen(false)}
         />
       )}

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import type { Persona } from "../api";
+import type { KnowledgeHit, Persona } from "../api";
+import { searchKnowledge } from "../api";
 import type { SessionInfo } from "../types";
 import { isProjectScoped, shortPersonaName } from "../personaScope";
 import { Icon } from "./Icon";
@@ -8,7 +9,8 @@ import { useT } from "../i18n";
 
 // Command-palette search (Codex-style): clicking Search opens this overlay over the whole app
 // rather than filtering the sidebar in place (which made the grouped list collapse). It searches
-// ALL sessions, split into Pinned + Recent, filters as you type, and supports ↑/↓ + Enter + ⌘1–9.
+// ALL sessions (Pinned + Recent) AND the knowledge library (搜索广度: 会话 + 知识库),
+// filters as you type, supports ↑/↓ + Enter + ⌘1–9.
 
 const byRecent = (a: SessionInfo, b: SessionInfo) =>
   (b.updated_at || "").localeCompare(a.updated_at || "");
@@ -18,20 +20,47 @@ export function SearchModal({
   personas,
   onSelect,
   onClose,
+  onOpenKnowledge,
 }: {
   sessions: SessionInfo[];
   personas?: Persona[];
   onSelect: (id: string, workspace: string, agent: string) => void;
   onClose: () => void;
+  onOpenKnowledge?: (hit: KnowledgeHit) => void;
 }) {
   const t = useT();
   const [query, setQuery] = useState("");
   const [active, setActive] = useState(0);
+  const [kbHits, setKbHits] = useState<KnowledgeHit[]>([]);
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     inputRef.current?.focus();
   }, []);
+
+  // 知识库搜索: 输入时异步查知识库 (搜索广度扩展到知识库内容),
+  // 命中显示在会话结果下方 — 解决"蜂群报告等知识库产物搜不到"。
+  useEffect(() => {
+    const q = query.trim();
+    if (q.length < 2) {
+      setKbHits([]);
+      return;
+    }
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      searchKnowledge(q)
+        .then((res) => {
+          if (!cancelled && res.ok) setKbHits((res.results || []).slice(0, 5));
+        })
+        .catch(() => {
+          if (!cancelled) setKbHits([]);
+        });
+    }, 150); // 防抖: 输入停顿后再搜
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [query]);
 
   const personaOf = (id: string) => personas?.find((p) => p.id === id);
   // Right-side tag: the project folder for project-scoped personas, else the short persona name.
@@ -129,8 +158,10 @@ export function SearchModal({
           </kbd>
         </div>
         <div className="max-h-[52vh] overflow-y-auto hairline-scroll py-2">
-          {ordered.length === 0 ? (
-            <div className="px-4 py-8 text-center text-[13px] text-faint">No chats found.</div>
+          {ordered.length === 0 && kbHits.length === 0 ? (
+            <div className="px-4 py-8 text-center text-[13px] text-faint">
+              {t("No chats found.")}
+            </div>
           ) : (
             <>
               {pinned.length > 0 && (
@@ -147,6 +178,36 @@ export function SearchModal({
                     Recent chats
                   </div>
                   {recent.map((s, i) => row(s, pinned.length + i))}
+                </div>
+              )}
+              {kbHits.length > 0 && (
+                <div className="px-2 mt-1">
+                  <div className="px-2 py-1 text-[11px] uppercase tracking-[0.05em] text-faint font-semibold">
+                    Knowledge library
+                  </div>
+                  {kbHits.map((hit) => (
+                    <button
+                      key={`kb-${hit.item_id}-${hit.chunk_index}`}
+                      className="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-left hover:bg-paper"
+                      onClick={() => {
+                        onOpenKnowledge?.(hit);
+                        onClose();
+                      }}
+                    >
+                      <span className="shrink-0 text-faint">📚</span>
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-[13.5px] text-ink">
+                          {hit.title}
+                        </span>
+                        <span className="block truncate text-[11.5px] text-faint">
+                          {hit.content?.slice(0, 80)}
+                        </span>
+                      </span>
+                      <span className="text-[11px] text-faint shrink-0">
+                        {Math.round(hit.score * 100)}%
+                      </span>
+                    </button>
+                  ))}
                 </div>
               )}
             </>
