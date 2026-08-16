@@ -43,6 +43,11 @@ def cosine(a: list[float], b: list[float]) -> float:
     return dot / (na * nb)
 
 
+def _norm(text: str) -> str:
+    """归一化 (去空白/小写) — S9 去重判定用。"""
+    return " ".join((text or "").split()).lower()
+
+
 class VectorMemory:
     """In-process episodic memory with similarity retrieval."""
 
@@ -62,6 +67,20 @@ class VectorMemory:
 
     def add(self, text: str, **meta: Any) -> None:
         self.items.append(self._new_item(text, meta))
+
+    def add_deduped(self, text: str, *, threshold: float = 0.92, **meta: Any) -> bool:
+        """S9 并行协作去重: 写入前检查是否已有高度相似的记忆条目 (同文本/
+        近重复) — 多个 worker 并行时避免 blackboard 重复膨胀 (重复探测)。
+        返回是否实际写入 (False = 已存在相似条目, 跳过)。"""
+        if not text:
+            return False
+        for existing in self.items:
+            if _norm(text) == _norm(existing.text):
+                return False
+            if difflib.SequenceMatcher(None, text, existing.text).ratio() >= threshold:
+                return False
+        self.items.append(self._new_item(text, meta))
+        return True
 
     def search(
         self, query: str, k: int = 3, phase: Optional[int] = None

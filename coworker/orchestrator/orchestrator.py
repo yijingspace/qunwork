@@ -872,12 +872,22 @@ class Orchestrator:
             gov.record_step(task, result, verdict.accepted)
             self._emit("task_done", {"id": task.id, "status": task.status, "confidence": task.confidence})
             if task.status == "done":
-                mem.add(
-                    f"{task.description}\n→ {task.result[:500]}",
-                    task_id=task.id,
-                    run_token=run_token,
-                    phase=task_phase(task, plan),
-                )
+                # S9 并行协作去重: worker 结果写入 blackboard 前去重
+                # (多个 worker 并行时避免重复探测/重复记忆膨胀)。
+                try:
+                    mem.add_deduped(
+                        f"{task.description}\n→ {task.result[:500]}",
+                        task_id=task.id,
+                        run_token=run_token,
+                        phase=task_phase(task, plan),
+                    )
+                except Exception:
+                    mem.add(
+                        f"{task.description}\n→ {task.result[:500]}",
+                        task_id=task.id,
+                        run_token=run_token,
+                        phase=task_phase(task, plan),
+                    )
             return True
 
         # Iterate until convergence: all tasks done, a task escalated to human,
