@@ -181,6 +181,30 @@ const HunterLogo = strokeLogo(
   </>,
 );
 
+// 国内连接器 (P1-5): 无 simple-icons 单色标 — 用品牌首字字形 + 品牌色 (wecom 微信绿 /
+// dingtalk 钉钉蓝 / feishu 飞书蓝), 与 Attio/Hunter 等自定义字形同一风格。
+const WecomLogo = strokeLogo(
+  <>
+    <rect x="3" y="5" width="18" height="14" rx="3" />
+    <path d="M8 10.5v3M12 10.5v3M16 10.5v3" strokeWidth={1.6} />
+    <path d="M8 13.5c1.5 1.8 6.5 1.8 8 0" strokeWidth={1.4} />
+  </>,
+);
+
+const DingtalkLogo = strokeLogo(
+  <>
+    <path d="M12 3.5c-4.4 0-8 3.2-8 7.2 0 2.3 1.2 4.3 3 5.6l-.6 3.7 3.5-2a8.6 8.6 0 0 0 2.1.3c4.4 0 8-3.2 8-7.2S16.4 3.5 12 3.5z" />
+    <path d="M9.5 9.5c.5.6 1 1 1.6 1.3l.9 2.7 1-2.6c1.4-.3 2.3-.9 2.9-1.7" strokeWidth={1.5} />
+  </>,
+);
+
+const FeishuLogo = strokeLogo(
+  <>
+    <path d="M4 16.5 9 5.5h6l5 11-5-2.5-3 4-3-4-5 2.5z" />
+    <path d="M10 10h4" strokeWidth={1.5} />
+  </>,
+);
+
 const PlugLogo = strokeLogo(
   <>
     <path d="M9 7V3M15 7V3M7 7h10v4a5 5 0 0 1-10 0V7zM12 16v5" />
@@ -232,6 +256,11 @@ export const CONNECTORS: Record<string, ConnectorRegistryEntry> = {
   amplitude: { label: "Amplitude", logo: AmplitudeLogo },
   apollo: { label: "Apollo.io", logo: ApolloLogo },
   hunter: { label: "Hunter", logo: HunterLogo },
+  // 国内连接器 (P1-5): 品牌首字字形, 颜色来自 API 的 brand_color (wecom #07c160 /
+  // dingtalk #0089ff / feishu #3370ff).
+  wecom: { label: "企业微信", logo: WecomLogo },
+  dingtalk: { label: "钉钉", logo: DingtalkLogo },
+  feishu: { label: "飞书", logo: FeishuLogo },
   // Non-brand utilities.
   email: { label: "Email", logo: EmailLogo },
   browser: { label: "Browser", logo: BrowserLogo },

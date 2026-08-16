@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import {
   addMcpServer,
+  addModel,
   allowUser,
   connectConnector,
   connectManaged,
@@ -185,6 +186,7 @@ function ComposerPickerCard({
   providers: ProviderInfo[];
   onChanged: () => void;
 }) {
+  const [draft, setDraft] = useState("");
   const names = providers.map((p) => p.name);
   const provOf = (id: string) => {
     const i = id.indexOf(":");
@@ -194,12 +196,23 @@ function ComposerPickerCard({
     const p = providers.find((x) => x.name === provOf(id));
     return (p?.title || provOf(id)).split(" (")[0];
   };
+  // 需求: 用户可在此直接添加任意模型 (预设列表没有的, 如 ollama:qwen2.5-coder:32b) —
+  // 后端 addModel 接受任意 id, 无需等应用更新。
+  const add = async () => {
+    const typed = draft.trim();
+    if (!typed) return;
+    const res = await addModel(typed);
+    if (res.ok) {
+      setDraft("");
+      onChanged();
+    }
+  };
   return (
     <div className="mt-6" data-testid="composer-picker">
       <div className={SEC_H + " mb-1.5"}>In the composer's picker</div>
       <p className="text-[12px] text-muted mb-2.5 leading-relaxed">
         The models offered when starting a session; the black badge marks the default. Add more
-        from a provider's card above.
+        from a provider's card above, or type any model id below (e.g. <code className="text-faint">ollama:qwen2.5-coder:32b</code>).
       </p>
       <div className="mlist">
         {settings.models.map((id) => {
@@ -229,6 +242,21 @@ function ComposerPickerCard({
             </div>
           );
         })}
+        {/* 自定义模型添加 (需求): 直接输入模型 id, 支持 provider:model 前缀 */}
+        <div className="mlist-add">
+          <input
+            placeholder="Add another model… (provider:model)"
+            value={draft}
+            spellCheck={false}
+            autoComplete="off"
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && add()}
+            data-testid="composer-picker-add"
+          />
+          <button className="btn-primary sm" onClick={add} disabled={!draft.trim()}>
+            Add
+          </button>
+        </div>
       </div>
     </div>
   );

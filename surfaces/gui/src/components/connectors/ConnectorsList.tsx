@@ -9,7 +9,7 @@ import { CHIP_OK, CHIP_OFF, CHIP_WARN, GRP, GRP_H, FOOT, PILL_QUIET, ROW } from 
 // rows navigate to the connector's detail subpage; problems surface as a chip in the
 // list, never one click deep. Available connectors below with a Connect pill.
 
-const AVAILABLE_FOLD = 8; // rows shown before "show all"
+const AVAILABLE_FOLD = 12; // rows shown before "show all" (was 8 — 国内连接器被折叠隐藏)
 
 export function ConnectorsList({
   connectors,
@@ -32,7 +32,18 @@ export function ConnectorsList({
   const q = filter.trim().toLowerCase();
   const match = (c: Connector) => !q || c.title.toLowerCase().includes(q) || c.name.includes(q);
   const connected = connectors.filter((c) => c.connected && match(c));
-  const available = connectors.filter((c) => !c.connected && c.available && match(c));
+  // 国内连接器优先展示 (wecom/dingtalk/feishu) — 否则它们排在 43 个的末尾,
+  // 在 AVAILABLE_FOLD 折叠下默认不可见 (用户反馈"新增3个国内没显示了")。
+  const DOMESTIC_FIRST = new Set(["wecom", "dingtalk", "feishu"]);
+  const sortAvailable = (a: Connector, b: Connector) => {
+    const da = DOMESTIC_FIRST.has(a.name) ? 0 : 1;
+    const db = DOMESTIC_FIRST.has(b.name) ? 0 : 1;
+    if (da !== db) return da - db;
+    return a.title.localeCompare(b.title, "zh-Hans-CN");
+  };
+  const available = connectors
+    .filter((c) => !c.connected && c.available && match(c))
+    .sort(sortAvailable);
   const shown = showAll || q ? available : available.slice(0, AVAILABLE_FOLD);
   const connectingC = connecting ? connectors.find((c) => c.name === connecting) : null;
 
