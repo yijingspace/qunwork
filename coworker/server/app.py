@@ -540,6 +540,8 @@ def create_app(manager: SessionManager) -> FastAPI:
                 ),
                 hornet_resonator=manager._hornet_resonator,
                 harness=_harness,
+                # S10: 治理命令写入持久化审计 (manager.audit_store), 可追溯。
+                audit_sink=manager.audit_store.append,
                 event_sink=lambda kind, payload: store.append_event(run_id, kind, payload),
                 # G2: command deck wiring (pause/resume/message/requeue approval).
                 controller=controller,

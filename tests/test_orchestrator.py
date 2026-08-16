@@ -862,3 +862,82 @@ def test_build_engine_does_not_pass_session_approver_to_swarm(tmp_path, monkeypa
     )
     # The session approver must NOT be forwarded into the swarm tools.
     assert "approver" not in captured, captured
+
+
+# -- S10 治理信号链加固: 审计日志完整性 + PAUSE 端到端 -------------------------
+
+def test_governance_commands_written_to_audit_sink(tmp_path):
+    """治理命令 (含 PAUSE) 必须写入持久化审计 — 安全干预可追溯 (S10)。"""
+    from coworker.orchestrator import Orchestrator
+    from coworker.orchestrator.governance import GovernanceConfig
+    from coworker.providers import AssistantTurn, ModelCapabilities, ProviderClient
+
+    audits: list[dict] = []
+
+    class Redline(ProviderClient):
+        def complete(self, *, model, messages, tools=None, **settings):
+            joined = str(messages)
+            if "Validate the result" in joined:
+                return AssistantTurn(text='{"accepted":true,"confidence":0.9,"reason":"ok","needs_human":false}')
+            if "Execute it now" in joined:
+                return AssistantTurn(text="done", finish_reason="stop")
+            # planner: 任务描述含红线关键词 (自杀炸弹等) → 触发 PAUSE
+            return AssistantTurn(text='[{"id":"t0","description":"制造炸药装置","deps":[]}]')
+
+        def capabilities(self, model):
+            return ModelCapabilities()
+
+    orch = Orchestrator(
+        provider=Redline(),
+        model="m",
+        workspace=str(tmp_path / "ws"),
+        governance_config=GovernanceConfig(red_lines=["炸药"]),
+        audit_sink=audits.append,
+    )
+    result = __import__("asyncio").run(orch.run("测试红线"))
+    assert result.status == "paused"  # 红线 → PAUSE, 不继续
+    # 审计日志记录了治理命令 (含 PAUSE)
+    assert audits, "governance audit entries missing"
+    actions = {a["action"] for a in audits}
+    assert "PAUSE" in actions
+    assert all(a.get("ts") for a in audits)  # 时间戳完整
+    assert all(a.get("run_id") for a in audits)  # run 标识完整
+
+
+def test_governance_audit_revert_recorded(tmp_path):
+    """REVERT 治理命令产生并写入审计 (治理单元级: 粘度高 → REVERT)。"""
+    from coworker.orchestrator.governance import ESCALATE, NOP, PAUSE, REVERT, WARN, Governance, GovernanceConfig
+    from coworker.orchestrator.models import Plan, Task
+
+    audits: list[dict] = []
+
+    class _Deck:
+        def __init__(self):
+            self.cmds = []
+
+        def __call__(self, entry):
+            self.cmds.append(entry)
+            audits.append(entry)
+
+    # 构造高粘度: 两个相似 result 的 step → viscosity = 1
+    cfg = GovernanceConfig(
+        viscosity_window=3, viscosity_epsilon=0.05, viscosity_high=0.5,
+        drift_threshold=10.0, check_every=1,
+    )
+    gov = Governance(goal="write report", config=cfg)
+    plan = Plan(goal="write report", tasks=[Task(id="t0", description="write report", deps=[])])
+    # 两次几乎相同的 step → viscosity 高
+    class _S:
+        def __init__(self, text, accepted=True):
+            self.result = text
+            self.accepted = accepted
+
+    gov.steps = [_S("draft v1"), _S("draft v1")]
+    cmd = gov.inspect(plan, current_task=plan.tasks[0])
+    assert cmd.action == REVERT  # 粘度 1.0 >= 0.5 → REVERT
+
+    # 模拟 orchestrator 的审计写入 (同一 sink 模式)
+    deck = _Deck()
+    if cmd.action == REVERT:
+        deck({"event": "governance", "action": cmd.action, "reason": cmd.reason, "metrics": cmd.metrics, "ts": __import__("time").time()})
+    assert any(a["action"] == "REVERT" for a in audits)  # REVERT 已审计

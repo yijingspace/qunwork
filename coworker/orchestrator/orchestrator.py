@@ -279,6 +279,9 @@ class Orchestrator:
     _tool_uses: list = field(default_factory=list, init=False)
     # S12 临时文件治理: run 开始时间, 结束时清理此期间产生的临时文件。
     _run_started_at: float = field(default=0.0, init=False)
+    # S10 治理信号链加固: 可选审计 sink — 治理命令 (PAUSE/REVERT/WARN/ESCALATE)
+    # 写入持久化审计 (audit log 完整性), 安全干预可追溯。
+    audit_sink: Optional[Callable[[dict[str, Any]], None]] = None
 
     def _emit(self, kind: str, payload: dict[str, Any]) -> None:
         if self.event_sink is not None:
@@ -939,6 +942,23 @@ class Orchestrator:
                 cmd = gov.inspect(plan, current_task=ready[0] if ready else None)
                 gov_log.append(f"[step {self._runs}] {cmd.action}: {cmd.reason} {cmd.metrics}")
                 self._emit("governance", {"step": self._runs, "action": cmd.action, "reason": cmd.reason, "metrics": cmd.metrics})
+                # S10 治理信号链加固: 治理命令写入持久化审计 (audit log 完整性,
+                # 安全干预可追溯)。best-effort — 审计失败不阻断治理。
+                if self.audit_sink is not None:
+                    try:
+                        self.audit_sink(
+                            {
+                                "event": "governance",
+                                "run_id": f"run_{self._run_seq}",
+                                "step": self._runs,
+                                "action": cmd.action,
+                                "reason": cmd.reason,
+                                "metrics": cmd.metrics,
+                                "ts": time.time(),
+                            }
+                        )
+                    except Exception:
+                        pass
                 if cmd.action == REVERT:
                     tgt = gov.revert_target(plan)
                     if tgt is not None:
