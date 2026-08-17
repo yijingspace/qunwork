@@ -10,6 +10,7 @@
 // to expand it and scroll it into view.
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useT } from "../i18n";
 import {
   CLOUD_CHANGED,
   getCloudStatus,
@@ -69,6 +70,7 @@ export function AccessSection({
   openKey?: number;
   onOpenIntegrations?: () => void;
 }) {
+  const t = useT();
   const [open, setOpen] = useState(false);
   const [conns, setConns] = useState<SessionConnections | null>(null);
   const [byName, setByName] = useState<ConnectorMap>({});
@@ -173,7 +175,7 @@ export function AccessSection({
     const channel = raw.includes(":") || raw.startsWith("#") ? raw : `${channelsFor}:${raw}`;
     const r = await subscribeChannel(sessionId, channel);
     if (!r.ok) {
-      setAddErr(r.error || "Couldn't add that channel.");
+      setAddErr(r.error || t("Couldn't add that channel."));
       return;
     }
     setAddErr(null);
@@ -228,7 +230,7 @@ export function AccessSection({
       <div className="rail-section-head">
         <button className="rail-section-toggle" onClick={() => setOpen((v) => !v)} data-testid="access-toggle">
           <Icon name={open ? "chevronDown" : "chevronRight"} size={14} className="rail-chev" />
-          <span>Access</span>
+          <span>{t("Access")}</span>
           <span
             className="ml-auto min-w-0 truncate text-[11px] font-normal text-faint"
             data-testid="access-summary"
@@ -313,14 +315,14 @@ export function AccessSection({
                       <Toggle
                         checked={c.enabled}
                         onChange={(next) => toggleSession(c.connector, next)}
-                        title="Enabled for this session — tap to mute here"
+                        title={t("Enabled for this session — tap to mute here")}
                       />
                     </div>
                   ))}
                 </div>
                 {connected.length > 0 && (
                   <p className="text-[10.5px] text-faint mt-1 leading-snug">
-                    Off mutes it for <b>this session only</b> — the connector stays connected.
+                    {t("Off mutes it for this session only — the connector stays connected.")}
                   </p>
                 )}
                 {/* §32 addendum (owner ask 2026-07-13; FB-012): the catalog's long tail,
@@ -330,7 +332,7 @@ export function AccessSection({
                   <div className="mt-1.5">
                     <input
                       className="w-full px-2.5 py-1.5 rounded-lg border border-line bg-panel text-[12.5px] outline-none focus:border-accent"
-                      placeholder="Search connectors…"
+                      placeholder={t("Search connectors…")}
                       value={query}
                       onChange={(e) => setQuery(e.target.value)}
                       onKeyDown={(e) => {
@@ -485,6 +487,7 @@ function ConnectInline({
   onDone: () => void;
   onBack: () => void;
 }) {
+  const t = useT();
   useEffect(() => {
     const t = setInterval(async () => {
       try {
@@ -502,9 +505,9 @@ function ConnectInline({
       <button
         className="inline-flex items-center gap-1 text-[12px] text-faint hover:text-ink mb-2"
         onClick={onBack}
-        aria-label="Back to sources"
+        aria-label={t("Back to sources")}
       >
-        <Icon name="arrowLeft" size={13} /> Connect {c.title}
+        <Icon name="arrowLeft" size={13} /> {t("Connect")} {c.title}
       </button>
       {c.blurb && <p className="text-[12px] text-muted mb-1 leading-relaxed">{c.blurb}</p>}
       <div className="-mx-2">
@@ -513,8 +516,7 @@ function ConnectInline({
       {/* Scope semantics, stated once (owner ask 2026-07-13): connecting is account-level,
           the toggle above is what scopes it to a session. */}
       <p className="text-[10.5px] text-faint mt-2 leading-snug">
-        Connecting makes {c.title} available to all your coworkers — the toggle in this list
-        controls just this session.
+        {t("Connecting makes {name} available to all your coworkers — the toggle in this list controls just this session.", { name: c.title })}
       </p>
     </div>
   );
@@ -543,19 +545,20 @@ function ChannelsInline({
   onRemove: (channel: string) => void;
   onBack: () => void;
 }) {
+  const t = useT();
   return (
     <div>
       <button
         className="inline-flex items-center gap-1 text-[12px] text-faint hover:text-ink mb-2"
         onClick={onBack}
-        aria-label="Back to sources"
+        aria-label={t("Back to sources")}
       >
-        <Icon name="arrowLeft" size={13} /> {label} channels
+        <Icon name="arrowLeft" size={13} /> {label} {t("channels")}
       </button>
-      <div className={`${SEC_H} mb-1.5`}>Subscribed channels · {channels.length}</div>
+      <div className={`${SEC_H} mb-1.5`}>{t("Subscribed channels")} · {channels.length}</div>
       {channels.length === 0 ? (
         <div className="text-[12px] text-faint py-0.5">
-          Not listening to any {label} channel yet.
+          {t("Not listening to any {label} channel yet.", { label })}
         </div>
       ) : (
         <div className="space-y-1">
@@ -568,14 +571,14 @@ function ChannelsInline({
               {s.collision && (
                 <span
                   className="text-[10.5px] text-warnInk bg-warnSoft/70 border border-warnInk/15 rounded px-1 shrink-0"
-                  title="This channel is also this session's Inbox-routing target — inbound and outbound collide."
+                  title={t("This channel is also this session's Inbox-routing target — inbound and outbound collide.")}
                 >
                   ⚠
                 </span>
               )}
               <button
                 className="w-5 h-5 grid place-items-center text-faint hover:text-danger shrink-0"
-                title="Stop listening"
+                title={t("Stop listening")}
                 onClick={() => onRemove(s.channel)}
               >
                 ×
@@ -584,11 +587,11 @@ function ChannelsInline({
           ))}
         </div>
       )}
-      <div className={`${SEC_H} mt-3 mb-1.5`}>Add a channel</div>
+      <div className={`${SEC_H} mt-3 mb-1.5`}>{t("Add a channel")}</div>
       <div className="flex items-center gap-1.5">
         <ChannelPicker value={draft} onChange={onDraft} recent={recent} onSubmit={onAdd} />
         <button className={BTN_ACCENT} disabled={!draft.trim()} onClick={onAdd}>
-          Add
+          {t("Add")}
         </button>
       </div>
       {error && (
@@ -597,8 +600,7 @@ function ChannelsInline({
         </p>
       )}
       <p className="text-[10.5px] text-faint mt-1.5 leading-snug">
-        The agent receives messages posted to these channels. Removing one stops this session
-        from listening — the connector stays connected.
+        {t("The agent receives messages posted to these channels. Removing one stops this session from listening — the connector stays connected.")}
       </p>
     </div>
   );
