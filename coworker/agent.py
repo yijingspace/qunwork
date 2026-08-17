@@ -359,7 +359,7 @@ def build_engine(
             "capability gaps."
         )
 
-    skill_loader = SkillLoader(_skill_dirs(ws))
+    skill_loader = SkillLoader(_skill_dirs(ws), readonly_dirs=[_skill_dirs(ws)[0]])
     registry.register_all(skill_tools(skill_loader))
 
     # 工具自治 (Self-made tools, DSH 愿景): Agent 发现工具不足时自造新工具。

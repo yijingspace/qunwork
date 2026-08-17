@@ -90,6 +90,7 @@ class SkillLoader:
         dirs: list[str | Path],
         *,
         registry_tool_schemas: Optional[Callable[[], dict[str, dict | list]]] = None,
+        readonly_dirs: Optional[list[str | Path]] = None,
     ) -> None:
         """Load skills from directories.
 
@@ -99,8 +100,13 @@ class SkillLoader:
                 生成 skill.lock 时能把真实工具 schema 算入签名哈希, 兼容性
                 检测更准确。如果为 None, lock 里记录空 schema (参数列表仅
                 记录提取到的名字)。
+            readonly_dirs: 只读目录(如内置技能层 coworker/skills)。save_skill /
+                import_skill 的写入目标会跳过这些目录 — 用户技能、涌现技能
+                只能落到用户层(state_dir/skills 或 workspace/.coworker/skills),
+                避免污染源码目录/安装目录(路径修复后内置层可写导致的副作用)。
         """
         self._dirs = [Path(d) for d in dirs]
+        self._readonly = {Path(d) for d in (readonly_dirs or [])}
         self._skills: dict[str, Skill] = {}
         self._registry_tool_schemas = registry_tool_schemas
         # C16: _skills is shared between the loop thread (catalog() for the
@@ -140,7 +146,10 @@ class SkillLoader:
         name = re.sub(r"[^\w\-.]", "_", name).strip("_.") or "skill"
         if name in (".", ".."):
             name = "skill"
-        target = next((d for d in self._dirs if self._writable(d)), self._dirs[-1])
+        target = next(
+            (d for d in self._dirs if d not in self._readonly and self._writable(d)),
+            self._dirs[-1],
+        )
         skill_dir = target / name
         skill_dir.mkdir(parents=True, exist_ok=True)
         md = skill_dir / "SKILL.md"
@@ -363,7 +372,8 @@ class SkillLoader:
         import zipfile
 
         target_dir = target_dir or next(
-            (d for d in self._dirs if self._writable(d)), self._dirs[-1]
+            (d for d in self._dirs if d not in self._readonly and self._writable(d)),
+            self._dirs[-1],
         )
         target_dir.mkdir(parents=True, exist_ok=True)
         with zipfile.ZipFile(zip_path) as zf:

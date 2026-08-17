@@ -164,7 +164,8 @@ class SessionManager:
                 [Path(self.default_workspace) / ".coworker" / "skills"]
                 if self.default_workspace
                 else []
-            )
+            ),
+            readonly_dirs=[Path(__file__).resolve().parent.parent / "skills"],
         )
         self.skill_market = SkillMarketStore(base / "skills_market.db")
         self.knowledge = KnowledgeStore(
