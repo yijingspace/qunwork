@@ -6,6 +6,7 @@ the skill catalog (progressive disclosure) + load_skill into a TurnEngine.
 
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 from typing import Any, Optional
 
@@ -110,6 +111,34 @@ def _skill_dirs(workspace: Optional[Path]) -> list[Path]:
     if workspace is not None:
         dirs.append(workspace / ".coworker" / "skills")
     return dirs
+
+
+# Process-wide SkillLoader cache keyed by the dir-set fingerprint. Constructing a
+# loader scans + security-analyzes every skill directory; a large built-in skill
+# (img2threejs, 260 files) made each engine build pay ~8s. Engines share one
+# loader; skills created/imported mid-session are picked up by refresh().
+_skill_loader_cache: dict[str, Any] = {}
+_skill_loader_lock = threading.Lock()
+
+
+def _shared_skill_loader(workspace: Optional[Path]) -> Any:
+    dirs = _skill_dirs(Path(workspace) if workspace else None)
+    key = "|".join(str(d) for d in dirs)
+    with _skill_loader_lock:
+        loader = _skill_loader_cache.get(key)
+        if loader is None:
+            from .skills.base import SkillLoader
+
+            loader = SkillLoader(dirs, readonly_dirs=[dirs[0]])
+            _skill_loader_cache[key] = loader
+        else:
+            # Re-scan so skills added via the API/another engine show up without
+            # a restart — cheap with the analysis cache warm.
+            try:
+                loader.refresh()
+            except Exception:
+                pass
+        return loader
 
 
 def text_stats_tool() -> Any:
@@ -359,7 +388,14 @@ def build_engine(
             "capability gaps."
         )
 
-    skill_loader = SkillLoader(_skill_dirs(ws), readonly_dirs=[_skill_dirs(ws)[0]])
+    # SkillLoader is EXPENSIVE to construct when a built-in skill is large
+    # (img2threejs = 260 files; scanning + analysis ~8s cold, 2026-08-18):
+    # every engine build was paying it, so the FIRST message of a session
+    # appeared to hang (WS ready never arrived within the GUI's patience).
+    # Reuse one process-wide loader per dir-set: `refresh()` re-scans when
+    # skills are created/imported mid-session, and the loader is thread-safe
+    # (internal RLock) — the shared instance is safe across engines.
+    skill_loader = _shared_skill_loader(ws)
     registry.register_all(skill_tools(skill_loader))
 
     # 工具自治 (Self-made tools, DSH 愿景): Agent 发现工具不足时自造新工具。

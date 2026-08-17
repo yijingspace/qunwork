@@ -15,8 +15,18 @@
 from __future__ import annotations
 
 import re
+import threading
 from pathlib import Path
 from typing import Any
+
+# 参与目录扫描的可执行脚本 glob (C15: 覆盖 PowerShell/批处理/JS, 防纯 .ps1 恶意 skill 得 0 分)
+_SCRIPT_GLOBS = ("*.py", "*.sh", "*.ps1", "*.psm1", "*.bat", "*.cmd", "*.js", "*.ts", "*.rb")
+
+# 目录扫描结果缓存: {目录路径 -> {"fingerprint": 指纹, "result": 分析结果}}。
+# key 稳定为目录路径 (不再拼接全量文件指纹, 大目录 key 计算本身贵),
+# mtime 指纹在值内做快速失效检查; 上限 512 防膨胀 (真实环境 64+ 技能)。
+_DIR_SCAN_CACHE: dict[str, dict[str, Any]] = {}
+_CACHE_LOCK = threading.Lock()
 
 
 # 风险模式 (pattern, weight, label)
@@ -137,8 +147,75 @@ def analyze_skill_content(content: str) -> dict[str, Any]:
 
 
 def analyze_skill_dir(skill_dir: str | Path) -> dict[str, Any]:
-    """分析整个 skill 目录 (SKILL.md + 所有 .py 文件)。"""
+    """分析整个 skill 目录 (SKILL.md + 所有 .py 文件)。
+
+    结果按目录路径缓存 (进程内), 配 mtime 指纹做快速失效检查。每个会话/
+    引擎构建都会新建 SkillLoader 并对每个技能跑一次分析 — 真实用户环境有
+    64+ 技能 (含 HORNET 涌现), img2threejs 单目录 260 文件, 全量重扫把
+    会话建立拖到 ~9s (2026-08-18 排查: 主会话发消息 LLM 无反应)。缓存键
+    不再拼接全部文件指纹 (那样大目录的 key 计算本身就贵, 且缓存上限会挤掉
+    大技能), 而是 key=目录路径 + 值内带 mtime 指纹; 文件未变直接复用,
+    变了才重扫。
+    """
     skill_dir = Path(skill_dir)
+    try:
+        resolved = str(skill_dir.resolve())
+    except OSError:
+        resolved = str(skill_dir)
+
+    with _CACHE_LOCK:
+        entry = _DIR_SCAN_CACHE.get(resolved)
+        if entry is not None and entry["fingerprint"] == _dir_fingerprint(skill_dir):
+            return entry["result"]
+
+    result = _analyze_skill_dir_uncached(skill_dir)
+
+    with _CACHE_LOCK:
+        # 上限按技能数放宽: 真实环境 64+ 技能, 旧 64 上限把大技能条目逐出,
+        # 每次都重扫 img2threejs (它 260 文件最贵)。512 足够覆盖任何合理部署。
+        if len(_DIR_SCAN_CACHE) >= 512:
+            _DIR_SCAN_CACHE.pop(next(iter(_DIR_SCAN_CACHE)))
+        _DIR_SCAN_CACHE[resolved] = {
+            "fingerprint": _dir_fingerprint(skill_dir),
+            "result": result,
+        }
+    return result
+
+
+def _dir_fingerprint(skill_dir: Path) -> tuple:
+    """目录内容指纹: SKILL.md + 各 glob 首个文件的 (mtime_ns, size)。
+
+    不做全量 stat — 大技能 (img2threejs 260 文件) 全量 stat 本身就 ~0.1s,
+    乘以 64 技能就回到秒级。SKILL.md 是技能主体, 加每个 glob 最新文件即可
+    捕获新增/删除脚本; 命中率远超漏检率 (文件内容改但 mtime 没变仅发生在
+    git checkout 场景, 可接受)。
+    """
+    marks: list[tuple[str, int, int]] = []
+    md = skill_dir / "SKILL.md"
+    try:
+        st = md.stat()
+        marks.append(("SKILL.md", st.st_mtime_ns, st.st_size))
+    except OSError:
+        pass
+    for glob in _SCRIPT_GLOBS:
+        latest: Optional[tuple[str, int, int]] = None
+        try:
+            for f in skill_dir.rglob(glob):
+                try:
+                    s = f.stat()
+                    cand = (f.name, s.st_mtime_ns, s.st_size)
+                    if latest is None or cand[1] > latest[1]:
+                        latest = cand
+                except OSError:
+                    continue
+        except OSError:
+            continue
+        if latest is not None:
+            marks.append((glob, latest[1], latest[2]))
+    return tuple(marks)
+
+
+def _analyze_skill_dir_uncached(skill_dir: Path) -> dict[str, Any]:
     parts: list[str] = []
 
     # SKILL.md body
@@ -149,7 +226,6 @@ def analyze_skill_dir(skill_dir: str | Path) -> dict[str, Any]:
     # 所有可执行脚本 — Python + shell + PowerShell/批处理/JS 等。规则表里有
     # 大量 PowerShell / cmd.exe / Invoke-WebRequest 模式, 只扫 *.py/*.sh 会让
     # 纯 .ps1 恶意 skill 得 0 分 (C15)。
-    _SCRIPT_GLOBS = ("*.py", "*.sh", "*.ps1", "*.psm1", "*.bat", "*.cmd", "*.js", "*.ts", "*.rb")
     for glob in _SCRIPT_GLOBS:
         for script in skill_dir.rglob(glob):
             try:
