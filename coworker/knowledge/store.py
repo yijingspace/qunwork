@@ -41,6 +41,30 @@ _SKIP_DIRS = {
     "site-packages",
     ".reasonix",
     "backups",
+    # Obsidian app metadata — `.obsidian/` holds UI preferences (graph.json,
+    # workspace.json, hotkeys.json…), NOT documents. Indexing them pollutes the
+    # knowledge library with config files that have no semantic content (they
+    # show up as weird orphan nodes like title="graph").
+    ".obsidian",
+}
+# Obsidian (and other tools') per-folder UI-config JSON that a scan could still
+# reach even with `.obsidian` skipped (a stray config copied next to docs, or a
+# vault layout where .obsidian lives elsewhere). These carry zero knowledge.
+_OBSIDIAN_CONFIG_JSON = {
+    "graph.json",
+    "workspace.json",
+    "workspace-mobile.json",
+    "hotkeys.json",
+    "app.json",
+    "appearance.json",
+    "community-plugins.json",
+    "core-plugins.json",
+    "daily-notes.json",
+    "templates.json",
+    "bookmarks.json",
+    "web-clipper.json",
+    "publish.json",
+    "sync.json",
 }
 _CHUNK_SIZE = 600  # chars per chunk
 _CHUNK_OVERLAP = 120
@@ -394,6 +418,13 @@ class KnowledgeStore:
             rel = p.relative_to(root)
             if any(part in _SKIP_DIRS for part in rel.parts):
                 skip_reasons["excluded directory"] = skip_reasons.get("excluded directory", 0) + 1
+                continue
+            # Obsidian UI-config JSON (graph.json & co.) carries no knowledge even
+            # when it sits outside a skipped `.obsidian` dir — never index it.
+            if p.suffix.lower() == ".json" and p.name in _OBSIDIAN_CONFIG_JSON:
+                skip_reasons["obsidian config json"] = (
+                    skip_reasons.get("obsidian config json", 0) + 1
+                )
                 continue
             if max_files is not None and processed >= max_files:
                 truncated = True

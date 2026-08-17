@@ -2770,17 +2770,27 @@ class SessionManager:
         for tool in task.name_allowed_tools():
             engine.permissions.allow_tool_for_session(tool)
 
-    def _build_task_engine(self, task, *, session_id: str) -> TurnEngine:
+    def _build_task_engine(
+        self, task, *, session_id: str, mode: Optional["Mode"] = None
+    ) -> TurnEngine:
         ag = get_agent(task.agent)
         # 容错: 任务缺 workspace (如 HORNET 在无默认工作区时生成的补全任务)
         # 时回退到默认工作区或 state_dir, 绝不 Path(None) 崩溃。
         ws = task.workspace or self.default_workspace or str(state_dir())
         Path(ws).mkdir(parents=True, exist_ok=True)
+        # 定时任务默认走完全访问路径 (Mode.AUTO): 创建任务本身是用户授权的
+        # gated 动作, 且任务跑在隔离的 scratch workspace — 运行时逐工具申请
+        # 人工批准会让无人值守任务卡死在等待授权上。路径作用域仍生效
+        # (permissions.evaluate 在任何模式下都检查写路径), 需要人工裁决的
+        # ask_user 类交互仍会浮出。手动/交互路径 (Run now, WS live session)
+        # 保留 INTERACTIVE — standing rules 精确匹配不受影响。
+        if mode is None:
+            mode = Mode.INTERACTIVE
         engine = build_engine(
             agent=ag,
             workspace=ws,
             model=task.model or self.model,
-            mode=Mode.INTERACTIVE,
+            mode=mode,
             approver=self._scheduled_approver(task, session_id),
             provider=self.provider,
             memory_store=self.memory_store,
@@ -3210,7 +3220,13 @@ class SessionManager:
         # Each run is a real, persisted conversation thread: it runs the instructions under its
         # own session id, then saves the transcript. The user can reopen that session and ask a
         # follow-up — the scheduled agent is no longer fire-and-forget.
-        engine = self._build_task_engine(task, session_id=run.session_id)
+        # 无人值守调度路径: 定时/补跑触发 (schedule/catchup) 走完全访问 (Mode.AUTO),
+        # 否则工具调用会 park 在 Inbox 等人批准, 人不在场时任务卡死 (2026-08 反馈)。
+        engine = self._build_task_engine(
+            task,
+            session_id=run.session_id,
+            mode=Mode.AUTO,
+        )
         # Register the live engine up-front: a parked approval persists the session
         # mid-run (durable suspend), and resolving from the Inbox must find this engine.
         self._engines[run.session_id] = engine
@@ -4986,16 +5002,56 @@ class SessionManager:
     def _hornet_act_gap(
         self, title: str, detail: dict, ws: str, actions: dict
     ) -> None:
-        """Knowledge gap → one-time task to investigate and fill the void."""
+        """Knowledge gap → one-time task to investigate and fill the void.
+
+        The task carries the gap node's own context (title, content excerpt, and
+        neighbor titles) so the scheduled run knows WHAT to fill and WHERE to link
+        — previously the instructions only said "搜索相关资料补充关联内容" and the
+        run floundered searching a topic it had no pointer to."""
         import time as _time
         from ..automation.models import ScheduledTask, Schedule
 
         hint = detail.get("hint", "补充关联或合并")
+        node_id = detail.get("node_id")
+        gap_context = ""
+        if node_id is not None:
+            try:
+                nodes = self.hornet.list_nodes()
+                edges = self.hornet.list_edges()
+                node = next((n for n in nodes if n["id"] == int(node_id)), None)
+                if node:
+                    nid = int(node_id)
+                    neighbor_ids = {
+                        e["src"] for e in edges if e["dst"] == nid
+                    } | {e["dst"] for e in edges if e["src"] == nid}
+                    neighbors = [
+                        n["title"] for n in nodes if n["id"] in neighbor_ids
+                    ][:8]
+                    content = (node.get("content") or "").strip()
+                    gap_context = (
+                        f"\n空洞节点信息 (自动注入):\n"
+                        f"- 节点ID: {nid}\n"
+                        f"- 标题: {node.get('title', '')}\n"
+                        f"- 内容摘录: {content[:400]}\n"
+                    )
+                    if neighbors:
+                        gap_context += (
+                            f"- 已有关联节点: {', '.join(neighbors)}\n"
+                        )
+                    else:
+                        gap_context += (
+                            "- 关联节点: 无 (孤立节点 — 目标是找到该主题在知识库"
+                            "中的相邻内容并建立连接)\n"
+                        )
+            except Exception:
+                gap_context = ""
         task = ScheduledTask(
             title=f"[HORNET] 补全知识: {title[:50]}",
             instructions=(
-                f"知识库检测到空洞: {title}\n{hint}\n"
-                f"请搜索相关资料并补充该知识领域的关联内容。"
+                f"知识库检测到空洞: {title}\n{hint}\n{gap_context}"
+                f"请先读取上面的空洞节点信息 (标题/内容/邻居), 在知识库中搜索与"
+                f"该主题相关的资料, 然后补充该知识领域的关联内容: 新建知识条目、"
+                f"补充关联或合并孤立节点。"
             ),
             # fire_at 必须是 ISO 字符串且在未来(compute_next_run 要求 ts > now) —
             # 曾误传 epoch 浮点 / now 导致 next_run=None、任务永不运行 (2026-08 修复)。

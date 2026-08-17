@@ -204,6 +204,35 @@ def test_index_folder_truncated_reports_cap_and_failures(tmp_path: Path):
     assert summary2["added"] == 0
 
 
+def test_index_folder_skips_obsidian_config_and_dir(tmp_path: Path):
+    """Obsidian vault metadata must never enter the knowledge library: the
+    `.obsidian/` directory (UI prefs) AND stray config JSON (graph.json) are
+    skipped. Before the fix these polluted the library with title="graph"
+    entries that have no semantic content (HORNET 空洞 root cause, 2026-08)."""
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    store = KnowledgeStore(tmp_path / "k.db", workspace=str(ws))
+
+    folder = tmp_path / "vault"
+    (folder / ".obsidian").mkdir(parents=True)
+    (folder / ".obsidian" / "graph.json").write_text('{"collapse-filter": true}', encoding="utf-8")
+    (folder / ".obsidian" / "workspace.json").write_text("{}", encoding="utf-8")
+    # A stray graph.json OUTSIDE .obsidian (copied next to docs) is also skipped.
+    (folder / "graph.json").write_text('{"repelStrength": 10}', encoding="utf-8")
+    # A legit knowledge json + a real markdown doc still index.
+    (folder / "notes.json").write_text('{"topic": "图论笔记"}', encoding="utf-8")
+    (folder / "doc.md").write_text("# 正常文档\n内容。", encoding="utf-8")
+
+    summary = store.index_folder(folder, workspace=str(ws), max_total_bytes=2 * 1024**3)
+    assert summary["added"] == 2, f"expected only notes.json + doc.md, got {summary}"
+    assert summary["skip_reasons"].get("excluded directory", 0) >= 1  # .obsidian dir
+    assert summary["skip_reasons"].get("obsidian config json", 0) >= 1  # stray graph.json
+    titles = {i["title"] for i in store.list_items(workspace=str(ws))}
+    assert "graph" not in titles  # neither the .obsidian one nor the stray one
+    assert "notes" in titles  # legit json (title = stem)
+    assert "doc" in titles  # markdown doc (title = stem)
+
+
 def test_grep_parse_windows_drive_path():
     """Upstream #17: ripgrep output with a Windows drive path must not be
     truncated at the drive colon."""

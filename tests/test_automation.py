@@ -629,6 +629,33 @@ def test_hornet_gap_task_gets_valid_next_run(tmp_path, monkeypatch):
     assert t.next_run > 0
 
 
+def test_hornet_gap_task_injects_gap_node_context(tmp_path, monkeypatch):
+    """问题2: 空洞补全任务必须自带空洞节点上下文 (标题/内容/邻居) —
+    否则 run 不知道补哪里、补什么, 只会盲目搜索 (2026-08 反馈)。"""
+    monkeypatch.setenv("COWORKER_STATE_DIR", str(tmp_path / "state"))
+    from coworker.server.manager import SessionManager
+
+    mgr = SessionManager(data_dir=tmp_path / "data")
+    # Seed a HORNET node (isolated) that the gap points at.
+    node_id = mgr.hornet.add_node(
+        kb_item_id=999, title="graph", content="Obsidian 图谱配置, 无知识语义",
+    )
+    actions: dict = {"task": []}
+    mgr._hornet_act_gap(
+        "知识空洞: graph",
+        {"hint": "该节点没有语义连接,建议补充关联或合并", "node_id": node_id},
+        str(tmp_path / "ws"),
+        actions,
+    )
+    t = [t for t in mgr.task_store.list() if t.title.startswith("[HORNET]")][0]
+    instructions = t.instructions
+    # The gap node's title + content excerpt must ride into the task instructions.
+    assert "graph" in instructions
+    assert "Obsidian 图谱配置" in instructions
+    assert "空洞节点信息" in instructions
+    assert str(node_id) in instructions
+
+
 # -- DPNN 大小周期嵌套 catch-up (自动化错过补跑) ------------------------------
 
 def test_failed_run_retries_in_small_cycle(tmp_path):
@@ -713,6 +740,26 @@ def test_workspace_null_falls_back_in_task_engine(tmp_path, monkeypatch):
     # 不抛异常即通过 (旧代码 Path(None) 崩溃)
     engine = mgr._build_task_engine(t, session_id="__task__test")
     assert engine is not None
+    engine.executor.close()
+
+
+def test_unattended_scheduler_run_builds_full_access_engine(tmp_path, monkeypatch):
+    """问题1: 无人值守调度路径 (schedule/catchup) 的引擎走完全访问 (Mode.AUTO)
+    — 知识库/文件/命令工具自动放行, 不再 park 在 Inbox 等人批准 (2026-08 反馈:
+    '任务触发时申请知识库权限, 人不在场就一直等授权')。"""
+    monkeypatch.setenv("COWORKER_STATE_DIR", str(tmp_path / "state"))
+    from coworker.server.manager import SessionManager
+    from coworker.permissions import Mode
+
+    mgr = SessionManager(data_dir=tmp_path / "data")
+    t = _task(workspace=str(tmp_path / "ws"))
+    (tmp_path / "ws").mkdir(exist_ok=True)
+    engine = mgr._build_task_engine(t, session_id="__run__auto", mode=Mode.AUTO)
+    # Full access: a knowledge tool + a file read evaluate allowed with NO user prompt.
+    for tool in ("knowledge_search", "read_file", "run_shell"):
+        decision = engine.permissions.evaluate(tool, {"query": "x" if tool == "knowledge_search" else "ls"})
+        assert decision.allowed, f"{tool} must be auto-allowed in unattended run: {decision}"
+        assert not decision.needs_user
     engine.executor.close()
 
 
