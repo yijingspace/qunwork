@@ -729,3 +729,30 @@ def test_build_engine_wires_trim_switch_from_config(tmp_path, monkeypatch):
         provider=ScriptedProvider([_text_turn("hi")]),
     )
     assert engine2.trim_tool_outputs is False
+
+
+def test_analyze_image_tool_runs_without_approval(tmp_path):
+    """图+文字时模型调 analyze_image(读图) 应免审批直接执行 —— 修复 2026-08-18
+    「图+文字发送 LLM 没反应」= 模型调 run_shell 读图卡在权限审批。"""
+    from coworker.tools.vision import vision_tools
+
+    engine, registry = _bare_engine(
+        tmp_path,
+        [
+            _multi_tool_turn([("analyze_image", {"path": "x.png", "ocr_only": True})]),
+            _text_turn("done"),
+        ],
+    )
+    registry.register(*vision_tools())
+
+    events = _collect(engine, "analyze this image")
+    kinds = [e.type.value for e in events]
+    assert "permission_required" not in kinds, (
+        "analyze_image must be auto-approved — an approval prompt here is exactly the "
+        "user-visible hang we fixed"
+    )
+    finished = [e for e in events if e.type == EventType.TOOL_FINISHED]
+    assert len(finished) == 1
+    assert finished[0].data["status"] == "ok"
+    # 工具结果以 tool 消息回填, 下一轮模型可见
+    assert any(m.get("role") == "tool" for m in engine.messages)

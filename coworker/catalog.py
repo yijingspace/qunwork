@@ -26,6 +26,7 @@ from .tools.git import git_tools
 from .tools.search import search_tools
 from .tools.shell import shell_tools
 from .tools.todo import todo_tools
+from .tools.vision import vision_tools
 
 # Context prerequisites a capability may require, mapped to a predicate over AgentContext.
 _REQUIREMENTS: dict[str, Callable[[AgentContext], bool]] = {
@@ -145,6 +146,13 @@ _CAPS: list[Capability] = [
         description="Maintain a visible task/progress list.",
         build=_todo,
         requires=("todo",),
+        risk=(RiskClass.READ,),
+    ),
+    Capability(
+        id="vision",
+        name="Image analysis",
+        description="OCR + metadata for an uploaded image (text-only models read pictures).",
+        build=lambda context: vision_tools(),
         risk=(RiskClass.READ,),
     ),
 ]

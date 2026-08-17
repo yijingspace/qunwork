@@ -13,7 +13,7 @@ from .base import Agent, AgentContext
 
 # Capabilities the knowledge-work surface composes from the vetted catalog. `files` is the
 # multi-root variant (reads/writes across added folders), unlike Code's single-root `code_files`.
-COWORK_CAPABILITIES = ["files", "search", "shell", "todo"]
+COWORK_CAPABILITIES = ["files", "search", "shell", "todo", "vision"]
 
 COWORK_INSTRUCTIONS = (
     "You are a Cowork agent — a capable knowledge-work coworker spun up to solve one problem "
