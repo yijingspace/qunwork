@@ -105,7 +105,7 @@ def _skill_dirs(workspace: Optional[Path]) -> list[Path]:
     # layer, e.g. vision/image-understanding). User skills live in the state
     # dir and (workspace-scoped) .coworker/skills — scanned later so they win
     # on name conflicts.
-    dirs = [Path(__file__).resolve().parent.parent / "skills"]
+    dirs = [Path(__file__).resolve().parent / "skills"]
     dirs.append(state_dir() / "skills")
     if workspace is not None:
         dirs.append(workspace / ".coworker" / "skills")

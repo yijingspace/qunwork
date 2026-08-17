@@ -38,7 +38,10 @@ def test_skills_catalog_with_stats(client):
     c, _ = client
     r = c.get("/v1/skills")
     assert r.status_code == 200
-    assert r.json()["skills"] == []
+    names = [s["name"] for s in r.json()["skills"]]
+    # 内置层(coworker/skills)的技能真实存在并进入 catalog
+    assert "image-understanding" in names
+    assert "code-bug-analysis" in names
 
 
 def test_skill_import_export_roundtrip(client):
@@ -71,7 +74,8 @@ def test_skill_import_export_roundtrip(client):
     # delete
     deleted = c.delete("/v1/skills/cool-skill").json()
     assert deleted["ok"] is True
-    assert c.get("/v1/skills").json()["skills"] == []
+    names = [s["name"] for s in c.get("/v1/skills").json()["skills"]]
+    assert "cool-skill" not in names  # 导入的技能已删除(内置技能保留)
 
 
 def test_skill_import_rejects_invalid_zip(client):

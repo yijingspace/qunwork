@@ -158,7 +158,7 @@ class SessionManager:
         from ..knowledge.store import KnowledgeStore
 
         self.skill_loader = SkillLoader(
-            [Path(__file__).resolve().parent.parent.parent / "skills"]  # built-in (read-only)
+            [Path(__file__).resolve().parent.parent / "skills"]  # built-in (read-only)
             + [state_dir() / "skills"]
             + (
                 [Path(self.default_workspace) / ".coworker" / "skills"]
