@@ -1932,6 +1932,85 @@ def create_app(manager: SessionManager) -> FastAPI:
         )
         return _openai_response(model, turn)
 
+    # -- local voice chat (VAD + streaming ASR + LLM + TTS) ---------------------
+    # The layered voice pipeline runs entirely on-device. Models are downloaded on
+    # demand (see coworker/voice/models.py); the pipeline is a lazily-created
+    # singleton whose events the GUI polls via /v1/voice/events.
+    _voice_lock = asyncio.Lock()
+    _voice_pipeline = None
+    _voice_install = {"active": False, "key": "", "done": 0, "total": 0, "error": ""}
+
+    def _get_voice_pipeline():
+        nonlocal _voice_pipeline
+        if _voice_pipeline is None:
+            from coworker.voice.pipeline import VoiceChatPipeline
+
+            def _voice_complete(messages):
+                turn = manager.provider_complete(manager.model, messages)
+                return (turn.text or "").strip()
+
+            _voice_pipeline = VoiceChatPipeline(complete=_voice_complete)
+        return _voice_pipeline
+
+    @app.get("/v1/voice/status")
+    def voice_status() -> dict[str, Any]:
+        from coworker.voice import voice_models_status
+
+        pipe = _get_voice_pipeline()
+        return {
+            "models": voice_models_status(),
+            "running": pipe.running,
+            "install": dict(_voice_install),
+            "model": manager.model,
+        }
+
+    @app.post("/v1/voice/install")
+    async def voice_install() -> dict[str, Any]:
+        """Start downloading the voice models in the background (if not already)."""
+        async with _voice_lock:
+            if _voice_install["active"]:
+                return {"ok": True, "started": False, "reason": "already installing"}
+            from coworker.voice import voice_models_installed
+
+            if voice_models_installed():
+                return {"ok": True, "started": False, "reason": "already installed"}
+
+            def _run_install():
+                from coworker.voice import install_voice_models
+
+                def _progress(key, done, total):
+                    _voice_install.update(key=key, done=done, total=total)
+
+                try:
+                    _voice_install.update(active=True, key="", done=0, total=0, error="")
+                    install_voice_models(progress=_progress)
+                except Exception as exc:  # noqa: BLE001
+                    _voice_install["error"] = str(exc)
+                finally:
+                    _voice_install["active"] = False
+
+            asyncio.create_task(asyncio.to_thread(_run_install))
+            return {"ok": True, "started": True}
+
+    @app.post("/v1/voice/start")
+    def voice_start() -> dict[str, Any]:
+        pipe = _get_voice_pipeline()
+        try:
+            pipe.start()
+            return {"ok": True}
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "error": str(exc)}
+
+    @app.post("/v1/voice/stop")
+    def voice_stop() -> dict[str, Any]:
+        _get_voice_pipeline().stop()
+        return {"ok": True}
+
+    @app.get("/v1/voice/events")
+    def voice_events(after: int = 0) -> dict[str, Any]:
+        events = _get_voice_pipeline().drain_events(after=after)
+        return {"events": events, "next": (events[-1]["index"] + 1) if events else after}
+
     # -- MCP servers ------------------------------------------------------------
     @app.get("/v1/mcp")
     def mcp_list() -> dict[str, Any]:

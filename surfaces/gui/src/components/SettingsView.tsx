@@ -4,6 +4,9 @@ import {
   deleteMemory,
   getSettings,
   getTrustedWorkspaces,
+  getVoiceEvents,
+  getVoiceStatus,
+  installVoiceModels,
   listMemories,
   rhythmForecast,
   rhythmRecommendations,
@@ -16,12 +19,16 @@ import {
   setScratchBase,
   setSessionsPeek,
   setWorkspaceTrusted,
+  startVoiceChat,
+  stopVoiceChat,
   updateMemory,
   type AssetResults,
   type MemoryItem,
   type ModelSettings,
   type PdfSettings,
   type RhythmForecast,
+  type VoiceEvent,
+  type VoiceStatus,
   type WorkspaceCommandTrust,
 } from "../api";
 import {
@@ -362,10 +369,155 @@ function VoiceInputSection() {
             {testTranscript && <div className="border-t border-line bg-paper/50 px-4 py-3 text-[13px]">“{testTranscript}”</div>}
           </div>
 
+          <VoiceChatCard />
+
           {error && <div role="alert" className="rounded-lg border border-red-200 bg-red-50 px-3 py-2.5 text-[12px] text-red-700">{error}</div>}
         </div>
       )}
     </section>
+  );
+}
+
+// -- Voice chat: layered pipeline (VAD + streaming ASR + LLM + TTS), all local ---------
+// A continuously-listening spoken conversation: say something, the mic segment is
+// transcribed in real time, sent to the current model, and the reply is spoken back
+// through the local TTS voice. State lives in the sidecar; this card only drives and
+// displays it. Works in the browser GUI too (talks to the local sidecar directly).
+function VoiceChatCard() {
+  const t = useT();
+  const [status, setStatus] = useState<VoiceStatus | null>(null);
+  const [events, setEvents] = useState<VoiceEvent[]>([]);
+  const [nextIndex, setNextIndex] = useState(0);
+  const [error, setError] = useState<string | null>(null);
+
+  const refresh = async () => {
+    const s = await getVoiceStatus();
+    if (s) setStatus(s);
+  };
+
+  useEffect(() => {
+    void refresh();
+    const timer = window.setInterval(() => void refresh(), 3000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  // Poll the event buffer while a session is (or just was) running.
+  const running = !!status?.running;
+  useEffect(() => {
+    if (!running) return;
+    const timer = window.setInterval(async () => {
+      const { events: next, next: after } = await getVoiceEvents(nextIndex);
+      if (next.length) {
+        setEvents((cur) => [...cur.slice(-40), ...next]);
+        setNextIndex(after);
+      }
+    }, 1200);
+    return () => window.clearInterval(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [running]);
+
+  const install = async () => {
+    setError(null);
+    const res = await installVoiceModels();
+    if (!res.ok) setError(res.reason || t("Voice chat could not start the model download."));
+  };
+
+  const toggle = async () => {
+    setError(null);
+    if (running) {
+      await stopVoiceChat();
+    } else {
+      const res = await startVoiceChat();
+      if (!res.ok) setError(res.error || t("Voice chat could not start."));
+      else setEvents([]);
+    }
+    await refresh();
+  };
+
+  const allInstalled =
+    !!status &&
+    Object.keys(status.models).length > 0 &&
+    Object.values(status.models).every((m) => m.installed);
+  const installing = !!status?.install?.active;
+  const installTotal = status?.install?.total || 1;
+  const installPercent = Math.min(100, Math.round(((status?.install?.done || 0) / installTotal) * 100));
+  const labels = Object.values(status?.models || {}).map((m) => m.label);
+  const lastTranscript = [...events].reverse().find((e) => e.type === "partial" || e.type === "final");
+  const lastReply = [...events].reverse().find((e) => e.type === "reply");
+
+  return (
+    <div className={CARD}>
+      <div className="p-4 flex items-start gap-3">
+        <Icon name="mic" size={18} className={running ? "text-green-600" : "text-accent mt-0.5"} />
+        <div className="min-w-0 flex-1">
+          <div className="text-[13.5px] font-medium">{t("Voice chat (speak & reply)")}</div>
+          <div className="text-[12px] text-muted mt-0.5">
+            {t("Continuous listening: VAD + streaming ASR → current model → local TTS. All on this device.")}
+          </div>
+          {labels.length > 0 && (
+            <div className="text-[11.5px] text-muted mt-1.5">{labels.join(" · ")}</div>
+          )}
+          {status?.install?.error && (
+            <div className="text-[12px] text-red-600 mt-1.5">{status.install.error}</div>
+          )}
+        </div>
+        <div className="flex items-center gap-2 shrink-0">
+          {!allInstalled && !installing && (
+            <button className={BTN_ACCENT} onClick={() => void install()}>{t("Download models")}</button>
+          )}
+          {installing && (
+            <span className="text-[12px] text-muted">
+              {status?.install?.key ? t("Downloading {key}…", { key: status.install.key }) : t("Downloading…")} {installPercent}%
+            </span>
+          )}
+          {allInstalled && (
+            <button
+              className={running ? BTN_BORDERED : BTN_ACCENT}
+              onClick={() => void toggle()}
+            >
+              {running ? t("Stop conversation") : t("Start conversation")}
+            </button>
+          )}
+        </div>
+      </div>
+
+      {installing && (
+        <div className="border-t border-line px-4 py-3">
+          <div className="h-1.5 rounded-full bg-line overflow-hidden">
+            <div className="h-full bg-accent transition-all" style={{ width: `${installPercent}%` }} />
+          </div>
+          <div className="mt-1.5 text-[11.5px] text-muted flex">
+            <span>{formatBytes(status?.install?.done || 0)} of {formatBytes(installTotal)}</span>
+            <span className="ml-auto">{installPercent}%</span>
+          </div>
+        </div>
+      )}
+
+      {(running || events.length > 0) && (
+        <div className="border-t border-line px-4 py-3 space-y-2">
+          {running && (
+            <div className="text-[12px] text-accent flex items-center gap-2" role="status">
+              <span className="w-1.5 h-1.5 rounded-full bg-accent animate-pulse" />
+              {t("Listening… say something, then wait for the reply.")}
+            </div>
+          )}
+          {lastTranscript && (
+            <div className="text-[13px]">“{lastTranscript.payload}”</div>
+          )}
+          {lastReply && (
+            <div className="rounded-lg bg-paper/60 border border-line px-3 py-2 text-[13px]">
+              <span className="text-[11px] text-muted block mb-0.5">{t("Reply")}</span>
+              {lastReply.payload}
+            </div>
+          )}
+          {events.filter((e) => e.type === "error").slice(-1).map((e, i) => (
+            <div key={i} className="text-[12px] text-red-600">{e.payload}</div>
+          ))}
+        </div>
+      )}
+
+      {error && <div className="border-t border-line px-4 py-2.5 text-[12px] text-red-600">{error}</div>}
+    </div>
   );
 }
 

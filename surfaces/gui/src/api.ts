@@ -956,6 +956,58 @@ export async function searchKnowledge(
   return await res.json();
 }
 
+// --- local voice chat (VAD + streaming ASR + LLM + TTS) -------------------------
+
+export interface VoiceModelStatus {
+  installed: boolean;
+  label: string;
+  size: number;
+  expected_size: number;
+}
+
+export interface VoiceStatus {
+  models: Record<string, VoiceModelStatus>;
+  running: boolean;
+  install: { active: boolean; key: string; done: number; total: number; error: string };
+  model: string;
+}
+
+export interface VoiceEvent {
+  index: number;
+  type: "state" | "partial" | "final" | "reply" | "error";
+  payload: string;
+  detail: string;
+}
+
+export async function getVoiceStatus(): Promise<VoiceStatus | null> {
+  try {
+    const res = await fetch(`${httpBase()}/v1/voice/status`);
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+
+export async function installVoiceModels(): Promise<{ ok: boolean; started?: boolean; reason?: string }> {
+  const res = await fetch(`${httpBase()}/v1/voice/install`, { method: "POST" });
+  return await res.json();
+}
+
+export async function startVoiceChat(): Promise<{ ok: boolean; error?: string }> {
+  const res = await fetch(`${httpBase()}/v1/voice/start`, { method: "POST" });
+  return await res.json();
+}
+
+export async function stopVoiceChat(): Promise<{ ok: boolean }> {
+  const res = await fetch(`${httpBase()}/v1/voice/stop`, { method: "POST" });
+  return await res.json();
+}
+
+export async function getVoiceEvents(after = 0): Promise<{ events: VoiceEvent[]; next: number }> {
+  const res = await fetch(`${httpBase()}/v1/voice/events?after=${after}`);
+  return await res.json();
+}
+
 export interface TaskTemplate {
   id: number;
   title: string;

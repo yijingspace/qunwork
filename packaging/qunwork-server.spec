@@ -69,6 +69,20 @@ for pkg in ("rapidocr_onnxruntime", "onnxruntime"):
     binaries += b
     hiddenimports += h
 
+# `sherpa_onnx` (local voice chat: VAD + streaming ASR + TTS) and `sounddevice`
+# (mic capture / playback) are lazy-imported inside coworker/voice/pipeline.py, so
+# static analysis misses them. sherpa-onnx ships its native core + onnxruntime
+# bindings as package data → collect_all. sounddevice also needs its PortAudio
+# backend data files.
+for pkg in ("sherpa_onnx", "sounddevice"):
+    try:
+        d, b, h = collect_all(pkg)
+        datas += d
+        binaries += b
+        hiddenimports += h
+    except Exception:
+        pass
+
 # Windows has no system tz database; tzdata ships the zoneinfo files the scheduler needs.
 if IS_WINDOWS:
     try:

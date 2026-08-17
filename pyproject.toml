@@ -35,6 +35,11 @@ dependencies = [
     # IANA tz database for zoneinfo. Windows ships no system tz db, so without this every
     # named schedule timezone (UTC, Asia/Kolkata, …) silently falls back to local time.
     "tzdata; sys_platform == 'win32'",
+    # Local voice chat pipeline (coworker/voice): sherpa-onnx = VAD + streaming ASR + TTS
+    # (onnxruntime-based, CPU), sounddevice = mic capture / playback. Heavy and lazy-imported,
+    # so the sidecar runs fine even when these are missing.
+    "sherpa-onnx>=1.13",
+    "sounddevice>=0.5",
 ]
 
 [project.optional-dependencies]
