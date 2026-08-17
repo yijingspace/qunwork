@@ -237,6 +237,64 @@ async fn pick_folder(app: tauri::AppHandle) -> Option<String> {
     rx.recv().ok().flatten().map(|fp| fp.to_string())
 }
 
+/// Native image picker (owner bug 2026-08-18: the composer's HTML `<input type=file>`
+/// in the Windows WebView2 shell can return an empty `file.type` for local files,
+/// which silently dropped the picked photo — no chip, no notice). The desktop shell
+/// opens a REAL native dialog, reads the chosen image files, and returns base64 data
+/// URLs built with the correct image MIME. The web GUI keeps the HTML input path.
+#[tauri::command]
+async fn pick_images(app: tauri::AppHandle) -> Vec<serde_json::Value> {
+    use base64::Engine;
+    use tauri_plugin_dialog::DialogExt;
+
+    let picked = app
+        .dialog()
+        .file()
+        .add_filter("Images", &["png", "jpg", "jpeg", "gif", "webp", "bmp", "svg", "avif", "heic", "heif", "tif", "tiff", "ico"])
+        .blocking_pick_files();
+    let mut out: Vec<serde_json::Value> = Vec::new();
+    for fp in picked.unwrap_or_default() {
+        let Some(path) = fp.as_path() else { continue };
+        let name = path
+            .file_name()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| "image".to_string());
+        let data = match std::fs::read(&path) {
+            Ok(d) => d,
+            Err(_) => continue,
+        };
+        if data.is_empty() {
+            continue;
+        }
+        let mime = mime_from_ext(path.extension().map(|e| e.to_string_lossy().to_lowercase()));
+        let b64 = base64::engine::general_purpose::STANDARD.encode(data);
+        out.push(serde_json::json!({
+            "kind": "image",
+            "name": name,
+            "mime": mime,
+            "data_url": format!("data:{};base64,{}", mime, b64),
+        }));
+    }
+    out
+}
+
+fn mime_from_ext(ext: Option<String>) -> String {
+    match ext.as_deref() {
+        Some("png") => "image/png".into(),
+        Some("jpg") | Some("jpeg") => "image/jpeg".into(),
+        Some("gif") => "image/gif".into(),
+        Some("webp") => "image/webp".into(),
+        Some("bmp") => "image/bmp".into(),
+        Some("svg") => "image/svg+xml".into(),
+        Some("avif") => "image/avif".into(),
+        Some("heic") => "image/heic".into(),
+        Some("heif") => "image/heif".into(),
+        Some("tif") | Some("tiff") => "image/tiff".into(),
+        Some("ico") => "image/x-icon".into(),
+        _ => "image/png".into(),
+    }
+}
+
 #[tauri::command]
 fn get_autostart(app: tauri::AppHandle) -> bool {
     app.autolaunch().is_enabled().unwrap_or(false)
@@ -600,6 +658,7 @@ pub fn run() {
             mark_dictation_test_passed,
             delete_dictation_model,
             dictation_level,
+            pick_images,
             check_for_update,
             download_update,
             clear_pending_update,

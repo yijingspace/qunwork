@@ -2674,6 +2674,7 @@ checksum = "7c87def4c32ab89d880effc9e097653c8da5d6ef28e6b539d313baaacfbafcbe"
 name = "openworker-desktop"
 version = "0.20.0"
 dependencies = [
+ "base64 0.22.1",
  "ocw-stt",
  "serde",
  "serde_json",

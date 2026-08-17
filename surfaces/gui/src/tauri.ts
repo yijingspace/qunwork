@@ -3,6 +3,8 @@
 // sets `withGlobalTauri`) instead of the @tauri-apps npm packages, so the browser build needs
 // no Tauri dependencies.
 
+import type { Attachment } from "./types";
+
 export const isTauri = (): boolean =>
   typeof (globalThis as any).__TAURI__ !== "undefined";
 
@@ -63,6 +65,13 @@ export async function chooseFolder(): Promise<string | null> {
   if (isTauri()) return pickFolder();
   const { pickFolderViaServer } = await import("./api");
   return pickFolderViaServer();
+}
+
+/** Native image picker (desktop only). Returns ready-made image attachments (base64 data
+ * URLs with the correct MIME), or [] on cancel. The web build has no native dialog, so the
+ * composer falls back to the HTML file input there. */
+export async function pickImages(): Promise<Attachment[] | null> {
+  return invoke<Attachment[]>("pick_images");
 }
 
 /** Open-at-login (macOS LaunchAgent). */

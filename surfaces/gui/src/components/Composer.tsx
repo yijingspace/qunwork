@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import type { Attachment } from "../types";
-import { isPdfFile, readFile } from "../attach";
+import { isImageFile, isPdfFile, readFile, rejectReason } from "../attach";
 import { getSettings, inspectPdf } from "../api";
 import { Dropdown, type Option } from "./Dropdown";
 import { Icon } from "./Icon";
@@ -11,6 +11,7 @@ import {
   getDictationLevel,
   getDictationStatus,
   isTauri,
+  pickImages,
   startDictation,
   stopDictation,
   type DictationStatus,
@@ -220,6 +221,14 @@ export function Composer(props: Props) {
     }
     const accepted: File[] = [];
     for (const file of list) {
+      // Surface WHY a file was rejected instead of silently dropping it — before the
+      // fix an untypable (empty file.type) or oversized image just vanished with no
+      // chip and no notice (owner bug 2026-08-18).
+      const reason = rejectReason(file);
+      if (reason) {
+        showAttachNotice(reason);
+        continue;
+      }
       if (isPdfFile(file) && file.size > maxMb * 1024 * 1024) {
         showAttachNotice(
           `${file.name} skipped — ${(file.size / 1024 / 1024).toFixed(1)} MB is over your ${maxMb} MB limit (Settings → Token savings)`,
@@ -250,8 +259,22 @@ export function Composer(props: Props) {
   };
 
   // The "+" menu offers typed shortcuts; each just narrows the OS picker's filter.
-  const pickFiles = (accept: string) => {
+  // Images on the DESKTOP shell go through a REAL native dialog (pick_images) — the HTML
+  // file input in the Windows WebView2 can return an empty file.type for local files and
+  // silently drop the photo (owner bug 2026-08-18). The web build keeps the HTML input.
+  const pickFiles = async (accept: string) => {
     setAttachMenuOpen(false);
+    if (accept === "image/*" && isTauri()) {
+      try {
+        const picked = await pickImages();
+        if (picked && picked.length) {
+          setAttachments((a) => mergeAttachments(a, picked));
+        }
+        return;
+      } catch {
+        // native picker failed — fall through to the HTML input below
+      }
+    }
     if (fileInput.current) {
       fileInput.current.accept = accept;
       fileInput.current.click();
@@ -290,7 +313,7 @@ export function Composer(props: Props) {
 
   const onPaste = (e: React.ClipboardEvent) => {
     const imgs = Array.from(e.clipboardData.items)
-      .filter((it) => it.kind === "file" && it.type.startsWith("image/"))
+      .filter((it) => it.kind === "file" && (it.type.startsWith("image/") || isImageFile(it.getAsFile() as File)))
       .map((it) => it.getAsFile())
       .filter(Boolean) as File[];
     if (imgs.length) {
