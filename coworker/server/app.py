@@ -3242,10 +3242,13 @@ def create_app(manager: SessionManager) -> FastAPI:
                         continue
                     await _apply_model(model)
                     if text or attachments:
-                        # Text-only providers (e.g. deepseek-v4-flash) can't read
-                        # image_url parts — persist image attachments to the session
-                        # workspace instead, so the image-understanding skill can
-                        # OCR / analyze them from the path left in context.
+                        # Image handling (fix 2026-08): the image_url part is ALWAYS
+                        # kept in the message (GUI history renders it, vision models
+                        # read it, and the engine converts it to a placeholder for
+                        # text-only models per call). We ALSO save the image files to
+                        # the session workspace (.qunwork_attachments/) and add a
+                        # "[image: path]" text part so the image-understanding / OCR
+                        # skill can analyze them by path when the model is text-only.
                         _rec = manager.session_store.load(session_id)
                         _ws_dir = (
                             _rec.workspace if _rec and _rec.workspace else manager.default_workspace
@@ -3256,7 +3259,9 @@ def create_app(manager: SessionManager) -> FastAPI:
                             else None
                         )
                         content = build_user_content(
-                            text, attachments, save_images_to=_img_dir
+                            text,
+                            attachments,
+                            save_images_to=_img_dir,
                         )
                         if manager.is_running(session_id):
                             # Running turn: accept the draft as a SUPPLEMENT instead of
@@ -3269,7 +3274,8 @@ def create_app(manager: SessionManager) -> FastAPI:
                             _running = manager.get_engine(session_id)
                             if _running is not None:
                                 _running.queue_steering(
-                                    text, source={"supplement": True, "display": "supplement"}
+                                    content,
+                                    source={"supplement": True, "display": "supplement"},
                                 )
                                 await ws.send_json(
                                     {

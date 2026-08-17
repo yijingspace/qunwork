@@ -66,12 +66,18 @@ def build_user_content(
     "text"? (text)}`.
     Invalid/oversized attachments are skipped rather than failing the turn.
 
-    `save_images_to`: when set, image attachments are decoded and written to that
-    directory and replaced by a text part `[image: <path>]` instead of an image_url
-    part. This is how text-only models (e.g. deepseek-v4-flash, which has no vision)
-    still get to "see" a picture: the path is in context, and the `image-understanding`
-    skill tells the worker to run its OCR/VL analyzer on it. Vision-capable providers
-    keep the native image_url part when this is omitted.
+    `save_images_to`: when set, image attachments are ALSO decoded and written to that
+    directory (`.qunwork_attachments/`) and a `[image: <path>]` text part is added so a
+    text-only model (no vision) can still "see" the picture — the path is in context and
+    the `image-understanding` skill tells the worker to run its OCR/VL analyzer on it.
+
+    The image_url part is ALWAYS kept alongside the path text (fix 2026-08):
+    - vision-capable providers get the real image via image_url (the engine also re-checks
+      capabilities per call);
+    - the GUI's history renderer reads image_url parts, so uploaded pictures keep showing
+      after a reload instead of vanishing into a bare "[image: path]" string;
+    - text-only providers still get the path via the text part (the engine replaces the
+      image_url part with a placeholder for them, which is harmless).
     """
     text = (text or "").strip()
     attachments = attachments or []
@@ -97,9 +103,9 @@ def build_user_content(
                             {"type": "text", "text": f"[image: {saved}]"}
                         )
                         added += 1
-                else:
-                    parts.append({"type": "image_url", "image_url": {"url": url}})
-                    added += 1
+                # Keep the real image part too (history display + vision models).
+                parts.append({"type": "image_url", "image_url": {"url": url}})
+                added += 1
         elif kind == "pdf":
             url = a.get("data_url") or ""
             if _is_data_pdf(url) and len(url) <= MAX_PDF_CHARS:

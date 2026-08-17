@@ -136,7 +136,7 @@ class TurnEngine:
             self.messages.insert(0, {"role": "system", "content": instructions})
         self._cancel = asyncio.Event()
         # Each pending steering message: (text, optional MessageSource sidecar dict).
-        self._steering: list[tuple[str, Optional[dict[str, Any]]]] = []
+        self._steering: list[tuple[Any, Optional[dict[str, Any]]]] = []
         # tool_call.id → the standing rule that auto-allowed it ("tool → target"), so the
         # TOOL_FINISHED event can carry the note to the tool card (§25).
         self._standing_notes: dict[str, str] = {}
@@ -190,9 +190,13 @@ class TurnEngine:
             cancel_wait.cancel()
 
     def queue_steering(
-        self, text: str, source: Optional[dict[str, Any]] = None
+        self, content: "str | list", source: Optional[dict[str, Any]] = None
     ) -> None:
-        self._steering.append((text, source))
+        """Queue a mid-run user input (plain text or OpenAI content-parts for
+        attachments) to be injected before the next model round. `content` may be
+        a parts list — the same shape `run()` accepts — so supplements can carry
+        images/PDFs, not just text."""
+        self._steering.append((content, source))
 
     # -- main loop --------------------------------------------------------------
     async def run(

@@ -94,3 +94,28 @@ describe("itemsFromMessages reasoning", () => {
     expect(items[2]).toEqual({ kind: "assistant", text: "", reasoning: "stopped mid-thought" });
   });
 });
+
+describe("itemsFromMessages image attachments", () => {
+  it("restores image_url parts from persisted history so pictures re-render (fix 2026-08)", () => {
+    const dataUrl = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+    const items = itemsFromMessages([
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "看这张图" },
+          { type: "text", text: "[image: C:\\ws\\.qunwork_attachments\\shot_abc.png]" },
+          { type: "image_url", image_url: { url: dataUrl } },
+        ],
+      },
+    ] as any);
+    expect(items[0].kind).toBe("user");
+    const user = items[0] as any;
+    // The image_url part becomes a renderable image attachment…
+    expect(user.attachments).toHaveLength(1);
+    expect(user.attachments[0].kind).toBe("image");
+    expect(user.attachments[0].data_url).toBe(dataUrl);
+    // …and the [image: path] text (OCR hint for text-only models) stays visible text.
+    expect(user.text).toContain("看这张图");
+    expect(user.text).toContain("[image: ");
+  });
+});

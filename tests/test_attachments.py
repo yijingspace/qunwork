@@ -221,7 +221,10 @@ def test_content_to_text_renders_pdf_placeholder():
 
 
 def test_image_attachment_saved_to_dir_and_replaced_by_text(tmp_path):
-    """Text-only providers: image data_url is persisted and becomes [image: path]."""
+    """Text-only providers: image data_url is persisted and becomes [image: path] —
+    AND the native image_url part is kept alongside (fix 2026-08: GUI history needs
+    the image_url to render the picture after a reload; the engine swaps it for a
+    placeholder on text-only models per call)."""
     import base64
 
     from PIL import Image
@@ -238,6 +241,13 @@ def test_image_attachment_saved_to_dir_and_replaced_by_text(tmp_path):
     assert isinstance(content, list)
     assert any(
         p.get("type") == "text" and str(p.get("text", "")).startswith("[image: ")
+        for p in content
+    )
+    # The image_url part must ALSO survive — vision models read it, and the GUI
+    # renders history from it (before the fix it was replaced, so reloads lost the pic).
+    assert any(
+        p.get("type") == "image_url"
+        and p.get("image_url", {}).get("url", "") == url
         for p in content
     )
     saved = list(dest.glob("*.png"))
