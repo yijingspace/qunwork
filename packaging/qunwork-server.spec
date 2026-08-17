@@ -93,6 +93,17 @@ if IS_WINDOWS:
     except Exception:
         pass
 
+# Built-in skills (coworker/skills/*): collect_submodules only pulls importable .py
+# modules into the PYZ — SKILL.md bodies, grimoire/ docs and forge/ CLI scripts are
+# DATA, not modules, and would silently vanish from the packaged sidecar (vision's
+# SKILL.md, and img2threejs' whole forge/ + grimoire/ tree, need to be on disk).
+# Stage the whole tree as data so the loader's built-in (read-only) dir works identically
+# in dev and in the shipped app. The destination keeps the `coworker/skills/...` layout
+# that SkillLoader._dirs resolves against (…/coworker/skills).
+_SKILLS_SRC = os.path.join(ROOT, "coworker", "skills")
+if os.path.isdir(_SKILLS_SRC):
+    datas.append((_SKILLS_SRC, os.path.join("coworker", "skills")))
+
 for pkg in ("slack_bolt", "telegram"):  # [messaging] extra — optional
     try:
         hiddenimports += collect_submodules(pkg)
