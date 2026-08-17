@@ -22,6 +22,7 @@ hides the window while keeping stdio intact.
 
 import os
 import sys
+from pathlib import Path
 
 from PyInstaller.utils.hooks import collect_all, collect_submodules
 
@@ -92,6 +93,34 @@ if IS_WINDOWS:
         hiddenimports += h
     except Exception:
         pass
+
+# Pillow: required by the bundled vision analyzer (coworker/skills/vision/resources/
+# vision_analyze.py). That script ships as DATA (not imported at build time), so PyInstaller's
+# dependency graph never sees PIL — without this explicit collect the bundle lacks it and
+# analyze_image fails at runtime (owner hit 2026-08-18: 图+文字 LLM 无反应修复后, bundle 内
+# analyze_image 报 ModuleNotFoundError: No module named 'PIL').
+for pkg in ("Pillow", "PIL"):
+    try:
+        d, b, h = collect_all(pkg)
+    except Exception:
+        continue
+    if d or b or h:  # "Pillow" 不抛异常但返回空(非包名) — 只有非空才 break
+        datas += d
+        binaries += b
+        hiddenimports += h
+        break
+# Pillow 的 C 扩展(_imaging*.pyd)不在包数据/依赖图里(hook-PIL 只在 PIL 被
+# import 时触发, 而 vision_analyze.py 是 data 文件) — 显式 glob 收集。
+try:
+    import PIL as _pil_mod
+    import glob as _glob
+
+    _pil_dir = Path(_pil_mod.__file__).resolve().parent
+    for _pyd in _pil_dir.glob("*.pyd"):
+        binaries.append((str(_pyd), "PIL"))
+except Exception:
+    pass
+
 
 # Built-in skills (coworker/skills/*): collect_submodules only pulls importable .py
 # modules into the PYZ — SKILL.md bodies, grimoire/ docs and forge/ CLI scripts are
