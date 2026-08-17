@@ -402,7 +402,7 @@ export const zh: Messages = {
   "Processor": "处理器",
   "8 GB recommended": "建议 8 GB",
   "4 CPU cores recommended": "建议 4 个 CPU 核心",
-  "Whisper Base · English": "Whisper Base · 英语",
+  "Whisper Base · Multilingual (中文)": "Whisper Base · 多语言（中文）",
   "Installed and verified · {size}": "已安装并验证 · {size}",
   "Local voice model · {size}": "本地语音模型 · {size}",
   "Verified": "已验证",

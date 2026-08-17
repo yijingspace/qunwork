@@ -24,13 +24,19 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
 
-/// A reasonably fast English model for short OpenWorker prompts (~142 MB).
-pub const DEFAULT_MODEL_FILE: &str = "ggml-base.en.bin";
-pub const DEFAULT_MODEL_URL: &str =
-    "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin";
-pub const DEFAULT_MODEL_BYTES: u64 = 147_964_211;
+/// A reasonably fast multilingual (incl. Chinese) model for short prompts (~141 MB).
+/// Switched from `ggml-base.en.bin` (English-only) to the multilingual `ggml-base.bin`
+/// so dictation works for Chinese users. Downloads go through the hf-mirror.com proxy
+/// first (huggingface.co is blocked/unreachable from mainland China), with the upstream
+/// URL as a fallback. The SHA256 below was verified against the mirror on 2026-08-17.
+pub const DEFAULT_MODEL_FILE: &str = "ggml-base.bin";
+pub const DEFAULT_MODEL_URLS: &[&str] = &[
+    "https://hf-mirror.com/ggerganov/whisper.cpp/resolve/main/ggml-base.bin",
+    "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin",
+];
+pub const DEFAULT_MODEL_BYTES: u64 = 147_951_465;
 pub const DEFAULT_MODEL_SHA256: &str =
-    "a03779c86df3323075f5e796cb2ce5029f00ec8869eee3fdfb897afe36c6d002";
+    "60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe";
 const WHISPER_SAMPLE_RATE: u32 = 16_000;
 
 #[derive(Debug, Clone, Serialize)]
@@ -118,7 +124,7 @@ impl Dictation {
             model_verified,
             test_passed: model_verified && self.ready_marker_path.is_file(),
             download_in_progress: self.download_in_progress.load(Ordering::SeqCst),
-            model_name: "Whisper Base English (local)",
+            model_name: "Whisper Base Multilingual (local)",
             model_bytes: DEFAULT_MODEL_BYTES,
         }
     }
@@ -167,10 +173,26 @@ impl Dictation {
                 .timeout_connect(std::time::Duration::from_secs(30))
                 .timeout_read(std::time::Duration::from_secs(30))
                 .build();
-            let response = agent
-                .get(DEFAULT_MODEL_URL)
-                .call()
-                .map_err(|e| format!("Could not download the local voice model: {e}"))?;
+            // Try mirrors in order; the first reachable one wins (hf-mirror.com is the
+            // primary because huggingface.co is typically unreachable from mainland China).
+            let mut last_error = None;
+            let mut response = None;
+            for url in DEFAULT_MODEL_URLS {
+                match agent.get(*url).call() {
+                    Ok(res) => {
+                        response = Some(res);
+                        break;
+                    }
+                    Err(e) => {
+                        last_error = Some(format!("Could not download the local voice model: {e}"));
+                    }
+                }
+            }
+            let Some(response) = response else {
+                return Err(last_error.unwrap_or_else(|| {
+                    "Could not download the local voice model: no mirror configured.".to_owned()
+                }));
+            };
             let mut input = response.into_reader();
             let mut output = fs::File::create(&partial)
                 .map_err(|e| format!("Could not save the local voice model: {e}"))?;
@@ -589,7 +611,9 @@ fn transcribe(model_path: &Path, samples: &[f32]) -> Result<String, String> {
         .create_state()
         .map_err(|e| format!("Could not prepare transcription: {e}"))?;
     let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
-    params.set_language(Some("en"));
+    // Multilingual model: force Chinese for deterministic output. `set_translate(false)`
+    // keeps the transcript in the spoken language rather than translating it to English.
+    params.set_language(Some("zh"));
     params.set_translate(false);
     params.set_print_progress(false);
     params.set_print_special(false);
@@ -634,8 +658,8 @@ mod tests {
     }
 
     #[test]
-    fn default_model_size_matches_the_published_base_english_artifact() {
-        assert_eq!(DEFAULT_MODEL_BYTES, 147_964_211);
+    fn default_model_size_matches_the_published_multilingual_base_artifact() {
+        assert_eq!(DEFAULT_MODEL_BYTES, 147_951_465);
     }
 
     #[test]
