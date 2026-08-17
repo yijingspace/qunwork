@@ -435,10 +435,38 @@ def test_outbound_replaces_images_for_non_vision_models(tmp_path):
             ],
         }
     )
-    parts = engine._outbound_messages()[-1]["content"]
-    assert all(p["type"] != "image_url" for p in parts)
-    assert "not viewable" in parts[-1]["text"]
+    content = engine._outbound_messages()[-1]["content"]
+    # All-text parts collapse back to a plain string: text-only providers'
+    # OpenAI-compatible endpoints (DeepSeek & co.) reject or hang on array
+    # `content` bodies (owner bug 2026-08-18: image+text send → silent LLM).
+    assert isinstance(content, str)
+    assert "image_url" not in content
+    assert "not viewable" in content
+    assert "look" in content
     assert engine.messages[-1]["content"][1]["type"] == "image_url"  # history untouched
+
+
+def test_outbound_keeps_parts_for_vision_models(tmp_path):
+    """A vision-capable model keeps the native image_url part (array body)."""
+
+    class VisionProvider(ScriptedProvider):
+        def capabilities(self, model):
+            return ModelCapabilities(vision=True)
+
+    engine, _ = _engine(tmp_path, [_text_turn("ok")])
+    engine.provider = VisionProvider([_text_turn("ok")])
+    engine.messages.append(
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "look"},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,AA=="}},
+            ],
+        }
+    )
+    parts = engine._outbound_messages()[-1]["content"]
+    assert isinstance(parts, list)
+    assert any(p.get("type") == "image_url" for p in parts)
 
 
 class StallProvider(ProviderClient):

@@ -1320,6 +1320,27 @@ class TurnEngine:
                     )
                     for msg in out
                 ]
+                # A parts list that is now ALL text (image_url → placeholder) must be
+                # collapsed back to a plain string: text-only providers' OpenAI-compatible
+                # endpoints (DeepSeek & co.) reject or hang on array `content` — they only
+                # speak a string body. The placeholder text stays, so the model still
+                # knows an image was attached (owner bug 2026-08-18: image+text send
+                # left the LLM silent on deepseek-v4-flash).
+                out = [
+                    (
+                        {
+                            **msg,
+                            "content": _parts_to_text(msg["content"]),
+                        }
+                        if isinstance(msg.get("content"), list)
+                        and all(
+                            isinstance(p, dict) and p.get("type") == "text"
+                            for p in msg["content"]
+                        )
+                        else msg
+                    )
+                    for msg in out
+                ]
 
         context = (
             self.context_provider() if self.context_provider is not None else ""
@@ -1341,6 +1362,20 @@ class TurnEngine:
             out[i] = msg
             break
         return out
+
+
+def _parts_to_text(content: list) -> str:
+    """Collapse an all-text parts list back to a plain string (joining the text parts).
+    Providers whose OpenAI-compatible endpoints only accept string `content` (DeepSeek
+    & friends) reject or hang on array bodies; after image_url→placeholder substitution
+    the parts are all text, so this is always safe."""
+    out: list[str] = []
+    for p in content:
+        if isinstance(p, dict) and p.get("type") == "text":
+            t = str(p.get("text") or "")
+            if t:
+                out.append(t)
+    return "\n".join(out)
 
 
 def _assistant_message(turn: AssistantTurn) -> dict[str, Any]:
