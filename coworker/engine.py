@@ -21,7 +21,7 @@ from typing import Any, AsyncIterator, Awaitable, Callable, Optional
 
 from .events import Event, EventType
 from .permissions import Mode, PermissionEngine
-from .providers import AssistantTurn, ProviderClient, ToolCall
+from .providers import AssistantTurn, ProviderClient, StreamChunk, ToolCall
 from .providers.errors import friendly_model_error
 from .tools import ToolRegistry
 
@@ -513,6 +513,15 @@ class TurnEngine:
                     if self._cancel.is_set():
                         return  # user pressed Stop — the producer exits on its own
                     if not got_any:
+                        # 流式 90s 零 chunk: 部分 OpenAI 兼容端点(小米 Mimo 等)对
+                        # SSE 可能静默挂起。回退到阻塞式 complete, 让用户拿到结果
+                        # 而不是硬超时(owner bug 2026-08-18: Mimo 一直转圈)。
+                        fallback = await self._fallback_complete(
+                            model, messages, tools, settings
+                        )
+                        if fallback is not None:
+                            yield fallback
+                            return
                         raise TimeoutError(
                             f"no response from model within {_STREAM_STALL_TIMEOUT:.0f}s"
                         )
@@ -527,6 +536,33 @@ class TurnEngine:
                     return
         finally:
             pass  # C5 temporarily disabled for bisect
+
+    async def _fallback_complete(
+        self,
+        model: str,
+        messages: list[dict],
+        tools: Optional[list[dict]],
+        settings: dict,
+    ) -> Optional[StreamChunk]:
+        """After a silent streaming stall, retry once as a blocking completion so the
+        user gets an answer instead of a hard timeout. Returns None when the provider has
+        no `complete` or the fallback call itself fails (caller then raises the stall error).
+        """
+        complete = getattr(self.provider, "complete", None)
+        if complete is None:
+            return None
+        try:
+            turn = await asyncio.to_thread(
+                complete, model=model, messages=messages, tools=tools, **settings
+            )
+        except Exception:
+            return None
+        if turn is None:
+            return None
+        self._append_notice(
+            "info", "Stream timed out — fell back to a single request."
+        )
+        return StreamChunk(turn=turn)
 
     async def _handle_tool_calls(
         self, tool_calls: list[ToolCall]

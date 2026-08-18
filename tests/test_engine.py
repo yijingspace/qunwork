@@ -756,3 +756,39 @@ def test_analyze_image_tool_runs_without_approval(tmp_path):
     assert finished[0].data["status"] == "ok"
     # 工具结果以 tool 消息回填, 下一轮模型可见
     assert any(m.get("role") == "tool" for m in engine.messages)
+
+
+def test_stalled_stream_falls_back_to_complete(tmp_path, monkeypatch):
+    """流式 90s 静默但 complete 可用(如小米 Mimo) → 回退非流式拿到结果, 而非硬超时。
+    owner bug 2026-08-18: Mimo 一直转圈 90s 后报 'no response from model within 90s'。"""
+    import coworker.engine as engine_mod
+
+    monkeypatch.setattr(engine_mod, "_STREAM_STALL_TIMEOUT", 0.5)
+    monkeypatch.setattr(engine_mod, "_STREAM_TOTAL_TIMEOUT", 2.0)
+
+    class StreamOnlyStall(ProviderClient):
+        def complete(self, *, model, messages, tools=None, **settings):
+            return AssistantTurn(text="fallback answer", finish_reason="stop")
+
+        def capabilities(self, model):
+            return ModelCapabilities()
+
+        def stream(self, *, model, messages, tools=None, **settings):
+            import time
+
+            time.sleep(30)  # never yields — the stall guard must fall back
+            yield StreamChunk(turn=AssistantTurn(text="late", finish_reason="stop"))
+
+    registry = ToolRegistry()
+    permissions = PermissionEngine(workspace_root=tmp_path)
+    engine = TurnEngine(
+        provider=StreamOnlyStall(),
+        registry=registry,
+        permissions=permissions,
+        model="gpt-5.5",
+    )
+    events = _collect(engine, "please respond")
+    kinds = [e.type.value for e in events]
+    assert "error" not in kinds, f"stall must fall back to complete, got {kinds}"
+    msgs = [e for e in events if e.type == EventType.ASSISTANT_MESSAGE]
+    assert msgs and "fallback answer" in msgs[0].data["text"]
