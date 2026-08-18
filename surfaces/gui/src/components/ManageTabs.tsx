@@ -11,6 +11,7 @@ import {
   disallowUser,
   getMcpServers,
   getMcpTools,
+  setProvider,
   signoutMcp,
   getSettings,
   getSubscriptions,
@@ -77,6 +78,135 @@ const EXAMPLE = `{
 // surfaces can't drift. Settings-only extras: per-card "used Nh ago", a "Remove
 // key…" affordance, the global composer-picker card (gallery view), and the
 // per-provider ModelChecklist / read-only model preview (form view).
+// Friendly "add my own AI service" flow (owner ask 2026-08-18): most people just want to plug
+// in an API key + a model name (e.g. 小米 MiMo). The endpoint is prefilled from a preset
+// dropdown so they never have to know what "base_url" means.
+const CUSTOM_ENDPOINT_PRESETS: Array<[string, string]> = [
+  ["小米 MiMo", "https://api.xiaomimimo.com/v1"],
+  ["DeepSeek", "https://api.deepseek.com"],
+  ["智谱 GLM", "https://open.bigmodel.cn/api/paas/v4"],
+  ["Kimi (月之暗面)", "https://api.moonshot.cn/v1"],
+  ["MiniMax", "https://api.minimax.io/v1"],
+  ["通义 Qwen", "https://dashscope.aliyuncs.com/compatible-mode/v1"],
+  ["OpenAI", "https://api.openai.com/v1"],
+];
+
+function CustomProviderAdder({ onAdded }: { onAdded: () => void }) {
+  const t = useT();
+  const [open, setOpen] = useState(false);
+  const [name, setName] = useState("");
+  const [preset, setPreset] = useState("小米 MiMo");
+  const [baseUrl, setBaseUrl] = useState("https://api.xiaomimimo.com/v1");
+  const [apiKey, setApiKey] = useState("");
+  const [model, setModel] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  if (!open) {
+    return (
+      <button
+        className="w-full mt-3 rounded-xl border border-dashed border-lineStrong/60 bg-panel/40 px-3 py-2.5 text-[13px] text-muted hover:text-ink hover:border-accent/50 transition-colors"
+        data-testid="set-add-custom-provider"
+        onClick={() => setOpen(true)}
+      >
+        ＋ {t("Add your own AI service (OpenAI-compatible)")}
+      </button>
+    );
+  }
+
+  const pickPreset = (v: string) => {
+    setPreset(v);
+    const ep = CUSTOM_ENDPOINT_PRESETS.find(([n]) => n === v)?.[1];
+    if (ep) setBaseUrl(ep);
+  };
+
+  const save = async () => {
+    const slug = name.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "my-service";
+    if (!apiKey.trim()) {
+      setError(t("API key is required."));
+      return;
+    }
+    if (!baseUrl.trim()) {
+      setError(t("Endpoint is required."));
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const r = await setProvider(slug, {
+        title: name.trim() || slug,
+        api_key: apiKey.trim(),
+        base_url: baseUrl.trim(),
+        recommended_model: model.trim(),
+      });
+      if (!r.ok) {
+        setError(r.error || t("Could not add the service."));
+        return;
+      }
+      setOpen(false);
+      setName("");
+      setApiKey("");
+      setModel("");
+      onAdded();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const input =
+    "w-full px-3 py-2 rounded-lg border border-line bg-panel text-[13.5px] outline-none focus:border-accent";
+
+  return (
+    <div className="mt-3 rounded-xl border border-line bg-panel p-3.5" data-testid="set-custom-provider-form">
+      <div className="flex items-center justify-between">
+        <span className="text-[13px] font-semibold">{t("Add your own AI service")}</span>
+        <button className="text-[12px] text-faint hover:text-ink" onClick={() => setOpen(false)}>
+          ✕
+        </button>
+      </div>
+      <p className="text-[11.5px] text-faint mt-0.5 mb-2 leading-snug">
+        {t("Give it a name, paste your API key and model name — the endpoint is prefilled for popular services.")}
+      </p>
+
+      <label className="block text-[12px] text-muted mt-2 mb-1">{t("Service name")}</label>
+      <input className={input} value={name} placeholder={t("e.g. 小米 Mimo")} onChange={(e) => setName(e.target.value)} data-testid="set-custom-name" />
+
+      <label className="block text-[12px] text-muted mt-2 mb-1">{t("API key")}</label>
+      <input className={input} type="password" value={apiKey} placeholder="sk-…" onChange={(e) => setApiKey(e.target.value)} data-testid="set-custom-key" />
+
+      <label className="block text-[12px] text-muted mt-2 mb-1">{t("Model name")}</label>
+      <input className={input} value={model} placeholder={t("e.g. MiMo-7B-RL")} onChange={(e) => setModel(e.target.value)} data-testid="set-custom-model" />
+
+      <label className="block text-[12px] text-muted mt-2 mb-1">{t("Service / endpoint")}</label>
+      <select
+        className={input}
+        value={preset}
+        onChange={(e) => pickPreset(e.target.value)}
+        data-testid="set-custom-preset"
+      >
+        {CUSTOM_ENDPOINT_PRESETS.map(([n]) => (
+          <option key={n} value={n}>
+            {n}
+          </option>
+        ))}
+        <option value="custom">{t("Custom endpoint…")}</option>
+      </select>
+      {preset === "custom" && (
+        <input className={input + " mt-1.5"} value={baseUrl} placeholder="https://…/v1" onChange={(e) => setBaseUrl(e.target.value)} data-testid="set-custom-baseurl" />
+      )}
+      <p className="text-[11px] text-faint mt-1">{baseUrl}</p>
+
+      {error && <p className="text-[12px] text-danger mt-2" data-testid="set-custom-error">{error}</p>}
+
+      <div className="flex gap-2 mt-3">
+        <button className="btn primary flex-1" disabled={busy} onClick={save} data-testid="set-custom-save">
+          {busy ? t("Saving…") : t("Add & use it")}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export function ModelsTab() {
   const t = useT();
   const [settings, setSettings] = useState<ModelSettings | null>(null);
@@ -95,6 +225,7 @@ export function ModelsTab() {
     return (
       <div>
         <ProviderCards ps={ps} tp="set" gridClass="grid grid-cols-2 xl:grid-cols-3 gap-2.5" lastUsed />
+        <CustomProviderAdder onAdded={() => ps.refreshProviders()} />
         <ComposerPickerCard settings={settings} providers={ps.providers} onChanged={refreshSettings} />
       </div>
     );

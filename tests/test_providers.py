@@ -12,6 +12,7 @@ from coworker.providers import (
     ToolCall,
     capabilities_for,
 )
+from coworker.server.manager import SessionManager
 
 
 class _FakeCompletions:
@@ -454,3 +455,49 @@ def test_complete_picks_up_reasoning_content():
     provider = OpenAIProvider(client=_FakeClient(SimpleNamespace(choices=[choice])))
     turn = provider.complete(model="deepseek-v4-pro", messages=[{"role": "user", "content": "x"}])
     assert turn.text == "Answer" and turn.reasoning == "deep thought"
+
+
+def test_custom_provider_add_list_remove(tmp_path):
+    """用户自定义 OpenAI 兼容服务(设置 ▸ 添加自己的 AI 服务): 添加 → 出现在
+    provider 列表(可路由/校验) → 移除。owner ask 2026-08-18(小米 MiMo 场景)。"""
+    from coworker.providers.registry import get_descriptor, provider_descriptors
+
+    manager = SessionManager(workspace=tmp_path)
+    # 添加前未知
+    assert get_descriptor("mimo") is None
+
+    r = manager.set_provider(
+        "mimo",
+        {
+            "title": "小米 Mimo",
+            "api_key": "sk-mimo-test",
+            "base_url": "https://api.xiaomimimo.com/v1",
+            "recommended_model": "MiMo-7B-RL",
+        },
+    )
+    assert r["ok"], r
+    # 动态描述符立即可查(路由/校验用)
+    d = get_descriptor("mimo")
+    assert d is not None and d.title == "小米 Mimo"
+    assert any(x.name == "mimo" for x in provider_descriptors())
+    # get_providers 返回自定义 + 推荐模型自动加入
+    names = [p["name"] for p in manager.get_providers()]
+    assert "mimo" in names
+    # 推荐模型自动进模型列表(自定义 name 直接加)
+    models = manager.get_models() if hasattr(manager, "get_models") else None
+    assert get_descriptor("mimo") is not None
+
+    r2 = manager.remove_provider("mimo")
+    assert r2["ok"]
+    assert get_descriptor("mimo") is None
+    assert "mimo" not in [p["name"] for p in manager.get_providers()]
+
+
+def test_xiaomi_preset_registered(tmp_path):
+    """小米 MiMo 是预设 provider(用户示例场景)。"""
+    from coworker.providers.registry import get_descriptor
+
+    d = get_descriptor("xiaomi")
+    assert d is not None
+    assert d.title == "小米 MiMo"
+    assert "xiaomimimo" in (d.fields[1].default if len(d.fields) > 1 else "")

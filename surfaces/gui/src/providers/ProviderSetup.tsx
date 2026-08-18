@@ -26,6 +26,7 @@ export const KEY_HELP: Record<string, { url: string; label: string }> = {
   zai: { url: "https://z.ai/manage-apikey/apikey-list", label: "z.ai" },
   kimi: { url: "https://platform.moonshot.ai/console/api-keys", label: "platform.moonshot.ai" },
   deepseek: { url: "https://platform.deepseek.com/api_keys", label: "platform.deepseek.com" },
+  xiaomi: { url: "https://dev.xiaomimimo.com", label: "dev.xiaomimimo.com" },
   mistral: { url: "https://console.mistral.ai/api-keys", label: "console.mistral.ai" },
   qwen: { url: "https://modelstudio.console.alibabacloud.com", label: "alibabacloud.com" },
   minimax: { url: "https://platform.minimax.io", label: "platform.minimax.io" },

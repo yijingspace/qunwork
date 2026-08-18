@@ -271,6 +271,14 @@ DESCRIPTORS: list[ProviderDescriptor] = [
         env_key="DEEPSEEK_API_KEY",
     ),
     _compat(
+        "xiaomi",
+        "小米 MiMo",
+        base_url="https://api.xiaomimimo.com/v1",
+        recommended_model="MiMo-7B-RL",
+        env_key="XIAOMI_MIMO_API_KEY",
+        endpoint_help="Prefilled with Xiaomi MiMo's OpenAI-compatible endpoint. Get your key at https://dev.xiaomimimo.com",
+    ),
+    _compat(
         "kimi",
         "Kimi (Moonshot AI)",
         base_url="https://api.moonshot.ai/v1",
@@ -348,17 +356,45 @@ DESCRIPTORS: list[ProviderDescriptor] = [
 
 _BY_NAME = {d.name: d for d in DESCRIPTORS}
 
+# User-added OpenAI-compatible providers (Settings ▸ Models ▸ "Add custom service").
+# Stored in the SecretStore (`custom_providers`), synced here by the manager so the rest
+# of the code (descriptors, routing, key verify) sees them exactly like curated ones.
+_DYNAMIC: dict[str, ProviderDescriptor] = {}
+
+
+def register_dynamic_provider(name: str, descriptor: ProviderDescriptor) -> None:
+    _DYNAMIC[name] = descriptor
+
+
+def unregister_dynamic_provider(name: str) -> None:
+    _DYNAMIC.pop(name, None)
+
+
+def _all_descriptors() -> list[ProviderDescriptor]:
+    return [*DESCRIPTORS, *_DYNAMIC.values()]
+
 
 def provider_descriptors() -> list[ProviderDescriptor]:
-    return list(DESCRIPTORS)
+    return _all_descriptors()
 
 
 def provider_names() -> list[str]:
-    return [d.name for d in DESCRIPTORS]
+    return [d.name for d in _all_descriptors()]
 
 
 def get_descriptor(name: str) -> Optional[ProviderDescriptor]:
-    return _BY_NAME.get(name)
+    return _BY_NAME.get(name) or _DYNAMIC.get(name)
+
+
+def custom_compat_descriptor(name: str, info: dict[str, Any]) -> ProviderDescriptor:
+    """Descriptor for a user-added OpenAI-compatible service (stored `custom_providers`)."""
+    return _compat(
+        name,
+        str(info.get("title") or name),
+        base_url=str(info.get("base_url") or "").strip() or "https://api.openai.com/v1",
+        recommended_model=str(info.get("recommended_model") or "").strip() or "",
+        env_key="",
+    )
 
 
 def build_provider_client(

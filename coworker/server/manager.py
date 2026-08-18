@@ -79,6 +79,7 @@ from ..providers import (
     provider_descriptors,
     verify_provider_key,
 )
+from ..providers.registry import _BY_NAME
 from ..secrets import SecretStore, state_dir
 from ..sessions import SessionRecord
 from ..skills import SkillLoader  # noqa: F401  (kept for API surface compatibility)
@@ -197,6 +198,12 @@ class SessionManager:
         self._autotitle_attempts: dict[str, int] = {}
         self.workspace_trust = WorkspaceTrustStore()
         self.secrets = SecretStore()
+        # 用户添加的自定义 OpenAI 兼容 provider(SecretStore custom_providers) →
+        # 启动时同步进动态 registry, 让路由/校验/UI 与预设一致对待。
+        try:
+            self._sync_custom_providers()
+        except Exception:
+            pass
         # No explicit provider injected → route by the model's `provider:` prefix (OpenAI default,
         # Ollama, …). Tests inject a provider directly and bypass the router. The same router is
         # shared by every engine and the `/v1/chat/completions` proxy.
@@ -1842,7 +1849,25 @@ class SessionManager:
         its cached client. Merges provided fields into any existing profile."""
         d = get_descriptor(name)
         if d is None:
-            return {"ok": False, "error": f"unknown provider: {name}"}
+            # User-added OpenAI-compatible service (Settings ▸ Models ▸ Add custom).
+            fields = fields or {}
+            title = str(fields.get("title") or name).strip() or name
+            base_url = str(fields.get("base_url") or "").strip()
+            if not base_url:
+                return {"ok": False, "error": "base_url required for a custom provider"}
+            from ..providers.registry import custom_compat_descriptor, register_dynamic_provider
+
+            reg = dict(self.secrets.get("custom_providers") or {})
+            reg[name] = {
+                "title": title,
+                "base_url": base_url,
+                "recommended_model": str(fields.get("recommended_model") or "").strip(),
+            }
+            self.secrets.put("custom_providers", reg)
+            register_dynamic_provider(name, custom_compat_descriptor(name, reg[name]))
+            d = get_descriptor(name)
+            if d is None:  # pragma: no cover — defensive
+                return {"ok": False, "error": f"could not register provider: {name}"}
         fields = fields or {}
         profile = dict(self.secrets.get(f"provider:{name}") or {})
         for f in d.fields:
@@ -1870,7 +1895,9 @@ class SessionManager:
         # the curated list so it shows up in the composer right after configuring the provider.
         rec = d.recommended_model
         added: Optional[str] = None
-        if rec and rec in self._suggested_models(name):
+        if rec and (
+            rec in self._suggested_models(name) or name not in _BY_NAME
+        ):
             # OpenAI models stay bare (the router's default); others carry their prefix.
             added = rec if name == "openai" else f"{name}:{rec}"
             self.add_model(added)
@@ -1889,6 +1916,16 @@ class SessionManager:
         if d is None:
             return {"ok": False, "error": f"unknown provider: {name}"}
         self.secrets.delete(f"provider:{name}")
+        # Custom providers are fully removed (registry entry + registration row), not just
+        # their key — the provider only exists because the user added it.
+        if name not in _BY_NAME:
+            from ..providers.registry import unregister_dynamic_provider
+
+            reg = dict(self.secrets.get("custom_providers") or {})
+            if name in reg:
+                del reg[name]
+                self.secrets.put("custom_providers", reg)
+            unregister_dynamic_provider(name)
         self._refresh_provider(name)
         return {"ok": True, "provider": name}
 
@@ -3926,6 +3963,26 @@ class SessionManager:
         invalidate = getattr(self.provider, "invalidate", None)
         if callable(invalidate):
             invalidate(name)
+
+    # -- user-added (custom) OpenAI-compatible providers -----------------------
+    def _sync_custom_providers(self) -> None:
+        """Load user-added providers from the SecretStore into the dynamic registry so the
+        rest of the code (descriptors, routing, key verify) sees them like curated ones."""
+        from ..providers import registry as _reg
+
+        reg = self.secrets.get("custom_providers") or {}
+        for name in list(_reg._DYNAMIC):
+            if name not in reg:
+                _reg.unregister_dynamic_provider(name)
+        for name, info in reg.items():
+            if not isinstance(info, dict):
+                continue
+            try:
+                _reg.register_dynamic_provider(
+                    name, _reg.custom_compat_descriptor(name, info)
+                )
+            except Exception:
+                continue
 
     # -- read models ------------------------------------------------------------
     def list_sessions(self, workspace: Optional[str] = None) -> list[dict[str, Any]]:
