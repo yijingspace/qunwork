@@ -2444,20 +2444,43 @@ export type Handlers = {
 };
 
 export class Session {
-  private ws: WebSocket;
-  // Payloads sent before the socket finished opening, replayed on `onopen`. Belt-and-suspenders
-  // against the first message being dropped if the user sends in the connect window.
+  private ws!: WebSocket;
+  private readonly sessionId: string;
+  private readonly q: string;
+  private readonly handlers: Handlers;
+  // Payloads sent before the socket finished opening (or while disconnected), replayed on
+  // `onopen`. Belt-and-suspenders against the first message being dropped if the user sends
+  // in the connect window — and against a dropped socket silently eating later sends.
   private outbox: object[] = [];
+  private reconnectTimer: number | undefined;
+  private reconnectDelay = 2000; // 2s, doubling to 30s (owner bug 2026-08-18: a dropped
+  // socket left the session permanently mute — every later message was silently discarded).
+  private closed = false;
 
   constructor(sessionId: string, workspace: string, agent: string, handlers: Handlers) {
-    const q = `?workspace=${encodeURIComponent(workspace)}&agent=${encodeURIComponent(agent)}`;
-    this.ws = openWebSocket(`${wsBase()}/ws/session/${sessionId}${q}`);
-    this.ws.onmessage = (e) => handlers.onEvent(JSON.parse(e.data));
+    this.sessionId = sessionId;
+    this.q = `?workspace=${encodeURIComponent(workspace)}&agent=${encodeURIComponent(agent)}`;
+    this.handlers = handlers;
+    this.connect();
+  }
+
+  private connect() {
+    this.ws = openWebSocket(`${wsBase()}/ws/session/${this.sessionId}${this.q}`);
+    this.ws.onmessage = (e) => this.handlers.onEvent(JSON.parse(e.data));
     this.ws.onopen = () => {
+      this.reconnectDelay = 2000;
       this.flush();
-      handlers.onOpen?.();
+      this.handlers.onOpen?.();
     };
-    this.ws.onclose = () => handlers.onClose?.();
+    this.ws.onclose = () => {
+      this.handlers.onClose?.();
+      if (this.closed) return;
+      // Auto-reconnect with backoff, preserving the outbox — otherwise a single oversized
+      // frame / server blip leaves the session permanently mute (owner bug 2026-08-18).
+      const d = this.reconnectDelay;
+      this.reconnectDelay = Math.min(d * 2, 30_000);
+      this.reconnectTimer = window.setTimeout(() => this.connect(), d);
+    };
   }
 
   private flush() {
@@ -2468,9 +2491,13 @@ export class Session {
   }
 
   private send(payload: object) {
-    if (this.ws.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify(payload));
-    // Still connecting: queue and flush on open rather than silently dropping.
-    else if (this.ws.readyState === WebSocket.CONNECTING) this.outbox.push(payload);
+    if (this.ws.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify(payload));
+      return;
+    }
+    // Connecting or temporarily disconnected: queue (bounded) and flush on (re)connect —
+    // never silently drop the user's message.
+    if (this.outbox.length < 50) this.outbox.push(payload);
   }
 
   /** `model` = the composer's CURRENT selection, carried on every message so the turn uses
@@ -2529,6 +2556,8 @@ export class Session {
   }
 
   close() {
+    this.closed = true;
+    if (this.reconnectTimer !== undefined) window.clearTimeout(this.reconnectTimer);
     // Detach before closing: this socket's async `close` event may land AFTER the
     // successor session's `open` (observed when switching into an automation-run
     // session), and a torn-down socket must not clobber the new one's connected state.

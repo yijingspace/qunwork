@@ -108,9 +108,15 @@ export async function compressAttachment(a: Attachment): Promise<Attachment> {
   // here so the Tauri path behaves like the HTML/drag path.
   if (!a.data_url || a.data_url.length <= 8_000_000) return a;
   try {
-    const blob = await (await fetch(a.data_url)).blob();
-    const file = new File([blob], a.name || "image", { type: a.mime || "image/png" });
-    const out = await compressToFit(file, a.mime || "image/png");
+    // atob decode (not fetch(data_url)) — fetching a ~19MB data: URL can itself fail in
+    // WebView2, which would skip compression and send the original oversized frame.
+    const comma = a.data_url.indexOf(",");
+    const mime = a.data_url.slice(5, comma).split(";")[0] || a.mime || "image/png";
+    const bin = atob(a.data_url.slice(comma + 1));
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    const file = new File([bytes], a.name || "image", { type: mime });
+    const out = await compressToFit(file, mime);
     if (out) {
       return {
         ...a,
