@@ -1136,3 +1136,38 @@ def test_ws_supplement_injects_into_running_turn(tmp_path):
         and "补充要求" in str(m.get("content", ""))
         for m in final_round
     ), "supplement text must be injected into the next model round"
+
+
+def test_ws_rejects_oversized_image_with_clear_message(tmp_path):
+    """超限图片(> MAX_IMAGE_CHARS) 显式报错而非静默丢弃 — owner bug 2026-08-18:
+    大图被静默跳过 → 用户以为「LLM 没反应」。报错消息带文件名与大小。"""
+    from coworker.server import app as app_mod
+
+    client = _client(tmp_path, [_text("reply")])
+    with client.websocket_connect("/ws/session/bigimg") as ws:
+        assert ws.receive_json()["type"] == "ready"
+        # data_url 超过 MAX_IMAGE_CHARS (12M 字符)
+        ws.send_json(
+            {
+                "type": "user_message",
+                "text": "describe this",
+                "attachments": [
+                    {
+                        "kind": "image",
+                        "name": "huge.png",
+                        "data_url": "data:image/png;base64,"
+                        + "A" * (app_mod.MAX_IMAGE_CHARS + 10),
+                    }
+                ],
+            }
+        )
+        evt = ws.receive_json()
+        assert evt["type"] == "input_rejected"
+        err = evt["data"]["error"]
+        assert "huge.png" in err  # 文件名可见
+        assert "too large" in err.lower()  # 明确说明是超限
+        assert "NOT sent" in err  # 说明图片未发送(文字仍发)
+
+        # 连接未断开, 后续正常消息可用
+        ws.send_json({"type": "user_message", "text": "hello"})
+        assert "turn_done" in _drain(ws)

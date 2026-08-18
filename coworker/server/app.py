@@ -3208,9 +3208,20 @@ def create_app(manager: SessionManager) -> FastAPI:
                                     not isinstance(data, str)
                                     or not data.startswith("data:image/")
                                     or ";base64," not in data
-                                    or len(data) > MAX_IMAGE_CHARS
                                 ):
-                                    reject = "Invalid or oversized image attachment."
+                                    reject = "Invalid image attachment."
+                                elif len(data) > MAX_IMAGE_CHARS:
+                                    # 明确报错而非静默丢弃(owner bug 2026-08-18: 大图
+                                    # 被静默跳过 → 用户以为"LLM 没反应")。
+                                    img_name = attachment.get("name") or "image"
+                                    mb = len(data) / (1024 * 1024)
+                                    limit_mb = MAX_IMAGE_CHARS / (1024 * 1024)
+                                    reject = (
+                                        f'Image "{img_name}" is too large to attach '
+                                        f"({mb:.1f} MB encoded; limit ≈{limit_mb:.0f} MB). "
+                                        "The image was NOT sent — your text (if any) was "
+                                        "still sent. Compress the image or pick a smaller one."
+                                    )
                             elif attachment_kind == "pdf":
                                 data = attachment.get("data_url")
                                 if (
