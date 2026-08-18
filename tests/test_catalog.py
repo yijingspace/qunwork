@@ -46,6 +46,7 @@ COWORK_TOOLS = {
     "shell_task_output",
     "shell_task_kill",
     "todo_write",
+    "analyze_image",
 }
 
 

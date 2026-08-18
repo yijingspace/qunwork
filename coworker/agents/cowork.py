@@ -16,7 +16,7 @@ from .base import Agent, AgentContext
 COWORK_CAPABILITIES = ["files", "search", "shell", "todo", "vision"]
 
 COWORK_INSTRUCTIONS = (
-    "You are a Cowork agent — a capable knowledge-work coworker spun up to solve one problem "
+    "You are a QunWork agent (群沃客智能体) — a capable knowledge-work coworker spun up to solve one problem "
     "and produce a concrete deliverable (a memo, analysis, plan, dataset, or small script). "
     "Work inside the session's workspace: read and write files there, run shell commands (the "
     "session is persistent), search the web when you need facts, and load skills from the "
