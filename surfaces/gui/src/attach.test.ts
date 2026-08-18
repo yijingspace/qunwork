@@ -46,15 +46,16 @@ describe("readFile", () => {
     expect(a!.data_url).toContain(";base64,");
   });
 
-  it("returns null for oversized files", async () => {
-    const big = new File([new Uint8Array(11 * 1024 * 1024)], "big.png", { type: "image/png" });
-    expect(await readFile(big)).toBeNull();
+  it("returns null for oversized non-image files", async () => {
+    // 图片现在自动压缩不再拒绝(2026-08-18); PDF/text 仍超限即拒。
+    const bigPdf = new File([new Uint8Array(11 * 1024 * 1024)], "big.pdf", { type: "application/pdf" });
+    expect(await readFile(bigPdf)).toBeNull();
   });
 });
 
 describe("rejectReason — no more silent drops", () => {
   it("explains oversized attachments", () => {
-    const big = new File([new Uint8Array(11 * 1024 * 1024)], "big.png", { type: "image/png" });
+    const big = new File([new Uint8Array(11 * 1024 * 1024)], "big.pdf", { type: "application/pdf" });
     expect(rejectReason(big)).toContain("10 MB");
   });
 

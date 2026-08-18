@@ -1,6 +1,10 @@
 import type { Attachment } from "./types";
 
-const MAX_BYTES = 10 * 1024 * 1024; // skip files larger than ~10MB
+const MAX_BYTES = 10 * 1024 * 1024; // PDF/text 附件上限
+// 图片超过该体积时自动压缩后再发送(2026-08-18 owner bug: 14.7MB 图上传后
+// "LLM 没反应" — 超 MAX_IMAGE_CHARS 被服务端拒 + 超 WS 帧 16MB 发不出)。
+const IMAGE_COMPRESS_THRESHOLD = 4 * 1024 * 1024;
+const MAX_IMAGE_EDGE = 2048; // 压缩后最长边(OCR/分析足够, 体积可控)
 const TEXT_RE =
   /\.(txt|md|markdown|csv|tsv|json|ya?ml|log|ini|toml|py|js|ts|tsx|jsx|rs|go|java|c|h|cpp|sh|html?|css|sql|xml)$/i;
 // Image detection MUST fall back to the file extension: the desktop shell's file
@@ -20,7 +24,8 @@ export const isPdfFile = (file: File) =>
 export const isImageFile = (file: File) =>
   file.type.startsWith("image/") || IMAGE_RE.test(file.name);
 
-export const isOversized = (file: File) => file.size > MAX_BYTES;
+export const isOversized = (file: File) =>
+  !isImageFile(file) && file.size > MAX_BYTES;
 
 // Why a file was not attached — surfaced to the user instead of silent dropping
 // (before the fix, an oversized or untypable image just vanished).
@@ -35,6 +40,40 @@ export function rejectReason(file: File): string | null {
     return `${file.name} skipped — unsupported file type`;
   }
   return null;
+}
+
+// Downscale a large image via canvas so it fits the server's 12MB data-URL cap and the
+// 16MB WS frame (owner bug 2026-08-18: 14.7MB 原图 → "LLM 没反应"). Transparent images
+// stay PNG; opaque ones become JPEG q0.85 — both keep the [image: path] OCR pipeline happy.
+function compressImageDataUrl(dataUrl: string, mime: string): Promise<string> {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      try {
+        const scale = Math.min(1, MAX_IMAGE_EDGE / Math.max(img.width, img.height));
+        if (scale >= 1) {
+          resolve(dataUrl);
+          return;
+        }
+        const canvas = document.createElement("canvas");
+        canvas.width = Math.max(1, Math.round(img.width * scale));
+        canvas.height = Math.max(1, Math.round(img.height * scale));
+        const ctx = canvas.getContext("2d");
+        if (!ctx) {
+          resolve(dataUrl);
+          return;
+        }
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        const hasAlpha = mime === "image/png" || mime === "image/webp" || mime.includes("png");
+        const out = canvas.toDataURL(hasAlpha ? "image/png" : "image/jpeg", hasAlpha ? undefined : 0.85);
+        resolve(out || dataUrl);
+      } catch {
+        resolve(dataUrl);
+      }
+    };
+    img.onerror = () => resolve(dataUrl);
+    img.src = dataUrl;
+  });
 }
 
 export function readFile(file: File): Promise<Attachment | null> {
@@ -55,7 +94,21 @@ export function readFile(file: File): Promise<Attachment | null> {
         const base64 = typeof reader.result === "string"
           ? reader.result.split(",")[1] || ""
           : "";
-        resolve({ kind: "image", name: file.name || "image", mime, data_url: `data:${mime};base64,${base64}` });
+        const dataUrl = `data:${mime};base64,${base64}`;
+        // Large pictures are compressed before sending — otherwise they exceed the
+        // server's MAX_IMAGE_CHARS and the WS frame cap and the turn never starts.
+        if (file.size > IMAGE_COMPRESS_THRESHOLD || dataUrl.length > 8_000_000) {
+          compressImageDataUrl(dataUrl, mime).then((compressed) =>
+            resolve({
+              kind: "image",
+              name: file.name || "image",
+              mime: compressed === dataUrl ? mime : compressed.startsWith("data:image/png") ? "image/png" : "image/jpeg",
+              data_url: compressed,
+            }),
+          );
+        } else {
+          resolve({ kind: "image", name: file.name || "image", mime, data_url: dataUrl });
+        }
         return;
       }
       resolve(
