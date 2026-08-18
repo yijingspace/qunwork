@@ -101,6 +101,29 @@ async function compressToFit(file: File, mime: string): Promise<string> {
   return "";
 }
 
+export async function compressAttachment(a: Attachment): Promise<Attachment> {
+  // Desktop shell's native picker (pick_images) returns the RAW base64 data_url with no
+  // size check (owner bug 2026-08-18: 14.3MB PNG → ~19MB data_url → exceeds the 12MB
+  // image cap and the 16MB WS frame → connection dropped → "LLM 没反应"). Re-compress
+  // here so the Tauri path behaves like the HTML/drag path.
+  if (!a.data_url || a.data_url.length <= 8_000_000) return a;
+  try {
+    const blob = await (await fetch(a.data_url)).blob();
+    const file = new File([blob], a.name || "image", { type: a.mime || "image/png" });
+    const out = await compressToFit(file, a.mime || "image/png");
+    if (out) {
+      return {
+        ...a,
+        data_url: out,
+        mime: out.startsWith("data:image/png") ? "image/png" : "image/jpeg",
+      };
+    }
+  } catch {
+    /* keep the original — server-side validation is the backstop */
+  }
+  return a;
+}
+
 export function readFile(file: File): Promise<Attachment | null> {
   const isImage = isImageFile(file);
   const isPdf = isPdfFile(file);

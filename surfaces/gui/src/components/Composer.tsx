@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import type { Attachment } from "../types";
-import { isImageFile, isPdfFile, readFile, rejectReason } from "../attach";
+import { isImageFile, isPdfFile, readFile, rejectReason, compressAttachment } from "../attach";
 import { getSettings, inspectPdf } from "../api";
 import { Dropdown, type Option } from "./Dropdown";
 import { Icon } from "./Icon";
@@ -268,7 +268,11 @@ export function Composer(props: Props) {
       try {
         const picked = await pickImages();
         if (picked && picked.length) {
-          setAttachments((a) => mergeAttachments(a, picked));
+          // Native picker returns raw base64 with no size guard — compress large picks
+          // here so they fit the server's 12MB image cap / 16MB WS frame (owner bug
+          // 2026-08-18: 14.3MB PNG via "+ 照片" → silent drop → "LLM 没反应").
+          const compressed = await Promise.all(picked.map(compressAttachment));
+          setAttachments((a) => mergeAttachments(a, compressed));
         }
         return;
       } catch {
