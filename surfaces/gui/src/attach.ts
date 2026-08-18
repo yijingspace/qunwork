@@ -4,7 +4,6 @@ const MAX_BYTES = 10 * 1024 * 1024; // PDF/text 附件上限
 // 图片超过该体积时自动压缩后再发送(2026-08-18 owner bug: 14.7MB 图上传后
 // "LLM 没反应" — 超 MAX_IMAGE_CHARS 被服务端拒 + 超 WS 帧 16MB 发不出)。
 const IMAGE_COMPRESS_THRESHOLD = 4 * 1024 * 1024;
-const MAX_IMAGE_EDGE = 2048; // 压缩后最长边(OCR/分析足够, 体积可控)
 const TEXT_RE =
   /\.(txt|md|markdown|csv|tsv|json|ya?ml|log|ini|toml|py|js|ts|tsx|jsx|rs|go|java|c|h|cpp|sh|html?|css|sql|xml)$/i;
 // Image detection MUST fall back to the file extension: the desktop shell's file
@@ -43,16 +42,23 @@ export function rejectReason(file: File): string | null {
 }
 
 // Downscale a large image via canvas so it fits the server's 12MB data-URL cap and the
-// 16MB WS frame (owner bug 2026-08-18: 14.7MB 原图 → "LLM 没反应"). Transparent images
-// stay PNG; opaque ones become JPEG q0.85 — both keep the [image: path] OCR pipeline happy.
-function compressImageDataUrl(dataUrl: string, mime: string): Promise<string> {
+// 16MB WS frame (owner bug 2026-08-18: 14.7MB PNG 4096×3072 → "LLM 没反应").
+// IMPORTANT: the image is loaded from `URL.createObjectURL(file)` — a ~19MB base64
+// `data:` URL fed straight to <img> can fail to load in WebView2/Chromium (data-URL
+// size limits), which silently skipped compression and sent the original oversized
+// frame. Blob URLs have no such limit. Transparent images stay PNG; opaque → JPEG.
+// Returns "" when the image is already small enough or rendering failed (caller keeps
+// the original — for a genuinely unrenderable format there is nothing else to do).
+function renderImage(file: File, edge: number, quality: number, mime: string): Promise<string> {
   return new Promise((resolve) => {
+    const url = URL.createObjectURL(file);
     const img = new Image();
     img.onload = () => {
+      URL.revokeObjectURL(url);
       try {
-        const scale = Math.min(1, MAX_IMAGE_EDGE / Math.max(img.width, img.height));
+        const scale = Math.min(1, edge / Math.max(img.width, img.height));
         if (scale >= 1) {
-          resolve(dataUrl);
+          resolve(""); // already fits — no compression needed
           return;
         }
         const canvas = document.createElement("canvas");
@@ -60,20 +66,39 @@ function compressImageDataUrl(dataUrl: string, mime: string): Promise<string> {
         canvas.height = Math.max(1, Math.round(img.height * scale));
         const ctx = canvas.getContext("2d");
         if (!ctx) {
-          resolve(dataUrl);
+          resolve("");
           return;
         }
         ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
         const hasAlpha = mime === "image/png" || mime === "image/webp" || mime.includes("png");
-        const out = canvas.toDataURL(hasAlpha ? "image/png" : "image/jpeg", hasAlpha ? undefined : 0.85);
-        resolve(out || dataUrl);
+        const out = canvas.toDataURL(hasAlpha ? "image/png" : "image/jpeg", hasAlpha ? undefined : quality);
+        resolve(out || "");
       } catch {
-        resolve(dataUrl);
+        resolve("");
       }
     };
-    img.onerror = () => resolve(dataUrl);
-    img.src = dataUrl;
+    img.onerror = () => {
+      URL.revokeObjectURL(url);
+      resolve("");
+    };
+    img.src = url;
   });
+}
+
+// Progressive downscale: try smaller edge/quality until the result fits the 8MB target
+// (keeps the whole message safely under the 16MB WS frame and 12MB image cap).
+async function compressToFit(file: File, mime: string): Promise<string> {
+  const attempts: Array<[number, number]> = [
+    [2048, 0.85],
+    [1600, 0.75],
+    [1280, 0.65],
+    [1024, 0.55],
+  ];
+  for (const [edge, quality] of attempts) {
+    const out = await renderImage(file, edge, quality, mime);
+    if (out && out.length < 8_000_000) return out;
+  }
+  return "";
 }
 
 export function readFile(file: File): Promise<Attachment | null> {
@@ -98,14 +123,20 @@ export function readFile(file: File): Promise<Attachment | null> {
         // Large pictures are compressed before sending — otherwise they exceed the
         // server's MAX_IMAGE_CHARS and the WS frame cap and the turn never starts.
         if (file.size > IMAGE_COMPRESS_THRESHOLD || dataUrl.length > 8_000_000) {
-          compressImageDataUrl(dataUrl, mime).then((compressed) =>
-            resolve({
-              kind: "image",
-              name: file.name || "image",
-              mime: compressed === dataUrl ? mime : compressed.startsWith("data:image/png") ? "image/png" : "image/jpeg",
-              data_url: compressed,
-            }),
-          );
+          compressToFit(file, mime).then((compressed) => {
+            if (compressed) {
+              resolve({
+                kind: "image",
+                name: file.name || "image",
+                mime: compressed.startsWith("data:image/png") ? "image/png" : "image/jpeg",
+                data_url: compressed,
+              });
+            } else {
+              // 压缩失败(格式无法渲染等) — 原样发送, 附缩略图仍显示;
+              // 超限由服务端校验兜底(不会静默无响应 — 会有错误提示)。
+              resolve({ kind: "image", name: file.name || "image", mime, data_url: dataUrl });
+            }
+          });
         } else {
           resolve({ kind: "image", name: file.name || "image", mime, data_url: dataUrl });
         }
