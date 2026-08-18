@@ -401,7 +401,7 @@ def build_provider_client(
     name: str, profile: dict[str, Any], secrets: Any
 ) -> ProviderClient:
     """Build a `ProviderClient` for `name` from its stored profile. Unknown → OpenAI default."""
-    descriptor = _BY_NAME.get(name) or _BY_NAME["openai"]
+    descriptor = get_descriptor(name) or _BY_NAME["openai"]
     return descriptor.build(profile or {}, secrets)
 
 
@@ -434,7 +434,7 @@ def verify_provider_key(
     """
     import httpx
 
-    d = _BY_NAME.get(name) or _BY_NAME["openai"]
+    d = get_descriptor(name) or _BY_NAME["openai"]
     key = (api_key or "").strip()
     try:
         if name == "anthropic":

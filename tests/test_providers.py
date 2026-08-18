@@ -501,3 +501,26 @@ def test_xiaomi_preset_registered(tmp_path):
     assert d is not None
     assert d.title == "小米 MiMo"
     assert "xiaomimimo" in (d.fields[1].default if len(d.fields) > 1 else "")
+
+
+def test_custom_provider_builds_openai_compat_client(tmp_path):
+    """自定义 provider 的 client 必须用动态描述符构建(否则 fallback 到 openai 报
+    'No model API key configured' — owner bug 2026-08-18: 用户添加小米 Mimo 后发消息报错)。"""
+    from coworker.providers.registry import build_provider_client
+
+    manager = SessionManager(workspace=tmp_path)
+    manager.set_provider(
+        "mimo",
+        {
+            "title": "小米 Mimo",
+            "api_key": "sk-mimo-key",
+            "base_url": "https://api.xiaomimimo.com/v1",
+            "recommended_model": "MiMo-7B-RL",
+        },
+    )
+    client = build_provider_client("mimo", {"api_key": "sk-mimo-key"}, manager.secrets)
+    from coworker.providers.openai_provider import OpenAIProvider
+
+    assert isinstance(client, OpenAIProvider)
+    assert client._base_url == "https://api.xiaomimimo.com/v1"
+    assert client._api_key == "sk-mimo-key"
