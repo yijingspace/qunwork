@@ -1990,7 +1990,7 @@ class SessionManager:
     # -- skills user directory (user-configurable) ---------------------------
     def _resolve_skills_user_path(self) -> Path:
         """Resolve the user skills directory from prefs or fall back to state_dir/skills."""
-        explicit = self._prefs.get("skills_user_path")
+        explicit = getattr(self, "_prefs", {}).get("skills_user_path") if hasattr(self, "_prefs") else None
         if explicit:
             p = Path(explicit).expanduser().resolve()
             p.mkdir(parents=True, exist_ok=True)
