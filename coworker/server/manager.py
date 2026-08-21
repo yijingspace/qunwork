@@ -216,6 +216,8 @@ class SessionManager:
         self._data_base = base
         # Desktop/UI prefs (default model, onboarding state) — not secrets; a plain JSON file.
         self._prefs = self._load_prefs()
+        # 启动时检查是否有待执行的知识库迁移（用户在设置中保存了新路径后重启）
+        self._execute_pending_knowledge_move()
         # Knowledge library path: user-configurable (moved from data_base to
         # support relocating the DB to a larger drive). Resolution order:
         # prefs["knowledge_db_path"] → data_base / "knowledge.db".
@@ -1999,11 +2001,11 @@ class SessionManager:
     def set_knowledge_path(
         self, new_path: str, *, migrate: bool = False
     ) -> dict[str, Any]:
-        """Set a new knowledge library path. Optionally migrate (move) the existing DB.
+        """Set a new knowledge library path. The actual move happens on restart (migrate=true)
+        to avoid breaking the running sidecar's SQLite connection.
 
         This lets users relocate the knowledge base to a larger drive (e.g. E:)
-        to avoid C: drive bloat. After setting the path, the knowledge store is
-        reloaded and engines pick up the new path.
+        to avoid C: drive bloat. After saving, the user must restart the app.
         """
         new = Path(new_path).expanduser().resolve()
         old = self._knowledge_db_path
@@ -2019,43 +2021,49 @@ class SessionManager:
         if new == old:
             return {"ok": True, "message": "already set", **self.get_knowledge_path()}
 
-        # Migrate: move the existing DB to the new location.
-        if migrate and old.exists():
-            if new.exists():
-                # Both exist — merge or overwrite? Warn the user.
-                return {
-                    "ok": False,
-                    "error": (
-                        f"A knowledge database already exists at {new}. "
-                        "Set migrate=true to overwrite, or choose a different path."
-                    ),
-                }
-            # 先关闭知识库连接(解除 SQLite 锁), 否则 shutil.move 会挂起
-            # (owner bug 2026-08-21: 2GB knowledge.db 被 sidecar 锁住,
-            # move 阻塞 → 前端永远显示「移动中…」)。
-            try:
-                self.knowledge.close()
-            except Exception:
-                pass
-            import shutil
-            shutil.move(str(old), str(new))
-
-        # Reload the knowledge store with the new path.
-        self.knowledge = KnowledgeStore(
-            new,
-            workspace=self.default_workspace,
-        )
-        # Update internal reference.
-        self._knowledge_db_path = new
-        # Persist the preference.
+        # Save the pending move to prefs — the actual shutil.move happens on
+        # restart (via _execute_pending_knowledge_move), so the sidecar's
+        # SQLite connection is never disrupted at runtime.
         self._prefs["knowledge_db_path"] = str(new)
+        if migrate:
+            self._prefs["pending_knowledge_move"] = {
+                "from": str(old),
+                "to": str(new),
+            }
         self._save_prefs()
 
         return {
             "ok": True,
-            "migrated": migrate and old.exists() is False,
+            "migrate_pending": bool(migrate),
+            "restart_required": True,
             **self.get_knowledge_path(),
         }
+
+    def _execute_pending_knowledge_move(self) -> None:
+        """Called on startup: if a pending knowledge DB move was saved, execute it now
+        (the sidecar isn't holding the DB yet, so shutil.move won't hang)."""
+        pending = self._prefs.get("pending_knowledge_move")
+        if not pending or not isinstance(pending, dict):
+            return
+        old = Path(pending.get("from", ""))
+        new = Path(pending.get("to", ""))
+        # Clear the pending flag regardless of outcome.
+        self._prefs.pop("pending_knowledge_move", None)
+        self._save_prefs()
+        if not old.exists() or old == new:
+            return
+        import shutil, logging
+        log = logging.getLogger("qunwork.knowledge")
+        log.info("Executing pending knowledge move: %s → %s", old, new)
+        try:
+            new.parent.mkdir(parents=True, exist_ok=True)
+            if new.exists():
+                log.warning("Target already exists, skipping move: %s", new)
+                return
+            shutil.move(str(old), str(new))
+            log.info("Knowledge DB moved successfully.")
+        except Exception as exc:
+            log.error("Failed to move knowledge DB: %s", exc)
 
     # -- settings / prefs (model API key, default model, onboarding) -------------
     def _prefs_path(self) -> Path:

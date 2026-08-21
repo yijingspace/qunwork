@@ -288,24 +288,23 @@ export default function KnowledgeView({ onResume }: KnowledgeViewProps) {
               onClick={async () => {
                 const p = await pickFolderViaServer();
                 if (!p) return;
-                if (!window.confirm(t("This will move the knowledge database to the new folder. The app will restart automatically. Continue?"))) return;
+                if (!window.confirm(t("Save this path? The app will restart to move the database."))) return;
                 setKPathBusy(true);
                 try {
                   const r = await setKnowledgePath(p, true);
                   if (r.ok) {
-                    setNotice(t("Knowledge database moved successfully. The app will restart to apply changes."));
+                    setNotice(t("Path saved. The app will restart to move the database…"));
                     setKPath(r.db_path ?? kPath);
-                    // 自动重启(大文件迁移可能需要几秒)
-                    setTimeout(() => window.location.reload(), 1500);
+                    setTimeout(() => window.location.reload(), 2000);
                   } else {
-                    setNotice(r.error || t("Could not move the database."));
+                    setNotice(r.error || t("Could not save the path."));
                   }
                 } catch (e) {
                   const msg = String(e);
                   if (msg.includes("Failed to fetch")) {
                     setNotice(t("Could not connect to the server. Please restart the app and try again."));
                   } else {
-                    setNotice(t("Could not move the database.") + " " + msg);
+                    setNotice(t("Could not save the path.") + " " + msg);
                   }
                 } finally {
                   setKPathBusy(false);
