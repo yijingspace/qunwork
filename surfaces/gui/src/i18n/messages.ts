@@ -1061,4 +1061,9 @@ export const zh: Messages = {
   "Service / endpoint": "服务 / 接口地址",
   "Custom endpoint…": "自定义接口地址…",
   "Add & use it": "添加并使用",
+  "Database path": "数据库路径",
+  "Move to another folder": "移动到其他文件夹",
+  "Moving…": "移动中…",
+  "Knowledge database moved successfully.": "知识库数据库已成功移动。",
+  "Could not move the database.": "无法移动数据库。",
 };

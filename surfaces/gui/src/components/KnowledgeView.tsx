@@ -2,11 +2,13 @@ import { useCallback, useEffect, useState } from "react";
 import { HornetHive } from "./HornetHive";import {
   addKnowledge,
   deleteKnowledge,
+  getKnowledgePath,
   importKnowledgeFolder,
   listKnowledge,
   pickFolderViaServer,
   scanKnowledge,
   searchKnowledge,
+  setKnowledgePath,
   type KnowledgeHit,
   type KnowledgeItem,
 } from "../api";
@@ -33,6 +35,18 @@ export default function KnowledgeView({ onResume }: KnowledgeViewProps) {
   const [expanded, setExpanded] = useState<number | null>(null);
   const [detail, setDetail] = useState<{ title: string; content: string; source_path?: string | null } | null>(null);
   const [detailBusy, setDetailBusy] = useState(false);
+  // 知识库路径配置（后端 /v1/knowledge/path）— 用户可移动数据库到 E 盘等位置
+  const [kPath, setKPath] = useState<string | null>(null);
+  const [kPathBusy, setKPathBusy] = useState(false);
+  const loadKPath = useCallback(async () => {
+    try {
+      const r = await getKnowledgePath();
+      if (r.ok && r.db_path) setKPath(r.db_path);
+    } catch {
+      /* 引擎不可用时不显示路径（测试环境无 server） */
+    }
+  }, []);
+  useEffect(() => { loadKPath(); }, [loadKPath]);
   // 排序需求: 更新时间倒序(默认)/正序 / 名称 A→Z / 名称 Z→A。
   const [sortBy, setSortBy] = useState<"updated_desc" | "updated_asc" | "title_asc" | "title_desc">(
     "updated_desc",
@@ -259,6 +273,37 @@ export default function KnowledgeView({ onResume }: KnowledgeViewProps) {
       </div>
 
       {notice && <div className="mb-3 px-3 py-2 rounded-lg bg-surface border border-line text-[12.5px]">{notice}</div>}
+
+      {/* 知识库路径配置 */}
+      {kPath && (
+        <div className="mb-3 px-3 py-2 rounded-lg bg-surface border border-line">
+          <div className="flex items-center justify-between gap-2">
+            <div className="min-w-0 flex-1">
+              <span className="text-[11px] text-faint">{t("Database path")}</span>
+              <div className="text-[12px] truncate font-mono mt-0.5" title={kPath}>{kPath}</div>
+            </div>
+            <button
+              className="btn-secondary text-[12px] shrink-0"
+              disabled={kPathBusy}
+              onClick={async () => {
+                const p = await pickFolderViaServer();
+                if (!p) return;
+                setKPathBusy(true);
+                const r = await setKnowledgePath(p, true);
+                setKPathBusy(false);
+                if (r.ok) {
+                  setNotice(t("Knowledge database moved successfully."));
+                  setKPath(r.db_path ?? kPath);
+                } else {
+                  setNotice(r.error || t("Could not move the database."));
+                }
+              }}
+            >
+              {kPathBusy ? t("Moving…") : t("Move to another folder")}
+            </button>
+          </div>
+        </div>
+      )}
 
       {view === "hive" ? (
         <HornetHive onResume={onResume} />

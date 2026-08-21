@@ -892,6 +892,23 @@ export interface KnowledgeHit {
   source_path: string | null;
 }
 
+export async function getKnowledgePath(): Promise<{ ok: boolean; db_path?: string; exists?: boolean; size_bytes?: number }> {
+  const res = await fetch(`${httpBase()}/v1/knowledge/path`);
+  return res.json();
+}
+
+export async function setKnowledgePath(
+  path: string,
+  migrate: boolean = false,
+): Promise<{ ok: boolean; error?: string; db_path?: string }> {
+  const res = await fetch(`${httpBase()}/v1/knowledge/path`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ path, migrate }),
+  });
+  return res.json();
+}
+
 export async function listKnowledge(
   limit = 100,
   offset = 0,
