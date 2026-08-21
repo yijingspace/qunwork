@@ -160,7 +160,7 @@ class SessionManager:
 
         self.skill_loader = SkillLoader(
             [Path(__file__).resolve().parent.parent / "skills"]  # built-in (read-only)
-            + [state_dir() / "skills"]
+            + [self._resolve_skills_user_path()]  # 用户技能目录(可配置)
             + (
                 [Path(self.default_workspace) / ".coworker" / "skills"]
                 if self.default_workspace
@@ -218,6 +218,8 @@ class SessionManager:
         self._prefs = self._load_prefs()
         # 启动时检查是否有待执行的知识库迁移（用户在设置中保存了新路径后重启）
         self._execute_pending_knowledge_move()
+        # 启动时检查是否有待执行的技能目录迁移
+        self._execute_pending_skills_move()
         # Knowledge library path: user-configurable (moved from data_base to
         # support relocating the DB to a larger drive). Resolution order:
         # prefs["knowledge_db_path"] → data_base / "knowledge.db".
@@ -1982,10 +1984,72 @@ class SessionManager:
         explicit = self._prefs.get("knowledge_db_path")
         if explicit:
             p = Path(explicit).expanduser().resolve()
-            # If the user set a path but the DB doesn't exist yet, just use the path
-            # (it will be created when data is first added).
             return p
         return self._data_base / "knowledge.db"
+
+    # -- skills user directory (user-configurable) ---------------------------
+    def _resolve_skills_user_path(self) -> Path:
+        """Resolve the user skills directory from prefs or fall back to state_dir/skills."""
+        explicit = self._prefs.get("skills_user_path")
+        if explicit:
+            p = Path(explicit).expanduser().resolve()
+            p.mkdir(parents=True, exist_ok=True)
+            return p
+        return state_dir() / "skills"
+
+    def get_skills_path(self) -> dict[str, Any]:
+        """Return the current user skills directory path and metadata."""
+        p = self._resolve_skills_user_path()
+        count = len(list(p.iterdir())) if p.exists() else 0
+        return {
+            "ok": True,
+            "path": str(p),
+            "exists": p.exists(),
+            "skill_count": count,
+        }
+
+    def set_skills_path(self, new_path: str, *, migrate: bool = False) -> dict[str, Any]:
+        """Set a new user skills directory. The actual move happens on restart (migrate=true)
+        to avoid disrupting the running skill loader."""
+        new = Path(new_path).expanduser().resolve()
+        old = self._resolve_skills_user_path()
+
+        if new == old:
+            return {"ok": True, "message": "already set", **self.get_skills_path()}
+
+        # Save the pending move to prefs — the actual move happens on restart.
+        self._prefs["skills_user_path"] = str(new)
+        if migrate:
+            self._prefs["pending_skills_move"] = {
+                "from": str(old),
+                "to": str(new),
+            }
+        self._save_prefs()
+        return {"ok": True, "restart_required": True, **self.get_skills_path()}
+
+    def _execute_pending_skills_move(self) -> None:
+        """On startup: if a pending skills directory move was saved, execute it now."""
+        pending = self._prefs.get("pending_skills_move")
+        if not pending or not isinstance(pending, dict):
+            return
+        old = Path(pending.get("from", ""))
+        new = Path(pending.get("to", ""))
+        self._prefs.pop("pending_skills_move", None)
+        self._save_prefs()
+        if not old.exists() or old == new:
+            return
+        import shutil, logging
+        log = logging.getLogger("qunwork.skills")
+        log.info("Executing pending skills move: %s → %s", old, new)
+        try:
+            new.mkdir(parents=True, exist_ok=True)
+            for item in old.iterdir():
+                dest = new / item.name
+                if not dest.exists():
+                    shutil.move(str(item), str(dest))
+            log.info("Skills directory moved successfully.")
+        except Exception as exc:
+            log.error("Failed to move skills directory: %s", exc)
 
     def get_knowledge_path(self) -> dict[str, Any]:
         """Return the current knowledge library database path and metadata."""

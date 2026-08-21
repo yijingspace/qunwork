@@ -7,13 +7,16 @@ import {
   exportSkill,
   generateSkillLock,
   getSkillLock,
+  getSkillsPath,
   getSkillSecurity,
   getSkillVersions,
   hornetEmergenceToSkill,
   importSkill,
   listSkills,
+  pickFolderViaServer,
   rateSkill,
   rescanSkillSecurity,
+  setSkillsPath as apiSetSkillsPath,
   type SkillCompatibilityReport,
   type SkillInfo,
   type SkillLockInfo,
@@ -33,6 +36,18 @@ export default function SkillsView() {
   const [skillsError, setSkillsError] = useState(false);
   // 批量兼容扫描 / 自动修复
   const [scanningAll, setScanningAll] = useState(false);
+  // 技能目录路径配置
+  const [skillsPath, setSkillsPath] = useState<string | null>(null);
+  const [skillsPathBusy, setSkillsPathBusy] = useState(false);
+  const loadSkillsPath = useCallback(async () => {
+    try {
+      const r = await getSkillsPath();
+      if (r.ok && r.path) setSkillsPath(r.path);
+    } catch {
+      /* 引擎不可用时不显示路径 */
+    }
+  }, []);
+  useEffect(() => { loadSkillsPath(); }, [loadSkillsPath]);
   const [allReports, setAllReports] = useState<SkillCompatibilityReport[]>([]);
   const [autofixPanel, setAutofixPanel] = useState<{
     title?: string;
@@ -252,6 +267,49 @@ export default function SkillsView() {
       </div>
 
       {notice && <div className="mb-3 px-3 py-2 rounded-lg bg-surface border border-line text-[12.5px]">{notice}</div>}
+
+      {/* 技能目录路径配置 */}
+      {skillsPath && (
+        <div className="mb-3 px-3 py-2 rounded-lg bg-surface border border-line">
+          <div className="flex items-center justify-between gap-2">
+            <div className="min-w-0 flex-1">
+              <span className="text-[11px] text-faint">{t("Skills directory")}</span>
+              <div className="text-[12px] truncate font-mono mt-0.5" title={skillsPath}>{skillsPath}</div>
+            </div>
+            <button
+              className="btn-secondary text-[12px] shrink-0"
+              disabled={skillsPathBusy}
+              onClick={async () => {
+                const p = await pickFolderViaServer();
+                if (!p) return;
+                if (!window.confirm(t("Save this path? The app will restart to move skills."))) return;
+                setSkillsPathBusy(true);
+                try {
+                  const r = await apiSetSkillsPath(p, true);
+                  if (r.ok) {
+                    setNotice(t("Path saved. The app will restart to move skills…"));
+                    setSkillsPath(r.path ?? skillsPath);
+                    setTimeout(() => window.location.reload(), 2000);
+                  } else {
+                    setNotice(r.error || t("Could not save the path."));
+                  }
+                } catch (e) {
+                  const msg = String(e);
+                  if (msg.includes("Failed to fetch")) {
+                    setNotice(t("Could not connect to the server. Please restart the app and try again."));
+                  } else {
+                    setNotice(t("Could not save the path.") + " " + msg);
+                  }
+                } finally {
+                  setSkillsPathBusy(false);
+                }
+              }}
+            >
+              {skillsPathBusy ? t("Saving…") : t("Move to another folder")}
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* 批量兼容扫描摘要 */}
       {allReports.length > 0 && (

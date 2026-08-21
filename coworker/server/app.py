@@ -1164,6 +1164,25 @@ def create_app(manager: SessionManager) -> FastAPI:
             persona_id, connector, bool(body.get("enabled", False))
         )
 
+    @app.get("/v1/skills/path")
+    def skills_get_path() -> dict[str, Any]:
+        """Get the current user skills directory path."""
+        return manager.get_skills_path()
+
+    @app.post("/v1/skills/path")
+    def skills_set_path(body: dict) -> dict[str, Any]:
+        """Set a new user skills directory. Optionally migrate existing skills.
+
+        body:
+            path: str  — new directory
+            migrate: bool = False  — move existing skills to new location
+        """
+        new_path = str(body.get("path") or "").strip()
+        if not new_path:
+            return {"ok": False, "error": "path is required"}
+        migrate = bool(body.get("migrate", False))
+        return manager.set_skills_path(new_path, migrate=migrate)
+
     @app.get("/v1/skills")
     def skills() -> dict[str, Any]:
         return {"skills": manager.list_skills()}

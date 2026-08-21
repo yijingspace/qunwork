@@ -656,6 +656,23 @@ export interface SkillInfo {
   available_versions?: string[];
 }
 
+export async function getSkillsPath(): Promise<{ ok: boolean; path?: string; exists?: boolean; skill_count?: number }> {
+  const res = await fetch(`${httpBase()}/v1/skills/path`);
+  return res.json();
+}
+
+export async function setSkillsPath(
+  path: string,
+  migrate: boolean = false,
+): Promise<{ ok: boolean; error?: string; path?: string }> {
+  const res = await fetch(`${httpBase()}/v1/skills/path`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ path, migrate }),
+  });
+  return res.json();
+}
+
 export async function listSkills(): Promise<{ skills: SkillInfo[] }> {
   const res = await fetch(`${httpBase()}/v1/skills`);
   return await res.json();

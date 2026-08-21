@@ -1072,4 +1072,7 @@ export const zh: Messages = {
   "This will move the knowledge database to the new folder. The app will restart automatically. Continue?": "将把知识库数据库移动到新文件夹。应用将自动重启。继续吗？",
   "Could not move the database.": "无法移动数据库。",
   "Could not connect to the server. Please restart the app and try again.": "无法连接服务器。请重启应用后重试。",
+  "Save this path? The app will restart to move skills.": "保存此路径吗？应用将重启以移动技能。",
+  "Path saved. The app will restart to move skills…": "路径已保存。应用将重启以移动技能…",
+  "Skills directory": "技能目录",
 };
