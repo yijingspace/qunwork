@@ -301,7 +301,12 @@ export default function KnowledgeView({ onResume }: KnowledgeViewProps) {
                     setNotice(r.error || t("Could not move the database."));
                   }
                 } catch (e) {
-                  setNotice(t("Could not move the database.") + " " + String(e));
+                  const msg = String(e);
+                  if (msg.includes("Failed to fetch")) {
+                    setNotice(t("Could not connect to the server. Please restart the app and try again."));
+                  } else {
+                    setNotice(t("Could not move the database.") + " " + msg);
+                  }
                 } finally {
                   setKPathBusy(false);
                 }

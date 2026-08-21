@@ -1068,4 +1068,5 @@ export const zh: Messages = {
   "Knowledge database moved successfully. The app will restart to apply changes.": "知识库数据库已成功移动。应用将重启以生效。",
   "This will move the knowledge database to the new folder. The app will restart automatically. Continue?": "将把知识库数据库移动到新文件夹。应用将自动重启。继续吗？",
   "Could not move the database.": "无法移动数据库。",
+  "Could not connect to the server. Please restart the app and try again.": "无法连接服务器。请重启应用后重试。",
 };
