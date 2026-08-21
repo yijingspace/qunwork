@@ -3421,6 +3421,22 @@ class SessionManager:
                         workspace=task.workspace,
                         source_run_id=f"auto:{getattr(run, 'id', '')}",
                     )
+                # 空洞补全任务完成后重建图谱: 确保下一次 evolve 检测反映
+                # 最新图状态, 不会反复报同一个孤立节点为空洞
+                # (owner bug 2026-08-21: graph 空洞连续多天重复触发,
+                # 因为图谱未重建 → 同一孤立节点反复被检测到)。
+                if "空洞" in task.title or "gap" in task.title.lower():
+                    try:
+                        self.hornet_build(rebuild=True)
+                    except Exception:
+                        pass
+                    # 标记该空洞为已解决, 防止重建前的旧记录再次触发
+                    try:
+                        for em in self.hornet.list_emergent():
+                            if em.get("status") == "new" and "空洞" in em.get("title", ""):
+                                self.hornet.set_emergent_status(em["id"], "resolved")
+                    except Exception:
+                        pass
             except Exception:
                 pass  # ingestion must never fail the automation
             if task.notify_on_completion:
