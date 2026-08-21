@@ -2030,6 +2030,13 @@ class SessionManager:
                         "Set migrate=true to overwrite, or choose a different path."
                     ),
                 }
+            # 先关闭知识库连接(解除 SQLite 锁), 否则 shutil.move 会挂起
+            # (owner bug 2026-08-21: 2GB knowledge.db 被 sidecar 锁住,
+            # move 阻塞 → 前端永远显示「移动中…」)。
+            try:
+                self.knowledge.close()
+            except Exception:
+                pass
             import shutil
             shutil.move(str(old), str(new))
 

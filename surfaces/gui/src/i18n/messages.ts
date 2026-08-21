@@ -1065,5 +1065,7 @@ export const zh: Messages = {
   "Move to another folder": "移动到其他文件夹",
   "Moving…": "移动中…",
   "Knowledge database moved successfully.": "知识库数据库已成功移动。",
+  "Knowledge database moved successfully. The app will restart to apply changes.": "知识库数据库已成功移动。应用将重启以生效。",
+  "This will move the knowledge database to the new folder. The app will restart automatically. Continue?": "将把知识库数据库移动到新文件夹。应用将自动重启。继续吗？",
   "Could not move the database.": "无法移动数据库。",
 };

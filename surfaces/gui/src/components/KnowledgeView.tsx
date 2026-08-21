@@ -288,14 +288,22 @@ export default function KnowledgeView({ onResume }: KnowledgeViewProps) {
               onClick={async () => {
                 const p = await pickFolderViaServer();
                 if (!p) return;
+                if (!window.confirm(t("This will move the knowledge database to the new folder. The app will restart automatically. Continue?"))) return;
                 setKPathBusy(true);
-                const r = await setKnowledgePath(p, true);
-                setKPathBusy(false);
-                if (r.ok) {
-                  setNotice(t("Knowledge database moved successfully."));
-                  setKPath(r.db_path ?? kPath);
-                } else {
-                  setNotice(r.error || t("Could not move the database."));
+                try {
+                  const r = await setKnowledgePath(p, true);
+                  if (r.ok) {
+                    setNotice(t("Knowledge database moved successfully. The app will restart to apply changes."));
+                    setKPath(r.db_path ?? kPath);
+                    // 自动重启(大文件迁移可能需要几秒)
+                    setTimeout(() => window.location.reload(), 1500);
+                  } else {
+                    setNotice(r.error || t("Could not move the database."));
+                  }
+                } catch (e) {
+                  setNotice(t("Could not move the database.") + " " + String(e));
+                } finally {
+                  setKPathBusy(false);
                 }
               }}
             >
