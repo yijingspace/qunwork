@@ -1,0 +1,464 @@
+fe3abd5
+
+176	0	coworker/hornet/health.py
+10	0	coworker/server/app.py
+27	0	coworker/server/manager.py
+15	0	surfaces/gui/src/api.ts
+14	1	surfaces/gui/src/components/HornetHive.tsx
+4	0	surfaces/gui/src/i18n/messages.ts
+21	0	tests/test_hornet.py
+6acbfcb
+
+12	3	coworker/automation/scheduler.py
+11	6	coworker/hornet/observer.py
+29	6	coworker/hornet/store.py
+15	3	coworker/server/manager.py
+40	0	tests/test_hornet.py
+8a5cd35
+
+16	0	coworker/automation/scheduler.py
+68	0	coworker/hornet/observer.py
+114	1	coworker/hornet/store.py
+10	0	coworker/server/app.py
+77	4	coworker/server/manager.py
+1	0	surfaces/gui/src/api.ts
+20	5	surfaces/gui/src/components/HornetHive.tsx
+123	0	tests/test_hornet.py
+b64f636
+
+1	1	coworker/hornet/resonator.py
+80fea29
+
+4	2	coworker/hornet/builder.py
+81	0	coworker/hornet/dpnn_phase.py
+5	2	coworker/hornet/observer.py
+63	4	coworker/hornet/resonator.py
+21	11	coworker/hornet/sim3d.py
+68	1	coworker/hornet/store.py
+48	21	coworker/hornet/topo_embed.py
+1	0	coworker/server/app.py
+145	2	coworker/server/manager.py
+0	81	surfaces/gui/src/App.tsx
+59	1	surfaces/gui/src/components/HornetHive.tsx
+2	20	surfaces/gui/src/components/SwarmView.tsx
+108	0	tests/test_hornet.py
+7ba5c40
+
+100	0	packaging/build_env.ps1
+178d5e4
+
+50	4	coworker/hornet/builder.py
+94	0	coworker/hornet/sim3d.py
+11	3	coworker/hornet/store.py
+174	0	coworker/hornet/topo_embed.py
+4	1	coworker/server/app.py
+2	2	coworker/server/manager.py
+2	2	surfaces/gui/src/api.ts
+6	1	surfaces/gui/src/components/HornetHive.tsx
+2	0	surfaces/gui/src/i18n/messages.ts
+44	0	tests/test_hornet.py
+42bea30
+
+108	5	coworker/hornet/observer.py
+9	0	coworker/hornet/resonator.py
+23	0	coworker/hornet/store.py
+1	1	surfaces/gui/src/components/HornetHive.tsx
+61	5	tests/test_hornet.py
+bda6f73
+
+3	2	coworker/hornet/observer.py
+18	2	coworker/hornet/store.py
+32	0	coworker/server/app.py
+26	0	coworker/server/manager.py
+61	0	surfaces/gui/src/App.tsx
+20	0	surfaces/gui/src/api.ts
+5	0	surfaces/gui/src/components/HornetHive.tsx
+5	0	surfaces/gui/src/i18n/messages.ts
+20	0	tests/test_hornet.py
+0bb608e
+
+97	8	coworker/hornet/builder.py
+10	4	coworker/hornet/resonator.py
+109	0	coworker/hornet/sim3d.py
+34	5	coworker/hornet/store.py
+1	1	coworker/server/manager.py
+1	0	surfaces/gui/src/api.ts
+18	2	surfaces/gui/src/components/HornetHive.test.tsx
+55	7	surfaces/gui/src/components/HornetHive.tsx
+4	0	surfaces/gui/src/i18n/messages.ts
+37	2	tests/test_hornet.py
+de03389
+
+57	20	coworker/hornet/builder.py
+15	9	coworker/hornet/resonator.py
+23	2	coworker/hornet/store.py
+14	0	tests/test_hornet.py
+66bcfda
+
+2	1	coworker/knowledge/store.py
+d149dc2
+
+11	0	coworker/hornet/__init__.py
+272	0	coworker/hornet/builder.py
+132	0	coworker/hornet/observer.py
+137	0	coworker/hornet/resonator.py
+283	0	coworker/hornet/store.py
+11	2	coworker/knowledge/store.py
+26	0	coworker/server/app.py
+57	2	coworker/server/manager.py
+75	0	surfaces/gui/src/api.ts
+66	0	surfaces/gui/src/components/HornetHive.test.tsx
+295	0	surfaces/gui/src/components/HornetHive.tsx
+15	1	surfaces/gui/src/components/KnowledgeView.tsx
+20	0	surfaces/gui/src/i18n/messages.ts
+78	0	tests/test_hornet.py
+1a2e20c
+
+1	1	surfaces/gui/src-tauri/tauri.conf.json
+28e302c
+
+2	2	packaging/install.ps1
+f642924
+
+68	0	packaging/install.ps1
+20	0	surfaces/gui/src/App.tsx
+26	125	surfaces/gui/src/components/KnowledgeView.test.tsx
+19	1	surfaces/gui/src/components/KnowledgeView.tsx
+18	0	surfaces/gui/src/components/SkillsView.tsx
+20	2	surfaces/gui/src/components/SwarmView.tsx
+6	0	surfaces/gui/src/i18n/messages.ts
+bd868ed
+
+17	6	coworker/orchestrator/governance.py
+19	10	coworker/orchestrator/orchestrator.py
+25	0	tests/test_convergence_phase.py
+22	1	tests/test_governance.py
+91eb3bf
+
+2	1	surfaces/gui/package.json
+4637	0	surfaces/gui/pnpm-lock.yaml
+5	5	surfaces/gui/src/App.tsx
+2	2	surfaces/gui/src/components/SwarmView.tsx
+2	2	surfaces/gui/src/types.ts
+d3665ff
+
+46	0	.gitignore
+41	33	coworker/orchestrator/__init__.py
+61	15	coworker/orchestrator/control.py
+25	8	coworker/orchestrator/governance.py
+43	27	coworker/orchestrator/memory_store.py
+70	25	coworker/orchestrator/orchestrator.py
+4	1	coworker/orchestrator/run_store.py
+15	6	coworker/orchestrator/vectormemory.py
+2	2	surfaces/gui/package.json
+1	1	surfaces/gui/src-tauri/tauri.conf.json
+56	16	surfaces/gui/src/App.tsx
+51	0	surfaces/gui/src/components/ErrorBoundary.tsx
+18	9	surfaces/gui/src/components/RightRail.tsx
+3	3	surfaces/gui/src/components/SwarmView.tsx
+18	2	surfaces/gui/src/i18n/index.tsx
+6	3	surfaces/gui/src/main.tsx
+39	0	surfaces/gui/src/styles.css
+28	5	surfaces/gui/src/types.ts
+2	2	tests/test_orchestrate_api.py
+12	12	tests/test_orchestrator.py
+a229178
+
+10	1	packaging/qunwork-server.spec
+ce87c49
+
+6	1	coworker/agent.py
+47	3	coworker/attachments.py
+16	1	coworker/server/app.py
+2	1	coworker/server/manager.py
+48	0	coworker/skills/vision/SKILL.md
+185	0	coworker/skills/vision/resources/vision_analyze.py
+59	0	tests/test_attachments.py
+dbe8536
+
+6	0	surfaces/gui/src/App.tsx
+43	0	surfaces/gui/src/components/OrganizationView.test.tsx
+153	0	surfaces/gui/src/components/OrganizationView.tsx
+4	4	surfaces/gui/src/components/SettingsView.tsx
+2	0	surfaces/gui/src/components/Sidebar.test.tsx
+3	0	surfaces/gui/src/components/Sidebar.tsx
+3	0	surfaces/gui/src/i18n/messages.ts
+2f3c1f4
+
+53	1	coworker/tools/shell.py
+28	0	tests/test_convergence_phase.py
+f2659da
+
+23	18	surfaces/gui/src/components/InboxConfigure.tsx
+10	11	surfaces/gui/src/components/InboxView.tsx
+1	1	surfaces/gui/src/components/connectors/AccountsDetail.tsx
+1	1	surfaces/gui/src/components/connectors/AddConnectionModal.tsx
+9	7	surfaces/gui/src/components/connectors/AvailableDetail.tsx
+3	2	surfaces/gui/src/components/connectors/CalendarDetail.tsx
+5	4	surfaces/gui/src/components/connectors/GithubDetail.tsx
+4	3	surfaces/gui/src/components/connectors/GmailDetail.tsx
+6	5	surfaces/gui/src/components/connectors/HubSpotDetail.tsx
+8	5	surfaces/gui/src/components/connectors/SlackDetail.tsx
+2	1	surfaces/gui/src/components/connectors/SlackHowItWorks.tsx
+42	0	surfaces/gui/src/i18n/messages.ts
+f87b3fb
+
+2	1	coworker/connectors/integration_tools.py
+11	1	coworker/server/app.py
+3	1	coworker/server/manager.py
+1	1	coworker/tools/git.py
+1	1	coworker/tools/search.py
+a806cf9
+
+41	28	coworker/server/manager.py
+18	0	tests/test_server_artifacts.py
+48b3fb2
+
+2	0	coworker/server/manager.py
+26	1	surfaces/gui/src/api.ts
+95	3	surfaces/gui/src/components/SettingsView.tsx
+13	0	surfaces/gui/src/i18n/messages.ts
+d1ff87a
+
+44	9	coworker/knowledge/store.py
+37	0	coworker/server/app.py
+92	6	coworker/server/manager.py
+37	0	tests/test_server_artifacts.py
+c5121cb
+
+28	12	coworker/knowledge/store.py
+9	0	coworker/server/app.py
+75	0	coworker/server/manager.py
+18	0	surfaces/gui/src/api.ts
+92	0	surfaces/gui/src/components/SettingsView.tsx
+6	0	surfaces/gui/src/i18n/messages.ts
+47	0	tests/test_server_artifacts.py
+f6a57da
+
+9	0	coworker/orchestrator/orchestrator.py
+5	0	coworker/orchestrator/workers.py
+32	1	coworker/server/app.py
+14	0	coworker/server/manager.py
+2	0	surfaces/gui/src/api.ts
+4	6	surfaces/gui/src/components/SwarmView.tsx
+56	0	tests/test_server_artifacts.py
+4d14758
+
+13	0	coworker/orchestrator/workers.py
+7	2	surfaces/gui/src/components/SwarmView.tsx
+36	0	tests/test_convergence_phase.py
+7f1a517
+
+35	1	coworker/orchestrator/orchestrator.py
+1	1	coworker/orchestrator/workers.py
+1	1	coworker/server/app.py
+6	1	surfaces/gui/src/components/SwarmView.tsx
+7	0	surfaces/gui/src/styles.css
+19	1	tests/test_convergence_phase.py
+6	6	tests/test_phase3.py
+2	2	tests/test_run_control.py
+8c125db
+
+9	2	coworker/environment.py
+20	0	tests/test_convergence_phase.py
+369e282
+
+6	1	coworker/orchestrator/orchestrator.py
+72	0	tests/test_convergence_phase.py
+79109c2
+
+39	42	coworker/orchestrator/orchestrator.py
+14	0	coworker/tools/shell.py
+64	0	tests/test_convergence_phase.py
+b8fa837
+
+18	0	coworker/server/app.py
+59	1	coworker/server/manager.py
+56	0	surfaces/gui/src/api.ts
+161	0	surfaces/gui/src/components/SettingsView.tsx
+8	0	surfaces/gui/src/i18n/messages.ts
+30	0	tests/test_server_artifacts.py
+b38a368
+
+27	2	coworker/conversations.py
+27	0	coworker/server/app.py
+3	0	coworker/server/manager.py
+230	0	surfaces/gui/qunwork-strategy-report.md
+14	0	surfaces/gui/src/api.ts
+38	2	surfaces/gui/src/components/SwarmView.tsx
+2	0	surfaces/gui/src/i18n/messages.ts
+13	0	tests/test_server_artifacts.py
+c7e946b
+
+27	0	coworker/server/manager.py
+39	0	tests/test_convergence_phase.py
+7f8aca2
+
+130	0	coworker/periodic/dpnn_baseline.py
+159	0	coworker/periodic/forecaster.py
+26	0	coworker/periodic/tools.py
+9	0	coworker/server/app.py
+136	0	coworker/server/manager.py
+17	0	surfaces/gui/src/api.ts
+66	3	surfaces/gui/src/components/SettingsView.tsx
+11	0	surfaces/gui/src/i18n/messages.ts
+60	0	tests/test_periodic.py
+58	0	tests/test_server_artifacts.py
+72fb6ff
+
+205	0	coworker/orchestrator/coordination_report.py
+30	0	coworker/server/app.py
+36	0	coworker/server/manager.py
+17	0	surfaces/gui/src/api.ts
+37	0	surfaces/gui/src/components/SwarmView.tsx
+2	0	surfaces/gui/src/i18n/messages.ts
+78	0	tests/test_coordination_report.py
+a0b7496
+
+50	5	coworker/orchestrator/memory_store.py
+54	1	coworker/orchestrator/orchestrator.py
+5	1	coworker/orchestrator/vectormemory.py
+87	0	tests/test_convergence_phase.py
+8bd30e6
+
+93	0	coworker/orchestrator/control.py
+46	1	coworker/orchestrator/orchestrator.py
+62	0	coworker/server/app.py
+3	0	coworker/server/manager.py
+35	0	surfaces/gui/src/api.ts
+92	1	surfaces/gui/src/components/SwarmView.tsx
+5	0	surfaces/gui/src/i18n/messages.ts
+136	0	tests/test_run_control.py
+7c98b19
+
+2	1	coworker/server/app.py
+789e514
+
+22	9	coworker/agent.py
+54	0	coworker/conversations.py
+19	0	coworker/periodic/__init__.py
+137	0	coworker/periodic/fpa_table.py
+87	0	coworker/periodic/tools.py
+21	2	coworker/server/app.py
+9	0	coworker/server/manager.py
+31	0	surfaces/gui/src/api.ts
+105	4	surfaces/gui/src/components/SwarmView.tsx
+2	0	surfaces/gui/src/i18n/messages.ts
+28	0	tests/test_conversations.py
+98	0	tests/test_periodic.py
+2e4117f
+
+16	2	coworker/server/manager.py
+40	1	tests/test_server_artifacts.py
+c639412
+
+53	19	coworker/server/manager.py
+26	0	tests/test_server_artifacts.py
+f757d2f
+
+48	12	coworker/server/manager.py
+18	7	surfaces/gui/src/components/RightRail.tsx
+5	2	tests/test_server.py
+54	0	tests/test_server_artifacts.py
+2772008
+
+-	-	surfaces/gui/src/assets/brand-logo.webp
+5	0	surfaces/gui/src/components/SessionIntro.tsx
+9	0	surfaces/gui/src/styles.css
+a559f08
+
+1	1	surfaces/gui/src/styles.css
+a1d5fe7
+
+3	2	surfaces/gui/src/App.tsx
+-	-	surfaces/gui/src/assets/qunwork-mark.png
+4	1	surfaces/gui/src/components/Sidebar.tsx
+5	0	surfaces/gui/src/styles.css
+765b73a
+
+1	1	surfaces/gui/src/components/Onboarding.tsx
+1	1	surfaces/gui/src/components/Sidebar.tsx
+1	1	surfaces/gui/src/i18n/messages.ts
+aebf876
+
+39	1	coworker/conversations.py
+19	0	coworker/server/app.py
+10	1	coworker/server/manager.py
+29	0	surfaces/gui/src/api.ts
+4	1	surfaces/gui/src/components/Onboarding.tsx
+91	1	surfaces/gui/src/components/SessionIntro.tsx
+1	0	surfaces/gui/src/components/Sidebar.tsx
+2	2	surfaces/gui/src/components/connectors/SlackHowItWorks.tsx
+8	0	surfaces/gui/src/i18n/messages.ts
+25	0	surfaces/gui/src/styles.css
+26	0	tests/test_conversations.py
+d74cfc4
+
+5	5	surfaces/gui/src/App.tsx
+1	1	surfaces/gui/src/components/Composer.tsx
+1	1	surfaces/gui/src/components/Composer.voice.test.tsx
+2	2	surfaces/gui/src/components/SessionIntro.tsx
+1	1	surfaces/gui/src/components/Sidebar.tsx
+9	8	surfaces/gui/src/i18n/messages.ts
+1c5634f
+
+12	8	surfaces/gui/src/components/ManageTabs.tsx
+10	7	surfaces/gui/src/components/connectors/AccountsDetail.tsx
+20	18	surfaces/gui/src/components/connectors/AddConnectionModal.tsx
+8	7	surfaces/gui/src/components/connectors/CalendarDetail.tsx
+4	2	surfaces/gui/src/components/connectors/CloudSignIn.tsx
+22	18	surfaces/gui/src/components/connectors/GithubDetail.tsx
+7	4	surfaces/gui/src/components/connectors/GmailDetail.tsx
+7	4	surfaces/gui/src/components/connectors/HubSpotDetail.tsx
+24	19	surfaces/gui/src/components/connectors/SlackDetail.tsx
+8	6	surfaces/gui/src/components/connectors/SlackHowItWorks.tsx
+77	0	surfaces/gui/src/i18n/messages.ts
+3603d42
+
+14	1	surfaces/gui/src/components/SettingsView.tsx
+99	0	surfaces/gui/src/i18n/index.test.tsx
+52	4	surfaces/gui/src/i18n/index.tsx
+4	0	surfaces/gui/src/i18n/messages.ts
+40dd821
+
+1	1	surfaces/gui/src/i18n/messages.ts
+0e0d8ff
+
+179	0	scripts/i18n_batch.py
+3	2	surfaces/gui/src/App.tsx
+24	13	surfaces/gui/src/components/ApprovalCard.tsx
+3	1	surfaces/gui/src/components/AuditView.tsx
+5	5	surfaces/gui/src/components/Composer.tsx
+3	1	surfaces/gui/src/components/InboxItemCard.tsx
+3	1	surfaces/gui/src/components/InboxView.tsx
+4	2	surfaces/gui/src/components/IntegrationsView.tsx
+23	20	surfaces/gui/src/components/ManageTabs.tsx
+3	1	surfaces/gui/src/components/PersonaView.tsx
+12	9	surfaces/gui/src/components/RightRail.tsx
+2	3	surfaces/gui/src/components/SessionIntro.tsx
+45	44	surfaces/gui/src/components/SettingsView.tsx
+2	2	surfaces/gui/src/components/Sidebar.tsx
+4	4	surfaces/gui/src/components/SwarmView.tsx
+4	2	surfaces/gui/src/components/Transcript.tsx
+23	21	surfaces/gui/src/components/connectors/ConnectorsList.tsx
+7	4	surfaces/gui/src/components/connectors/ConnectorsSection.tsx
+5	1	surfaces/gui/src/i18n/index.tsx
+144	0	surfaces/gui/src/i18n/messages.ts
+23	20	surfaces/gui/src/providers/ProviderSetup.tsx
+4d9102a
+
+6	4	coworker/cloud.py
+9	1	coworker/mcp/client.py
+19	1	coworker/permissions.py
+1	1	coworker/server/app.py
+9	3	coworker/tools/search.py
+3	3	surfaces/gui/src/components/ApprovalCard.test.tsx
+2	2	surfaces/gui/src/components/ApprovalCard.tsx
+1	1	surfaces/gui/src/components/AutomationQuickstart.tsx
+3	3	surfaces/gui/src/components/Onboarding.tsx
+3	3	surfaces/gui/src/i18n/messages.ts
+1	1	surfaces/gui/src/providers/ProviderSetup.tsx
+31	4	tests/test_cloud.py
+4	4	tests/test_cloud_server.py
+20	0	tests/test_knowledge_formats.py
+36	0	tests/test_permissions.py

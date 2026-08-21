@@ -547,7 +547,7 @@ def create_app(manager: SessionManager) -> FastAPI:
                 # DB into every worker engine (asset loop — Phase 1).
                 memory_store=manager.memory_store,
                 knowledge_db_path=(
-                    str(manager._data_base / "knowledge.db")
+                    str(manager._knowledge_db_path)
                     if manager._data_base is not None
                     else None
                 ),
@@ -1298,6 +1298,25 @@ def create_app(manager: SessionManager) -> FastAPI:
         return {"ok": True, **result}
 
     # -- knowledge file library --------------------------------------------
+    @app.get("/v1/knowledge/path")
+    def knowledge_get_path() -> dict[str, Any]:
+        """Get the current knowledge library database path."""
+        return manager.get_knowledge_path()
+
+    @app.post("/v1/knowledge/path")
+    def knowledge_set_path(body: dict) -> dict[str, Any]:
+        """Set a new knowledge library path. Optionally migrate existing data.
+
+        body:
+            path: str  — new directory or full DB path
+            migrate: bool = False  — move existing DB to new location
+        """
+        new_path = str(body.get("path") or "").strip()
+        if not new_path:
+            return {"ok": False, "error": "path is required"}
+        migrate = bool(body.get("migrate", False))
+        return manager.set_knowledge_path(new_path, migrate=migrate)
+
     @app.get("/v1/knowledge")
     def knowledge_list(request: Request) -> dict[str, Any]:
         ws = request.query_params.get("workspace") or None

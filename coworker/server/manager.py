@@ -169,8 +169,9 @@ class SessionManager:
             readonly_dirs=[Path(__file__).resolve().parent.parent / "skills"],
         )
         self.skill_market = SkillMarketStore(base / "skills_market.db")
+        # Knowledge store initialized with the resolved path (may be overridden by prefs).
         self.knowledge = KnowledgeStore(
-            base / "knowledge.db",
+            self._knowledge_db_path,
             workspace=self.default_workspace,
         )
         # HORNET (蜂巢共振神经拓扑) 2D layer — stacked on top of the knowledge
@@ -220,6 +221,10 @@ class SessionManager:
         self._data_base = base
         # Desktop/UI prefs (default model, onboarding state) — not secrets; a plain JSON file.
         self._prefs = self._load_prefs()
+        # Knowledge library path: user-configurable (moved from data_base to
+        # support relocating the DB to a larger drive). Resolution order:
+        # prefs["knowledge_db_path"] → data_base / "knowledge.db".
+        self._knowledge_db_path = self._resolve_knowledge_path()
         if self._prefs.get("default_model"):
             self.model = self._prefs["default_model"]
         # Seed the PDF-fallback module global from prefs so engines see the user's
@@ -617,7 +622,7 @@ class SessionManager:
             connector_filter=self.effective_connectors(session_id, agent_name),
             # Single source of truth for the knowledge library — the same SQLite the
             # /v1/knowledge API writes, so UI-added entries surface in knowledge_search.
-            knowledge_db_path=self._data_base / "knowledge.db",
+            knowledge_db_path=self._knowledge_db_path,
         )
         # An automation run rebuilt here (manual "Run now" over WS, durable resume) still
         # carries its task's standing allowances — the rules live on the task record.
@@ -1969,6 +1974,82 @@ class SessionManager:
             d.env_key and os.environ.get(d.env_key)
         )
 
+    # -- knowledge library path (user-configurable) ----------------------------
+    def _resolve_knowledge_path(self) -> Path:
+        """Resolve the knowledge DB path from prefs or fall back to data_base."""
+        explicit = self._prefs.get("knowledge_db_path")
+        if explicit:
+            p = Path(explicit).expanduser().resolve()
+            # If the user set a path but the DB doesn't exist yet, just use the path
+            # (it will be created when data is first added).
+            return p
+        return self._data_base / "knowledge.db"
+
+    def get_knowledge_path(self) -> dict[str, Any]:
+        """Return the current knowledge library database path and metadata."""
+        return {
+            "ok": True,
+            "db_path": str(self._knowledge_db_path),
+            "exists": self._knowledge_db_path.exists(),
+            "size_bytes": self._knowledge_db_path.stat().st_size
+            if self._knowledge_db_path.exists()
+            else 0,
+        }
+
+    def set_knowledge_path(
+        self, new_path: str, *, migrate: bool = False
+    ) -> dict[str, Any]:
+        """Set a new knowledge library path. Optionally migrate (move) the existing DB.
+
+        This lets users relocate the knowledge base to a larger drive (e.g. E:)
+        to avoid C: drive bloat. After setting the path, the knowledge store is
+        reloaded and engines pick up the new path.
+        """
+        new = Path(new_path).expanduser().resolve()
+        old = self._knowledge_db_path
+
+        # Normalize the target: if the user points at a directory, append the
+        # standard filename.
+        if new.is_dir():
+            new = new / "knowledge.db"
+
+        # Ensure parent exists.
+        new.parent.mkdir(parents=True, exist_ok=True)
+
+        if new == old:
+            return {"ok": True, "message": "already set", **self.get_knowledge_path()}
+
+        # Migrate: move the existing DB to the new location.
+        if migrate and old.exists():
+            if new.exists():
+                # Both exist — merge or overwrite? Warn the user.
+                return {
+                    "ok": False,
+                    "error": (
+                        f"A knowledge database already exists at {new}. "
+                        "Set migrate=true to overwrite, or choose a different path."
+                    ),
+                }
+            import shutil
+            shutil.move(str(old), str(new))
+
+        # Reload the knowledge store with the new path.
+        self.knowledge = KnowledgeStore(
+            new,
+            workspace=self.default_workspace,
+        )
+        # Update internal reference.
+        self._knowledge_db_path = new
+        # Persist the preference.
+        self._prefs["knowledge_db_path"] = str(new)
+        self._save_prefs()
+
+        return {
+            "ok": True,
+            "migrated": migrate and old.exists() is False,
+            **self.get_knowledge_path(),
+        }
+
     # -- settings / prefs (model API key, default model, onboarding) -------------
     def _prefs_path(self) -> Path:
         return self._data_base / "prefs.json"
@@ -2847,7 +2928,7 @@ class SessionManager:
             # Scheduled runs respect the same per-session connection hierarchy as live sessions:
             # expose only the persona's effective-enabled connectors' tools (§4.3).
             connector_filter=self.effective_connectors(session_id, task.agent),
-            knowledge_db_path=self._data_base / "knowledge.db",
+            knowledge_db_path=self._knowledge_db_path,
         )
         self._seed_task_permissions(engine, task)
         return engine
