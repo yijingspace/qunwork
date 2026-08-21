@@ -169,11 +169,6 @@ class SessionManager:
             readonly_dirs=[Path(__file__).resolve().parent.parent / "skills"],
         )
         self.skill_market = SkillMarketStore(base / "skills_market.db")
-        # Knowledge store initialized with the resolved path (may be overridden by prefs).
-        self.knowledge = KnowledgeStore(
-            self._knowledge_db_path,
-            workspace=self.default_workspace,
-        )
         # HORNET (蜂巢共振神经拓扑) 2D layer — stacked on top of the knowledge
         # store; data stays in knowledge.db, HORNET adds hive cells + edges +
         # resonance + emergence in its own db.
@@ -225,6 +220,11 @@ class SessionManager:
         # support relocating the DB to a larger drive). Resolution order:
         # prefs["knowledge_db_path"] → data_base / "knowledge.db".
         self._knowledge_db_path = self._resolve_knowledge_path()
+        # Reload knowledge store with the resolved path from prefs (if different from initial).
+        self.knowledge = KnowledgeStore(
+            self._knowledge_db_path,
+            workspace=self.default_workspace,
+        )
         if self._prefs.get("default_model"):
             self.model = self._prefs["default_model"]
         # Seed the PDF-fallback module global from prefs so engines see the user's
