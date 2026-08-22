@@ -628,10 +628,26 @@ class TurnEngine:
             for tool_call in concurrent:
                 yield Event(EventType.TOOL_STARTED, {"name": tool_call.name})
                 self._audit(tool_call, stage="started")
+            # return_exceptions=True: 工具执行异常不传播到引擎层,
+            # 由 _execute_sync 内部捕获并返回 error dict
+            # (owner bug 2026-08-22: Agent 调用 skill 时 sidecar 崩溃,
+            # 可能是 gather 传播了未捕获的线程异常)
             outcomes = await asyncio.gather(
-                *[asyncio.to_thread(self._execute_sync, tc) for tc in concurrent]
+                *[asyncio.to_thread(self._execute_sync, tc) for tc in concurrent],
+                return_exceptions=True,
             )
-            for tool_call, (result, status) in zip(concurrent, outcomes):
+            for tool_call, outcome in zip(concurrent, outcomes):
+                if isinstance(outcome, Exception):
+                    result = {"error": str(outcome), "error_type": type(outcome).__name__}
+                    status = "error"
+                    try:
+                        get_failure_registry().record_failure(
+                            tool_call.name, type(outcome).__name__
+                        )
+                    except Exception:
+                        pass
+                else:
+                    result, status = outcome
                 yield self._record_result(tool_call, result, status)
 
         for tool_call in serial:
@@ -640,7 +656,18 @@ class TurnEngine:
                 continue
             yield Event(EventType.TOOL_STARTED, {"name": tool_call.name})
             self._audit(tool_call, stage="started")
-            result, status = await asyncio.to_thread(self._execute_sync, tool_call)
+            try:
+                result, status = await asyncio.to_thread(self._execute_sync, tool_call)
+            except Exception as exc:
+                # 线程异常兜底: to_thread 内部未捕获的异常(如 segfault/OOM)
+                result = {"error": str(exc), "error_type": type(exc).__name__}
+                status = "error"
+                try:
+                    get_failure_registry().record_failure(
+                        tool_call.name, type(exc).__name__
+                    )
+                except Exception:
+                    pass
             yield self._record_result(tool_call, result, status)
 
     def _interrupted_tool(self, tool_call: ToolCall) -> Event:
