@@ -160,14 +160,24 @@ def main(argv=None) -> None:
     try:
         import uvicorn
         import signal
+        import atexit
+        import logging
 
         _exit_when_orphaned()
         app = build_app(args.cwd, args.model, args.mode)
 
+        _log = logging.getLogger("qunwork.run")
+        _log.info("Sidecar starting on %s:%s (pid=%s)", args.host, args.port, os.getpid())
+
+        # 退出追踪: 记录退出原因, 方便排查"静默崩溃"
+        def _on_exit():
+            _log.info("Sidecar exiting (pid=%s)", os.getpid())
+
+        atexit.register(_on_exit)
+
         # 信号处理: SIGTERM/SIGINT 优雅退出, 不崩溃
         def _handle_signal(signum, frame):
-            import logging
-            logging.getLogger("qunwork.run").info("Received signal %s, shutting down.", signum)
+            _log.info("Received signal %s, shutting down gracefully.", signum)
 
         signal.signal(signal.SIGTERM, _handle_signal)
         signal.signal(signal.SIGINT, _handle_signal)
