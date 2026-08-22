@@ -231,6 +231,13 @@ class SessionManager:
         )
         if self._prefs.get("default_model"):
             self.model = self._prefs["default_model"]
+        # 用户配置的技能目录路径生效: prefs 加载后更新 skill_loader._dirs
+        # (初始构造时 _prefs 尚未加载, 走默认路径; 这里用 prefs 中的真实值修正)
+        user_skills_path = self._resolve_skills_user_path()
+        default_skills = state_dir() / "skills"
+        if user_skills_path != default_skills and user_skills_path not in self.skill_loader._dirs:
+            self.skill_loader._dirs.append(user_skills_path)
+            self.skill_loader.refresh()
         # Seed the PDF-fallback module global from prefs so engines see the user's
         # choice from the first turn (set_pdf_settings keeps it in sync after).
         from ..pdf_support import set_fallback_mode
