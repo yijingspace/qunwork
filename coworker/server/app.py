@@ -3343,6 +3343,12 @@ def create_app(manager: SessionManager) -> FastAPI:
                     await reject_input(f"Unknown WebSocket message type: {kind}.")
         except WebSocketDisconnect:
             pass
+        except Exception as exc:
+            # 未捕获异常不应导致 sidecar 崩溃(WebSocket 断连/模型调用异常等)
+            import logging
+            logging.getLogger("qunwork.ws").error(
+                "WebSocket handler error (session %s): %s", session_id, exc, exc_info=True
+            )
         finally:
             manager.unregister_session_client(session_id, ws.send_json)
 

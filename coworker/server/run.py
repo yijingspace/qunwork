@@ -159,12 +159,29 @@ def main(argv=None) -> None:
     generated_token_path = _ensure_api_token(args.port)
     try:
         import uvicorn
+        import signal
 
         _exit_when_orphaned()
         app = build_app(args.cwd, args.model, args.mode)
+
+        # 信号处理: SIGTERM/SIGINT 优雅退出, 不崩溃
+        def _handle_signal(signum, frame):
+            import logging
+            logging.getLogger("qunwork.run").info("Received signal %s, shutting down.", signum)
+
+        signal.signal(signal.SIGTERM, _handle_signal)
+        signal.signal(signal.SIGINT, _handle_signal)
+
         uvicorn.run(
             app, host=args.host, port=args.port, ws_max_size=_WS_MAX_FRAME_BYTES
         )
+    except KeyboardInterrupt:
+        pass  # 正常退出(Ctrl+C / Tauri shell kill)
+    except Exception as exc:
+        import logging
+        log = logging.getLogger("qunwork.run")
+        log.critical("Sidecar crashed: %s", exc, exc_info=True)
+        raise  # 让 PyInstaller 捕获并写入 stderr
     finally:
         if generated_token_path is not None:
             generated_token_path.unlink(missing_ok=True)
