@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import math
 import re
+from bisect import bisect_right
 from typing import Any, Optional
 
 from .store import HornetStore, ngram_vector, cosine, similarity, RELATION_CHANNEL_3D
@@ -53,11 +54,16 @@ def _has_date(s: str) -> bool:
     return bool(_DATE_RE.search(s))
 
 
-def _keyword_attribute(a: str, b: str) -> bool:
-    """Shared distinctive n-gram stem (len>=2 tokens) — crude attribute kinship."""
-    grams_a = {g for g in ngram_vector(a, 2) if len(g) >= 4}
-    grams_b = {g for g in ngram_vector(b, 2) if len(g) >= 4}
-    shared = grams_a & grams_b
+def _keyword_attribute(
+    a: str, b: str,
+    grams_a: Optional[set[str]] = None, grams_b: Optional[set[str]] = None,
+) -> bool:
+    """Shared distinctive n-gram stem (len>=2 tokens) — crude attribute kinship.
+    `grams_a/grams_b`: precomputed title 2-gram sets (the pair loop passes them
+    so the vectors aren't rebuilt for every candidate pair)."""
+    grams_a = grams_a if grams_a is not None else set(ngram_vector(a, 2))
+    grams_b = grams_b if grams_b is not None else set(ngram_vector(b, 2))
+    shared = {g for g in grams_a if len(g) >= 4} & {g for g in grams_b if len(g) >= 4}
     return len(shared) >= 2
 
 
@@ -75,6 +81,123 @@ def _opposite_hint(a: str, b: str) -> bool:
         if (x in la and y in lb) or (x in lb and y in la):
             return True
     return False
+
+
+def _ta_vectors(items: list[tuple[Optional[int], str, str, float]]) -> list[dict[str, float]]:
+    """n-gram vectors of `f"{title} {content}"[:600]` — the exact texts
+    _classify's similar/attribute rules compare. Computed once per item; the
+    pair loop used to rebuild both sides for EVERY candidate pair (n² 600-char
+    ngram_vector calls — the dominant rebuild cost after the OOM fixes)."""
+    return [ngram_vector(f"{t} {c}"[:600]) for _k, t, c, _ts in items]
+
+
+def _candidate_pairs(
+    items: list[tuple[Optional[int], str, str, float]],
+    title_grams: list[set[str]],
+) -> list[tuple[int, int, bool]]:
+    """All (i, j, share) index pairs _classify could return a relation for.
+
+    Replaces the old all-pairs scan (~n²/2 iterations; ~2.9M on the 2.4k-item
+    hive) with an inverted index over title 2-grams plus three small passes:
+      (a) titles share a 2-gram — required by similar/attribute anyway (cosine
+          over 2-gram dicts is 0 without a shared gram) and it subsumes contains
+          (a substring of length>=2 shares its grams with the containing title);
+      (b) a cause/opposite keyword pair spans both titles — the keyword rules
+          fire between otherwise unrelated titles;
+      (c) both titles are date-like and the items were created within
+          TEMPORAL_DAYS — the temporal rule (date-like titles can carry
+          different years and share no gram at all);
+      (d) a title shorter than 2 chars — degenerate containment (`"" in b`).
+    Output is (i, j)-sorted, so edge insertion order matches the old scan and
+    the built graph is byte-identical to the all-pairs version."""
+    n = len(items)
+    titles = [t or "" for _k, t, _c, _ts in items]
+    pair_share: dict[tuple[int, int], bool] = {}
+
+    # (a) inverted index over title 2-grams (postings in ascending item order)
+    postings: dict[str, list[int]] = {}
+    for i, grams in enumerate(title_grams):
+        for g in grams:
+            postings.setdefault(g, []).append(i)
+    stamp = [-1] * n
+    for i in range(n):
+        for g in title_grams[i]:
+            pl = postings[g]
+            for j in pl[bisect_right(pl, i):]:
+                if stamp[j] != i:
+                    stamp[j] = i
+                    pair_share[(i, j)] = True
+
+    def _add(i: int, j: int) -> None:
+        key = (i, j) if i < j else (j, i)
+        if key not in pair_share:
+            pair_share[key] = bool(title_grams[key[0]] & title_grams[key[1]])
+
+    # (b) cause/opposite keyword pairs (checked in both directions)
+    lower = [t.lower() for t in titles]
+    keywords: dict[str, list[int]] = {}
+    for x, y in (*_CAUSE_PAIRS, *_OPPOSITE_PAIRS):
+        for kw in (x, y):
+            if kw not in keywords:
+                keywords[kw] = [i for i, lt in enumerate(lower) if kw in lt]
+    for x, y in (*_CAUSE_PAIRS, *_OPPOSITE_PAIRS):
+        px, py = keywords[x], keywords[y]
+        # pathological guard: single-char keywords (高/低…) spanning most of the
+        # hive would reintroduce a quadratic cross product — skip those pairs.
+        if len(px) * len(py) > 200_000:
+            continue
+        for i in px:
+            for j in py:
+                if i != j:
+                    _add(i, j)
+
+    # (c) temporal: date-like titles created within the same window
+    dated = sorted(
+        (i for i, t in enumerate(titles) if _has_date(t)),
+        key=lambda i: items[i][3],
+    )
+    for a, ia in enumerate(dated):
+        ts_a = items[ia][3]
+        span = 0
+        for b in range(a + 1, len(dated)):
+            ib = dated[b]
+            if items[ib][3] - ts_a >= TEMPORAL_DAYS * 86400:
+                break
+            _add(ia, ib)
+            span += 1
+            if span >= 2000:  # same pathological guard as (b)
+                break
+
+    # (d) degenerate short titles pair against everything
+    for i, t in enumerate(titles):
+        if len(t) < 2:
+            for j in range(n):
+                if i != j:
+                    _add(i, j)
+
+    return [(i, j, sh) for (i, j), sh in sorted(pair_share.items())]
+
+
+def _auto_edges(
+    items: list[tuple[Optional[int], str, str, float]],
+    title_grams: list[set[str]],
+    ta_vecs: list[dict[str, float]],
+    cands: list[tuple[int, int, bool]],
+) -> list[tuple[int, int, str, float]]:
+    """Classify every candidate pair — the store-free core of build()'s edge
+    pass, split out so it can be benchmarked and diffed against the old
+    all-pairs scan standalone."""
+    out: list[tuple[int, int, str, float]] = []
+    for i, j, share in cands:
+        rel, weight, _ch = _classify(
+            items[i][1], items[i][2], items[j][1], items[j][2],
+            items[i][3], items[j][3], share,
+            vec_a=ta_vecs[i], vec_b=ta_vecs[j],
+            grams_a=title_grams[i], grams_b=title_grams[j],
+        )
+        if rel:
+            out.append((i, j, rel, weight))
+    return out
 
 
 # -- hexagonal layout (axial coords via PCA of n-gram vectors) -----------------
@@ -287,15 +410,46 @@ class HornetBuilder:
     ) -> dict[str, Any]:
         if rebuild:
             self.store.clear()
-        vectors: list[dict[str, float]] = []
-        for _kid, title, content, _ts in items:
-            vectors.append(ngram_vector(f"{title} {content}"))
         n = len(items)
+        if n == 0:
+            return {"nodes": 0, "edges": 0, "topo": False}
+        # title 2-gram sets — shared by the candidate index, the topo pre-pass
+        # and the edge classifier (each pass used to build its own copy).
+        title_grams = [set(ngram_vector(t, 2).keys()) for _k, t, _c, _ts in items]
+        # candidate pairs via inverted index (see _candidate_pairs): the edge
+        # pass no longer scans all n²/2 pairs (~2.9M on a 2.4k-item hive).
+        cands = _candidate_pairs(items, title_grams)
+
+        # Cap the text fed to the n-gram vector: nodes store content[:4000] anyway,
+        # and the FULL body of a ~2.4k-item KB (~154MB of chunks) ballooned the
+        # per-item vector dicts into multi-GB territory — the silent OOM that
+        # killed the sidecar whenever a knowledge-gap task finished and rebuilt
+        # the graph (2026-08-22 post-mortem).
+        vectors: list[Optional[dict[str, float]]] = [
+            ngram_vector(f"{title} {content[:4000]}") for _kid, title, content, _ts in items
+        ]
+        ta_vecs: Optional[list[dict[str, float]]] = None
+        E = None
+        np = None  # bound inside the topo branch; only used when E is not None
         if topo and n >= 8:
             # topological soft-constraint embedding (numpy GCN + ring loss):
             # layout and similar-edge weights follow the hive topology.
             import numpy as np
 
+            # 600-char head vectors for the pre-pass; reused by the final edge
+            # pass below (topo is the only path where both vector sets coexist).
+            ta_vecs = _ta_vectors(items)
+            # edges for the GCN graph come from a first classification pass over
+            # the gram-sharing candidates (share=True, same pairs as the old scan).
+            prelim: list[tuple[int, int]] = []
+            for i, j, share in cands:
+                if share and _classify(
+                    items[i][1], items[i][2], items[j][1], items[j][2],
+                    items[i][3], items[j][3], True,
+                    vec_a=ta_vecs[i], vec_b=ta_vecs[j],
+                    grams_a=title_grams[i], grams_b=title_grams[j],
+                )[0]:
+                    prelim.append((i, j))
             df: dict[str, int] = {}
             for v in vectors:
                 for g in v:
@@ -308,26 +462,12 @@ class HornetBuilder:
                     j = idx.get(g)
                     if j is not None:
                         X[i, j] = c
-            # edges come from a first classification pass (used as GCN graph)
-            prelim: list[tuple[int, int]] = []
-            title_grams = [set(ngram_vector(t, 2).keys()) for _k, t, _c, _ts in items]
-            for i in range(n):
-                gi = title_grams[i]
-                for j in range(i + 1, n):
-                    if gi & title_grams[j]:
-                        rel, _w, _ch = _classify(
-                            items[i][1], items[i][2], items[j][1], items[j][2],
-                            items[i][3], items[j][3], True,
-                        )
-                        if rel:
-                            prelim.append((i, j))
             from .topo_embed import topo_embed
 
             tres = topo_embed(X, prelim, epochs=8)
             E = tres["embedding"]  # n x out_dim
             layout_vecs = [dict(enumerate(map(float, E[i]))) for i in range(n)]
         else:
-            E = None
             layout_vecs = vectors
         occupied: set[tuple[int, int, int]] = set()
         coords = _layout3(layout_vecs, occupied)
@@ -335,39 +475,42 @@ class HornetBuilder:
         node_ids: list[int] = []
         for k, (kid, title, content, ts) in enumerate(items):
             x, y, z = coords[k]
-            phase = _phase_from_content_3d(f"{title} {content}")
+            phase = _phase_from_content_3d(f"{title} {content[:4000]}")
+            # reuse the capped vector computed for the layout pass instead of
+            # re-deriving it from (potentially full-length) content again.
+            vec = vectors[k]
             nid = self.store.add_node(
                 title, content[:4000], kb_item_id=kid,
-                vec=ngram_vector(f"{title} {content}"),
+                vec=vec,
                 phase=phase, x=x, y=y, z=z,
                 topo=list(map(float, E[k])) if E is not None else None,
+                commit=False,
             )
+            vectors[k] = None  # release as we write — only the layout needed them all
             node_ids.append(nid)
+        self.store.commit()  # one transaction for all nodes (was ~N commits)
 
-        # auto edges (title-gram prefilter keeps the O(n²) pass cheap: full-text
-        # similarity only runs when two titles share a 2-gram)
+        # auto edges: classify only the candidate pairs. The 600-char head
+        # vectors are computed HERE on the non-topo path — the 4000-capped
+        # layout vectors above are already released, so the two big vector
+        # sets never coexist in memory.
+        if ta_vecs is None:
+            ta_vecs = _ta_vectors(items)
+        auto = _auto_edges(items, title_grams, ta_vecs, cands)
+        del ta_vecs
         edges = 0
-        title_grams = [set(ngram_vector(t, 2).keys()) for _k, t, _c, _ts in items]
-        for i in range(n):
-            ti, ci = items[i][1], items[i][2]
-            gi = title_grams[i]
-            for j in range(i + 1, n):
-                tj, cj = items[j][1], items[j][2]
-                share = bool(gi & title_grams[j])
-                rel, weight, _ch = _classify(
-                    ti, ci, tj, cj, items[i][3], items[j][3], share
-                )
-                if rel:
-                    ch = RELATION_CHANNEL_3D.get(rel, "G3")
-                    if E is not None and rel == "similar":
-                        # topology-enhanced edge weight: blend 2-gram sim with
-                        # topological cosine so resonance follows the hive shape.
-                        # E rows are L2-normalized → dot ∈ [-1, 1]; map to [0, 1]
-                        # so the blended weight stays non-negative.
-                        w_topo = (float(np.dot(E[i], E[j])) + 1.0) / 2.0
-                        weight = round(0.5 * weight + 0.5 * w_topo, 4)
-                    if self.store.add_edge(node_ids[i], node_ids[j], rel, weight=weight, channel=ch):
-                        edges += 1
+        for i, j, rel, weight in auto:
+            ch = RELATION_CHANNEL_3D.get(rel, "G3")
+            if E is not None and rel == "similar":
+                # topology-enhanced edge weight: blend 2-gram sim with
+                # topological cosine so resonance follows the hive shape.
+                # E rows are L2-normalized → dot ∈ [-1, 1]; map to [0, 1]
+                # so the blended weight stays non-negative.
+                w_topo = (float(np.dot(E[i], E[j])) + 1.0) / 2.0
+                weight = round(0.5 * weight + 0.5 * w_topo, 4)
+            if self.store.add_edge(node_ids[i], node_ids[j], rel, weight=weight, channel=ch, commit=False):
+                edges += 1
+        self.store.commit()  # one transaction for all edges (was ~E commits)
         return {"nodes": len(node_ids), "edges": edges, "topo": bool(E is not None)}
 
 
@@ -416,13 +559,18 @@ def _phase_from_content(text: str) -> list[float]:
 def _classify(
     title_a: str, content_a: str, title_b: str, content_b: str,
     ts_a: float, ts_b: float, share_title_grams: bool = True,
+    *,
+    vec_a: Optional[dict[str, float]] = None,
+    vec_b: Optional[dict[str, float]] = None,
+    grams_a: Optional[set[str]] = None,
+    grams_b: Optional[set[str]] = None,
 ) -> tuple[Optional[str], float, Optional[str]]:
     """Decide relation/weight/channel between two cells (deterministic rules).
     `share_title_grams`: false skips the full-text similar/attribute checks (the
-    O(n²) hot path stays cheap — no n-gram rebuild for unrelated pairs)."""
-    ta = f"{title_a} {content_a}"[:600]
-    tb = f"{title_b} {content_b}"[:600]
-
+    O(n²) hot path stays cheap — no n-gram rebuild for unrelated pairs).
+    Callers looping over pairs pass `vec_a/vec_b` (n-gram vectors of
+    f"{title} {content}"[:600]) and `grams_a/grams_b` (title 2-gram sets) so
+    each item's vectors are computed once instead of once per pair."""
     # cause / opposite / contains / temporal are keyword-ish — cheap, always run
     if _cause_hint(title_a, title_b):
         return "cause", 0.8, "D1"
@@ -438,9 +586,14 @@ def _classify(
     if not share_title_grams:
         return None, 0.0, None
 
-    sim = similarity(ta, tb)
+    if vec_a is not None and vec_b is not None:
+        sim = cosine(vec_a, vec_b)
+    else:
+        ta = f"{title_a} {content_a}"[:600]
+        tb = f"{title_b} {content_b}"[:600]
+        sim = similarity(ta, tb)
     if sim >= SIM_THRESHOLD:
         return "similar", round(sim, 4), "D5"
-    if sim >= ATTRIBUTE_THRESHOLD and _keyword_attribute(title_a, title_b):
+    if sim >= ATTRIBUTE_THRESHOLD and _keyword_attribute(title_a, title_b, grams_a, grams_b):
         return "attribute", round(sim, 4), "D2"
     return None, 0.0, None

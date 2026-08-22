@@ -21,7 +21,7 @@ import re
 import sqlite3
 import threading
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Iterable, Optional
 
 # 6 direction channels (geometric layer, transport only)
 CHANNELS = ("D0", "D1", "D2", "D3", "D4", "D5")
@@ -112,6 +112,35 @@ def coverage_similarity(query: str, doc_vec: dict[str, float], n: int = 2) -> fl
         if d:
             total += cnt * d
     return total
+
+
+_NODE_COLS = (
+    "id", "kb_item_id", "title", "content", "vec", "phase", "x", "y", "z",
+    "topo", "failed_count", "freshness", "created_at",
+)
+
+
+def _node_select(fields: Optional[Iterable[str]] = None) -> str:
+    """SQL projection for hornet_nodes: subset of _NODE_COLS (whitelisted, in
+    table order) with the COALESCE defaults preserved. Unknown names are dropped."""
+    chosen = [c for c in (fields or _NODE_COLS) if c in _NODE_COLS] or list(_NODE_COLS)
+    expr = {c: c for c in _NODE_COLS}
+    expr["failed_count"] = "COALESCE(failed_count, 0) AS failed_count"
+    expr["freshness"] = "COALESCE(freshness, 1.0) AS freshness"
+    return ", ".join(expr[c] for c in chosen)
+
+
+def _parse_node_row(r) -> dict[str, Any]:
+    """sqlite row -> node dict, JSON-decoding only the columns present (the
+    projected-away vec/phase/topo stay absent instead of parsed)."""
+    d = dict(r)
+    if "vec" in d:
+        d["vec"] = json.loads(d["vec"] or "{}")
+    if "phase" in d:
+        d["phase"] = json.loads(d["phase"] or "[0,0,0,0,0,0]")
+    if "topo" in d:
+        d["topo"] = json.loads(d["topo"] or "[]") if d.get("topo") else []
+    return d
 
 
 class HornetStore:
@@ -209,6 +238,11 @@ class HornetStore:
             self._con.execute("DELETE FROM hornet_emergent")
             self._con.commit()
 
+    def commit(self) -> None:
+        """Commit a batch started with commit=False (see add_node/add_edge)."""
+        with self._lock:
+            self._con.commit()
+
     def add_node(
         self,
         title: str,
@@ -221,7 +255,11 @@ class HornetStore:
         y: int = 0,
         z: int = 0,
         topo: Optional[list[float]] = None,
+        commit: bool = True,
     ) -> int:
+        """Insert a hive cell. Pass commit=False for bulk inserts (a rebuild
+        writes thousands of cells) and call commit() once at the end — per-row
+        commits were ~N disk transactions per rebuild."""
         with self._lock:
             cur = self._con.execute(
                 "INSERT INTO hornet_nodes (kb_item_id, title, content, vec, phase, x, y, z, topo, created_at) "
@@ -239,24 +277,51 @@ class HornetStore:
                     _now(),
                 ),
             )
-            self._con.commit()
+            if commit:
+                self._con.commit()
             return int(cur.lastrowid)
 
-    def list_nodes(self) -> list[dict[str, Any]]:
+    def list_nodes(self, *, fields: Optional[Iterable[str]] = None) -> list[dict[str, Any]]:
+        """Load hive cells. Pass `fields` to project away the heavy JSON blobs
+        (vec/phase/topo): the 6h auto-evolve + freshness sweeps on a ~2.4k-cell
+        hive once materialized ~1.5GB of parsed n-gram vectors and OOM-killed
+        the whole sidecar mid-task (silent death, no traceback). Callers that
+        don't do vector math must project: evolve/freshness/health/graph only
+        need id/title/content/coords. Default keeps the full row."""
         with self._lock:
             rows = self._con.execute(
-                "SELECT id, kb_item_id, title, content, vec, phase, x, y, z, topo, "
-                "COALESCE(failed_count, 0) AS failed_count, COALESCE(freshness, 1.0) AS freshness, created_at "
-                "FROM hornet_nodes"
+                f"SELECT {_node_select(fields)} FROM hornet_nodes"
             ).fetchall()
-        out = []
-        for r in rows:
-            d = dict(r)
-            d["vec"] = json.loads(d["vec"] or "{}")
-            d["phase"] = json.loads(d["phase"] or "[0,0,0,0,0,0]")
-            d["topo"] = json.loads(d["topo"] or "[]") if d.get("topo") else []
-            out.append(d)
-        return out
+        return [_parse_node_row(r) for r in rows]
+
+    def list_titles(self) -> list[str]:
+        """Titles only — for fission-dedup / known-title checks that must NOT
+        pay the content/vec load (see list_nodes)."""
+        with self._lock:
+            rows = self._con.execute("SELECT title FROM hornet_nodes").fetchall()
+        return [r["title"] for r in rows]
+
+    def iter_nodes(self, *, fields: Optional[Iterable[str]] = None, batch: int = 100):
+        """Yield node dicts in id-ordered batches (generator). Use this when a
+        caller needs the heavy vec/content of every cell but only transiently
+        (e.g. resonate's seed pass): materializing all of them at once via
+        list_nodes() is the historical ~1.5GB OOM. Rows are fetched under the
+        store lock and yielded outside it, so writes between batches are safe
+        (keyset pagination on id)."""
+        sel = _node_select(fields)
+        last_id = -1
+        while True:
+            with self._lock:
+                rows = self._con.execute(
+                    f"SELECT {sel} FROM hornet_nodes WHERE id > ? ORDER BY id LIMIT ?",
+                    (last_id, batch),
+                ).fetchall()
+            if not rows:
+                return
+            for r in rows:
+                d = _parse_node_row(r)
+                last_id = d["id"]
+                yield d
 
     def node_count(self) -> int:
         with self._lock:
@@ -301,8 +366,10 @@ class HornetStore:
     # -- edges ---------------------------------------------------------------
     def add_edge(
         self, src: int, dst: int, relation: str, *, weight: float = 1.0,
-        channel: Optional[str] = None,
+        channel: Optional[str] = None, commit: bool = True,
     ) -> bool:
+        """Insert a relation edge. Pass commit=False for bulk inserts (a rebuild
+        writes tens of thousands of edges) and call commit() once at the end."""
         if relation not in RELATIONS:
             return False
         ch = channel or RELATION_CHANNEL.get(relation, "D5")
@@ -312,7 +379,8 @@ class HornetStore:
                 "VALUES (?,?,?,?,?,?)",
                 (src, dst, relation, ch, weight, _now()),
             )
-            self._con.commit()
+            if commit:
+                self._con.commit()
             return True
 
     def list_edges(self) -> list[dict[str, Any]]:
@@ -486,7 +554,7 @@ class HornetStore:
         """Export the hive topology (nodes with phase + edges) for cross-org
         resonance alignment. Content is excluded (IP/privacy); only the
         structural fingerprint travels."""
-        nodes = self.list_nodes()
+        nodes = self.list_nodes(fields=("id", "title", "phase", "x", "y", "z", "freshness"))
         edges = self.list_edges()
         return {
             "nodes": [
@@ -519,7 +587,7 @@ class HornetStore:
         """
         remote_nodes = payload.get("nodes", [])
         remote_edges = payload.get("edges", [])
-        local_nodes = self.list_nodes()
+        local_nodes = self.list_nodes(fields=("id", "title"))
         local_by_title = {n["title"]: n for n in local_nodes}
         id_map: dict[int, int] = {}
         imported = conflicts = 0

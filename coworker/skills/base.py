@@ -109,6 +109,8 @@ class SkillLoader:
         self._readonly = {Path(d) for d in (readonly_dirs or [])}
         self._skills: dict[str, Skill] = {}
         self._registry_tool_schemas = registry_tool_schemas
+        # Fingerprint of the last completed scan (per-dir SKILL.md name+mtime).
+        self._scan_snapshot: Optional[tuple] = None
         # C16: _skills is shared between the loop thread (catalog() for the
         # context provider) and worker/tool threads (load_skill -> refresh()).
         # refresh() clears and rebuilds the dict, so concurrent iteration is a
@@ -118,11 +120,37 @@ class SkillLoader:
 
     def refresh(self) -> None:
         """(Re)scan every skill directory — call after saving a new skill so it is
-        immediately available to the running engine."""
+        immediately available to the running engine.
+
+        Skips the rescan when nothing changed since the last pass: load_skill
+        calls refresh() on EVERY tool invocation, and with ~110+ skills (61
+        built-in + HORNET emergence drafts) the unconditional rescan burned
+        seconds of lock-verification file hashing per call — CPU pressure that
+        stacked on top of the HORNET sweeps and froze turns. The fingerprint is
+        cheap (one stat per SKILL.md) and any add/remove/edit trips it."""
         with self._lock:
+            snap = self._scan_fingerprint()
+            if self._scan_snapshot is not None and snap == self._scan_snapshot:
+                return
+            self._scan_snapshot = snap
             self._skills.clear()
             for directory in self._dirs:
                 self._discover(directory)
+
+    def _scan_fingerprint(self) -> tuple:
+        marks: list[tuple[str, str, int, int]] = []
+        for d in self._dirs:
+            try:
+                entries = sorted(d.iterdir())
+            except OSError:
+                continue
+            for sub in entries:
+                try:
+                    st = (sub / "SKILL.md").stat()
+                    marks.append((str(d), sub.name, st.st_mtime_ns, st.st_size))
+                except OSError:
+                    marks.append((str(d), sub.name, 0, 0))
+        return tuple(marks)
 
     def save_skill(
         self,

@@ -60,7 +60,11 @@ class CacheWarmer:
     def cold_nodes(self, limit: Optional[int] = None) -> list[dict[str, Any]]:
         """The coldest knowledge nodes: lowest `freshness` (HORNET decays it over
         time when a node is not re-hit) — these benefit most from re-injection."""
-        nodes = self.hornet.list_nodes() if hasattr(self.hornet, "list_nodes") else []
+        nodes = (
+            self.hornet.list_nodes(fields=("id", "title", "freshness"))
+            if hasattr(self.hornet, "list_nodes")
+            else []
+        )
         if not nodes:
             return []
         scored = sorted(

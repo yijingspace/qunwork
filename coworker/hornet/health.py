@@ -35,7 +35,7 @@ def _share(part: float, total: float) -> float:
 
 
 def assess_health(store: HornetStore) -> dict[str, Any]:
-    nodes = store.list_nodes()
+    nodes = store.list_nodes(fields=("id", "title", "z", "freshness"))
     edges = store.list_edges()
     node_total = len(nodes)
     n = node_total

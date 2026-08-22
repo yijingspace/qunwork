@@ -53,7 +53,15 @@ class HornetResonator:
         self.sync_threshold = sync_threshold
 
     def resonate(self, query: str, *, k: int = 10, hops: Optional[int] = None) -> dict[str, Any]:
-        nodes = self.store.list_nodes()
+        # Two-phase load (2026-08-22 crash post-mortem): the old full
+        # list_nodes() materialized every cell WITH its n-gram vector — ~1.5GB
+        # on a ~2.4k-cell hive — and resonate() runs on every orchestrated
+        # task, which is exactly when the sidecar silently OOM-died.
+        # Phase 1 keeps the light metadata the propagation/output phases touch;
+        # phase 2 streams the heavy vec/content in batches and discards them.
+        nodes = self.store.list_nodes(
+            fields=("id", "kb_item_id", "title", "x", "y", "z", "phase")
+        )
         if not nodes:
             return {"hits": [], "query_phase": [], "warnings": ["hive empty — run build first"]}
         hops = hops or self.hops
@@ -63,9 +71,6 @@ class HornetResonator:
         # DPNN: query probe wave frequency + precomputed cell natural frequencies.
         q_omega = query_frequency(query) if self.dpnn else 0.0
         cell_freq: dict[int, float] = {}
-        if self.dpnn:
-            for n in nodes:
-                cell_freq[n["id"]] = cell_omega(n["title"], n.get("content", ""))
 
         # adjacency: node_id -> list of (neighbor_id, relation, channel, weight)
         adj: dict[int, list[tuple[int, str, str, float]]] = {n["id"]: [] for n in nodes}
@@ -75,13 +80,19 @@ class HornetResonator:
 
         # seed amplitudes: raw query-count x doc-vector coverage (doc length
         # independent) — same retrieval spirit as the knowledge store, but on
-        # whole hive cells rather than short chunks.
+        # whole hive cells rather than short chunks. Streamed so at most one
+        # batch of vec dicts is alive at any moment.
         node_by_id = {n["id"]: n for n in nodes}
         amp: dict[int, float] = {}
-        for n in nodes:
+        for n in self.store.iter_nodes(fields=("id", "title", "content", "vec"), batch=100):
+            nid = n["id"]
+            if nid not in node_by_id:  # appeared between the two loads
+                continue
             s = coverage_similarity(query, n.get("vec") or {})
             if s > 0:
-                amp[n["id"]] = s
+                amp[nid] = s
+            if self.dpnn:
+                cell_freq[nid] = cell_omega(n["title"], n.get("content", ""))
 
         # wave propagation (iterative diffusion with DPNN interference). Energy
         # is split by out-degree each hop so a dense hive doesn't explode.

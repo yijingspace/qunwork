@@ -3485,8 +3485,18 @@ class SessionManager:
             try:
                 body = (run.result_text or "").strip()
                 if body and len(body) > 40:
+                    # Gap-completion results used to be ingested under the raw
+                    # task title "[HORNET] 补全知识: 知识空洞: X · run #N" —
+                    # an artifact name no related node links to, so each entry
+                    # re-surfaced as ANOTHER isolated gap. Ingest under the
+                    # gap's own subject instead: the builder's title 2-gram
+                    # matching then connects it to the topic it completes.
+                    ingest_title = f"{task.title} · run #{getattr(task, 'run_count', 0) or 0}"
+                    if "知识空洞:" in task.title:
+                        subject = task.title.split("知识空洞:", 1)[1].strip()
+                        ingest_title = f"{subject} — 补全"
                     self.knowledge.add_text(
-                        title=f"{task.title} · run #{getattr(task, 'run_count', 0) or 0}",
+                        title=ingest_title,
                         content=body[:4000],
                         kind="automation",
                         workspace=task.workspace,
@@ -3497,10 +3507,22 @@ class SessionManager:
                 # (owner bug 2026-08-21: graph 空洞连续多天重复触发,
                 # 因为图谱未重建 → 同一孤立节点反复被检测到)。
                 if "空洞" in task.title or "gap" in task.title.lower():
-                    try:
-                        self.hornet_build(rebuild=True)
-                    except Exception:
-                        pass
+                    # Gap tasks complete in bursts and EVERY completion used to
+                    # trigger a full graph rebuild — serial multi-GB spikes back
+                    # to back. Throttle to one rebuild per 10 min; the next
+                    # evolve picks up whatever later completions added.
+                    now_ts = time.time()
+                    if now_ts - getattr(self, "_hornet_last_rebuild", 0.0) > 600:
+                        try:
+                            # A full rebuild of a ~2.4k-item KB takes ~11 minutes of
+                            # synchronous CPU/SQL. Called inline it froze the event
+                            # loop — every API call timed out and the GUI reported
+                            # "无法连接本地引擎". Offload to a worker thread; the
+                            # knowledge/hornet stores are lock-guarded, so this is safe.
+                            await asyncio.to_thread(self.hornet_build, rebuild=True)
+                            self._hornet_last_rebuild = now_ts
+                        except Exception:
+                            pass
                     # 标记该空洞为已解决, 防止重建前的旧记录再次触发
                     try:
                         for em in self.hornet.list_emergent():
@@ -4562,7 +4584,13 @@ class SessionManager:
         for r in rows:
             items.append(
                 (r.get("id"), r.get("title") or f"item-{r.get('id')}",
-                 self.knowledge.item_content(r["id"]) or "", r.get("created_at") or 0.0)
+                 # truncate at load: the hive stores content[:4000] per cell, and
+                 # holding the FULL body of every item (~154MB across the chunks
+                 # table) in the items list was half of the rebuild-time OOM
+                 # (2026-08-22 post-mortem; the other half was the builder's
+                 # unbounded per-item vectors).
+                 (self.knowledge.item_content(r["id"]) or "")[:4000],
+                 r.get("created_at") or 0.0)
             )
         if not items:
             return {"nodes": 0, "edges": 0, "note": "knowledge store empty"}
@@ -4615,12 +4643,19 @@ class SessionManager:
             return ""
 
     def hornet_graph(self) -> dict:
-        nodes = self.hornet.list_nodes()
+        nodes = self.hornet.list_nodes(
+            fields=("id", "title", "x", "y", "z", "phase", "freshness")
+        )
         edges = self.hornet.list_edges()
         degree: dict[int, int] = {}
         for e in edges:
             degree[e["src"]] = degree.get(e["src"], 0) + 1
             degree[e["dst"]] = degree.get(e["dst"], 0) + 1
+        # Cap the payload for the GUI: a fully-rebuilt dense hive carries ~200k
+        # edges (~20MB JSON, and the Hive view would try to draw every one of
+        # them). Degrees above are computed over the FULL edge set; the view
+        # gets the strongest connections plus the true total.
+        edges_out = sorted(edges, key=lambda e: -e.get("weight", 0.0))[:5000]
         return {
             "nodes": [
                 {"id": n["id"], "title": n["title"], "x": n["x"], "y": n["y"], "z": n["z"],
@@ -4628,7 +4663,8 @@ class SessionManager:
                  "freshness": n.get("freshness", 1.0)}
                 for n in nodes
             ],
-            "edges": edges,
+            "edges": edges_out,
+            "edges_total": len(edges),
         }
 
     def usage_summary(self, days: int = 14) -> dict:
@@ -5251,12 +5287,40 @@ class SessionManager:
         import time as _time
         from ..automation.models import ScheduledTask, Schedule
 
+        # Proliferation guard (2026-08-22 post-mortem): a completion run's
+        # output re-entered the KB as a NEW isolated node ("知识空洞: [HORNET]
+        # 补全知识: …"), which spawned another task, recursively — 65 pending
+        # tasks / 406 runs (each a full agent turn of LLM + tool calls) had
+        # accumulated before these guards. Failing one-shot tasks also retry
+        # on a short loop until retry_until, so the backlog kept burning
+        # tokens during the user's own sessions.
+        if (
+            "补全知识" in title
+            or "[HORNET]" in title
+            or title.rstrip().endswith("补全")
+        ):
+            return  # ① recursion: the gap subject is itself a completion artifact
+        task_title = f"[HORNET] 补全知识: {title[:50]}"
+        try:
+            existing = self.task_store.list()
+        except Exception:
+            existing = []
+        if any(t.title == task_title for t in existing):
+            return  # ② dedupe: this gap already has a task queued or run
+        pending = [
+            t
+            for t in existing
+            if t.title.startswith("[HORNET] 补全知识") and t.enabled
+        ]
+        if len(pending) >= 8:
+            return  # ③ cap: never queue an unbounded backlog of auto-tasks
+
         hint = detail.get("hint", "补充关联或合并")
         node_id = detail.get("node_id")
         gap_context = ""
         if node_id is not None:
             try:
-                nodes = self.hornet.list_nodes()
+                nodes = self.hornet.list_nodes(fields=("id", "title", "content"))
                 edges = self.hornet.list_edges()
                 node = next((n for n in nodes if n["id"] == int(node_id)), None)
                 if node:
@@ -5286,7 +5350,7 @@ class SessionManager:
             except Exception:
                 gap_context = ""
         task = ScheduledTask(
-            title=f"[HORNET] 补全知识: {title[:50]}",
+            title=task_title,
             instructions=(
                 f"知识库检测到空洞: {title}\n{hint}\n{gap_context}"
                 f"请先读取上面的空洞节点信息 (标题/内容/邻居), 在知识库中搜索与"
@@ -5415,6 +5479,22 @@ class SessionManager:
 
         满足时调用 _hornet_act_to_skill 生成 Draft Skill。
         """
+        # Runaway guard (2026-08-22 crash post-mortem): the 6h auto-evolve loop
+        # kept minting emergence-* draft skills — 53 accumulated in a week, each
+        # one then re-scanned by every SkillLoader refresh (agent tool calls!),
+        # and the per-emergence dedupe (`skill_loader.get`) missed the pile once
+        # the user's skills dir moved, so the SAME findings regenerated forever.
+        # Hard cap: past the quota, stop generating until the user reviews.
+        try:
+            emergence_total = sum(
+                1
+                for s in self.skill_loader.catalog()
+                if s.get("source") == "hornet_emergence" or str(s.get("name", "")).startswith("emergence-")
+            )
+            if emergence_total >= 20:
+                return
+        except Exception:
+            pass
         kind = em.get("kind", "")
         detail = em.get("detail", {})
         title = em.get("title", "")
@@ -5671,7 +5751,7 @@ class SessionManager:
         if not item:
             return []
         # find the hive cell for this item (or build a probe from its title)
-        nodes = self.hornet.list_nodes()
+        nodes = self.hornet.list_nodes(fields=("id", "kb_item_id", "title"))
         cell = next((n for n in nodes if n.get("kb_item_id") == item_id), None)
         probe = cell["title"] if cell else (item.get("title") or "")
         if not probe:

@@ -27,6 +27,10 @@ try:
 except ImportError:
     _DPNN = False
 
+# Light node projection for the auto-evolve / freshness sweeps — everything the
+# passes touch, none of the heavy JSON blobs (vec n-gram dicts are the memory bomb).
+_EVOLVE_FIELDS = ("id", "kb_item_id", "title", "content", "x", "y", "z")
+
 
 class HornetObserver:
     def __init__(
@@ -41,7 +45,7 @@ class HornetObserver:
         self.llm_synthesize = llm_synthesize
 
     def _known_titles(self) -> list[str]:
-        return [n["title"] for n in self.store.list_nodes()]
+        return self.store.list_titles()
 
     def evolve(self, *, limit: int = 20) -> dict[str, Any]:
         emerged: list[dict[str, Any]] = []
@@ -54,7 +58,10 @@ class HornetObserver:
         # 再向对向 zone 垂直生长一个 Z 子胞。子内容 = 规则按维度拆分(含 cue 句)
         # 或 LLM 合成(真正裂变出新知识)。
         stats = self.store.node_hit_stats(200)
-        nodes = {n["id"]: n for n in self.store.list_nodes()}
+        # LIGHT projection (no vec/phase/topo): this pass runs every 6h and after
+        # every knowledge scan — a full load on a ~2.4k-cell hive materialized
+        # ~1.5GB of parsed n-gram vectors and OOM-killed the sidecar.
+        nodes = {n["id"]: n for n in self.store.list_nodes(fields=_EVOLVE_FIELDS)}
         if stats:
             known_titles = [n["title"] for n in nodes.values()]
             hot = sorted(stats.items(), key=lambda kv: -kv[1]["load_factor"])
@@ -196,9 +203,16 @@ class HornetObserver:
             ta, tb = (na["content"] or ""), (nb["content"] or "")
             if not ta or not tb:
                 continue
+            # cheap gates FIRST (title kinship + body length): the body
+            # similarity used to be computed for EVERY similar edge — ~206k
+            # n-gram rebuilds on a fully-rebuilt hive, minutes of GIL-hogging
+            # CPU that froze the whole engine (health checks timed out) — even
+            # though it is only consulted when the titles are kin.
+            if not (_titles_overlap(na["title"], nb["title"]) and len(ta) > 80 and len(tb) > 80):
+                continue
             sim = similarity(ta[:600], tb[:600])
             # same-ish title, low body similarity → suspicious divergence
-            if _titles_overlap(na["title"], nb["title"]) and sim < 0.15 and len(ta) > 80 and len(tb) > 80:
+            if sim < 0.15:
                 emerged.append(
                     {
                         "kind": "attractor",
@@ -298,7 +312,7 @@ class HornetObserver:
         if not _DPNN:
             return {"decayed": 0, "refreshed": 0, "downgraded": 0, "note": "dpnn unavailable"}
         stats = self.store.node_hit_stats(200)
-        nodes = self.store.list_nodes()
+        nodes = self.store.list_nodes(fields=("id", "title", "content", "freshness"))
         if not nodes:
             return {"decayed": 0, "refreshed": 0, "downgraded": 0}
         decayed = refreshed = downgraded = 0

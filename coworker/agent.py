@@ -6,6 +6,7 @@ the skill catalog (progressive disclosure) + load_skill into a TurnEngine.
 
 from __future__ import annotations
 
+import json
 import threading
 from pathlib import Path
 from typing import Any, Optional
@@ -107,7 +108,23 @@ def _skill_dirs(workspace: Optional[Path]) -> list[Path]:
     # dir and (workspace-scoped) .coworker/skills — scanned later so they win
     # on name conflicts.
     dirs = [Path(__file__).resolve().parent / "skills"]
-    dirs.append(state_dir() / "skills")
+    user_root = state_dir() / "skills"
+    # User-configured skill root (GUI 设置 → 技能存放路径, same pref the server
+    # resolves via manager._resolve_skills_user_path). The agent-side tool
+    # loader MUST scan it too: after the C→E migration the agent kept scanning
+    # only the default state dir, so the GUI listed one world of skills while
+    # load_skill saw another — market skills invisible to the agent, and the
+    # emergence dedupe (skill_loader.get) missing the old pile entirely.
+    try:
+        prefs = json.loads((state_dir() / "prefs.json").read_text(encoding="utf-8"))
+        custom = str(prefs.get("skills_user_path") or "").strip()
+        if custom:
+            p = Path(custom).expanduser()
+            if p.is_dir() and p.resolve() != user_root.resolve():
+                dirs.append(p)
+    except (OSError, ValueError):
+        pass
+    dirs.append(user_root)
     if workspace is not None:
         dirs.append(workspace / ".coworker" / "skills")
     return dirs
