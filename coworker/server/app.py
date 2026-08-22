@@ -362,6 +362,25 @@ def create_app(manager: SessionManager) -> FastAPI:
             "model": manager.model,
         }
 
+    # -- local web search (DuckDuckGo + Bing, zero-cost) ----------------------
+    from ..tools.local_search import SearchCache, local_search as _local_search
+
+    _search_cache = SearchCache(state_dir() / "search_cache.db")
+
+    @app.post("/v1/local-search")
+    async def local_search_endpoint(body: dict) -> dict[str, Any]:
+        """Local web search: DuckDuckGo + Bing parallel, SQLite cache, 24h TTL.
+        Zero API key cost. Replaces LLM-based web search for simple queries."""
+        query = str(body.get("query") or "").strip()
+        if not query:
+            return {"ok": False, "error": "query is required"}
+        max_results = min(int(body.get("max_results") or 10), 20)
+        return _local_search(query, max_results=max_results, cache=_search_cache)
+
+    @app.get("/v1/local-search/stats")
+    def local_search_stats() -> dict[str, Any]:
+        return {"ok": True, "stats": _search_cache.stats()}
+
     @app.get("/v1/agents")
     def agents() -> dict[str, Any]:
         return {"agents": manager.list_agents()}

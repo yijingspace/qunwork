@@ -983,6 +983,18 @@ export async function deleteKnowledge(id: number): Promise<{ ok: boolean }> {
   return await res.json();
 }
 
+export async function localSearch(
+  query: string,
+  maxResults = 10,
+): Promise<{ ok: boolean; results?: Array<{ title: string; url: string; snippet: string; source: string; score: number }>; total?: number; cached?: boolean; error?: string }> {
+  const res = await fetch(`${httpBase()}/v1/local-search`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ query, max_results: maxResults }),
+  });
+  return res.json();
+}
+
 export async function searchKnowledge(
   query: string,
 ): Promise<{ ok: boolean; results: KnowledgeHit[]; error?: string }> {
