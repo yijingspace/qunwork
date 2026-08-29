@@ -707,6 +707,24 @@ describe("LongRunView", () => {
     ).toBe(true);
   });
 
+  it("does not crash when storage endpoint returns an error shape", async () => {
+    // 真实后端缺 /v1/7x24/* 或 500 时 FastAPI 返回 JSON {detail: "..."} —
+    // 面板必须防御兜底, 而不是 "Cannot read properties of undefined (reading 'count')"。
+    stubFetch([
+      { match: "/v1/7x24/checkpoints", json: CHECKPOINTS },
+      { match: "/v1/7x24/health", json: HEALTH },
+      { match: "/v1/7x24/telemetry", json: TELEMETRY },
+      { match: "/v1/7x24/storage", json: { detail: "Not Found" } },
+      { match: "/v1/7x24/alerts", json: EMPTY_ALERTS },
+    ]);
+    render(<LongRunView onBack={() => {}} />);
+    // 健康面板正常渲染 (不被存储面板拖垮)。
+    await waitFor(() => expect(screen.getByTestId("health-heartbeat-tasks")).toBeTruthy());
+    // 存储面板兜底渲染 (sessions 计数显示 0 而非崩溃)。
+    await waitFor(() => expect(screen.getByText("JSONL size")).toBeTruthy());
+    expect(screen.queryByText(/Something went wrong/)).toBeNull();
+  });
+
   it("shows week compare chart", async () => {
     stubFetch([
       { match: "/v1/7x24/checkpoints", json: CHECKPOINTS },

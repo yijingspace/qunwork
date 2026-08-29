@@ -143,12 +143,12 @@ function TelemetryPanel({ telemetry }: { telemetry: LongrunTelemetry | null }) {
           <div className="space-y-1 max-h-40 overflow-y-auto">
             {conv.slice(-10).map((c, i) => (
               <div key={i} className="text-[11px] font-mono flex items-center gap-2">
-                <span className={c.report.converged ? "text-emerald-600" : "text-amber-600"}>
-                  {c.report.converged ? "✓" : "…"}
+                <span className={c.report?.converged ? "text-emerald-600" : "text-amber-600"}>
+                  {c.report?.converged ? "✓" : "…"}
                 </span>
                 <span className="text-muted truncate flex-1">{c.intent}</span>
-                <span className="text-faint shrink-0">{c.report.iterations} 轮</span>
-                <span className="text-faint shrink-0">|λ₂|={c.report.gap?.toFixed(3)}</span>
+                <span className="text-faint shrink-0">{c.report?.iterations ?? 0} 轮</span>
+                <span className="text-faint shrink-0">|λ₂|={c.report?.gap?.toFixed(3)}</span>
               </div>
             ))}
           </div>
@@ -194,7 +194,7 @@ function CheckpointPanel({
               className="w-full flex items-center gap-2 rounded-lg border border-line bg-paper px-2.5 py-1.5 text-left hover:border-lineStrong"
             >
               <span className="text-[11.5px] truncate flex-1">{s.title}</span>
-              <span className="text-[10.5px] text-faint shrink-0">{s.message_count} msgs</span>
+              <span className="text-[10.5px] text-faint shrink-0">{s.message_count ?? 0} msgs</span>
               {s.archived && <span className="text-[10px] text-emerald-600 shrink-0">archived</span>}
             </button>
           ))}
@@ -268,7 +268,15 @@ function CheckpointPanel({
 function StoragePanel({ storage }: { storage: LongrunStorage | null }) {
   const t = useT();
   if (!storage) return <div className="text-[12px] text-faint">{t("Loading…")}</div>;
-  const s = storage.sessions;
+  // 防御: 后端返回异常结构 (如 404/500 的 {detail}) 时兜底为全零,
+  // 避免 storage.sessions 为 undefined 导致渲染崩溃。
+  const s = storage.sessions ?? {
+    count: 0,
+    jsonl_total_bytes: 0,
+    archived_sessions: 0,
+    archive_bytes: 0,
+    top: [],
+  };
   return (
     <div className="space-y-3">
       <div className="grid grid-cols-2 md:grid-cols-4 gap-2.5">
@@ -478,7 +486,7 @@ function AlertAggregations({
                   {a.resolved ? "✓" : "⚠"}
                 </span>
                 <span className="text-muted truncate flex-1">{a.task_id}</span>
-                <span className="text-faint shrink-0">×{a.count}</span>
+                <span className="text-faint shrink-0">×{a.count ?? 0}</span>
                 <span className="text-faint shrink-0">{durationH}h</span>
                 {silenced && (
                   <span className="text-[10px] text-sky-600 shrink-0" data-testid={`silenced-${a.task_id}`}>
