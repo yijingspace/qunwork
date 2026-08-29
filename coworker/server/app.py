@@ -596,6 +596,17 @@ def create_app(manager: SessionManager) -> FastAPI:
                     if body.get("mesh_scheduling") is not None
                     else (getattr(manager, "_prefs", {}) or {}).get("mesh_scheduling", False)
                 ),
+                # QunMesh M3: 就近评审 + swarm_bft (mesh_review) / 动态领取 (mesh_claim)。
+                mesh_review=bool(
+                    body.get("mesh_review")
+                    if body.get("mesh_review") is not None
+                    else (getattr(manager, "_prefs", {}) or {}).get("mesh_review", False)
+                ),
+                mesh_claim=bool(
+                    body.get("mesh_claim")
+                    if body.get("mesh_claim") is not None
+                    else (getattr(manager, "_prefs", {}) or {}).get("mesh_claim", False)
+                ),
                 # P1 增量: optional agent pool + task group id.
                 agent_pool=getattr(manager, "agent_pool", None),
                 task_group_id=body.get("task_group_id") or None,

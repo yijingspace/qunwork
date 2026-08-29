@@ -168,3 +168,119 @@ def select_batch_grid(
                 batch.append(t)
                 chosen_ids.add(id(t))
     return batch
+
+
+# ---------------------------------------------------------------------------
+# QunMesh M3: 角色邻域化 (就近评审 + swarm_bft 邻域投票)
+# ---------------------------------------------------------------------------
+
+def claim_idle_agent(pool: Any, want_role: str, *, task_id: str, task_group_id: Any = None) -> tuple[Any, str]:
+    """M3 动态领取 (纯函数): 同 role 无空闲 → 跨 role 取低负载实例。
+
+    丝瓜络「谁近谁领」: 节点无角色 (实例只是执行槽位), persona 由任务携带。
+    返回 (领取的实例, 事件 dict)；领取失败返回 (None, None)。失败安全 —
+    任何池异常都吞掉回退 (调用方保持旧行为: 新建 engine)。
+    """
+    try:
+        idle = sorted(
+            (a for a in pool.list() if getattr(a, "is_available", False)),
+            key=lambda a: (getattr(a, "load", 0.0), getattr(a, "created_at", 0.0)),
+        )
+        for inst in idle:
+            if inst.role == want_role:
+                continue
+            cand = pool.acquire(inst.role, task_group_id=task_group_id, task_id=task_id)
+            if cand is not None:
+                event = {
+                    "want_role": want_role,
+                    "claimed_role": getattr(cand, "role", ""),
+                    "agent": getattr(cand, "id", ""),
+                    "load": getattr(cand, "load", None),
+                }
+                return cand, event
+    except Exception:
+        return None, None
+    return None, None
+
+
+def review_neighborhood(pheromone: Any, *, k: int = 4) -> str:
+    """就近评审的邻域上下文 (纯函数, 容错; 非 StigmergyBus / 无信号 → 空串)。
+
+    从四信道组装「评审员能看到的邻域」: result 信道 top(k) = 最近完成的任务
+    及其产物摘要 (跨任务一致性对照); risk 信道 top(k) = 邻域当前风险梯度
+    (评审重点提示); load 总量 = 当前并发。全部读失败返回空串 (旧行为)。
+    """
+    if pheromone is None:
+        return ""
+    try:
+        lines: list[str] = []
+        results = pheromone.top("result", k)
+        if results:
+            parts: list[str] = []
+            for key, _v in results:
+                payload = ""
+                try:
+                    payload = str(pheromone.payload_of(key, channel="result") or "")[:100]
+                except Exception:
+                    payload = ""
+                parts.append(f"[{key}] {payload}")
+            lines.append("Recent results nearby (cross-check consistency): " + " | ".join(parts))
+        risks = pheromone.top("risk", k)
+        if risks:
+            parts2: list[str] = []
+            for key, v in risks:
+                reason = ""
+                try:
+                    reason = str(pheromone.payload_of(key, channel="risk") or "")[:80]
+                except Exception:
+                    reason = ""
+                parts2.append(f"[{key}({v:.2f})] {reason}")
+            lines.append("Risk gradient nearby (scrutinize these areas): " + " | ".join(parts2))
+        if lines:
+            try:
+                lines.append(f"Current concurrency: {pheromone.total_load():.1f}")
+            except Exception:
+                pass
+        return "\n".join(lines)
+    except Exception:
+        return ""
+
+
+def bft_vote(verdicts: list) -> tuple[Any, dict]:
+    """swarm_bft 邻域投票 (prepare → commit): 聚合多个 reviewer 的独立裁决。
+
+    - accepted = 多数派结论 (平票时保守拒绝 — 宁可重跑不可放过);
+    - confidence = 通过时均值 / 拒绝时取 min (保守);
+    - 分歧时 reason 记录投票分布; needs_human = 任一投票方要求。
+    返回 (聚合 ReviewVerdict, 遥测 dict: votes/accepted_count/consensus)。
+    空 verdicts → (accepted=True, confidence=0.3) 兜底 (不阻塞蜂群)。
+    """
+    from .models import ReviewVerdict
+
+    if not verdicts:
+        return ReviewVerdict(accepted=True, reason="bft: no votes (fallback)", confidence=0.3), {
+            "votes": 0, "accepted_count": 0, "consensus": 1.0,
+        }
+    accepted = [v for v in verdicts if v.accepted]
+    acc_n, total = len(accepted), len(verdicts)
+    # 多数决; 平票保守拒绝 (n 为偶数时可能发生)
+    majority_accepted = acc_n * 2 > total
+    if majority_accepted:
+        conf = sum(float(v.confidence or 0) for v in accepted) / acc_n
+    else:
+        conf = min(float(v.confidence or 0) for v in verdicts)
+    consensus = max(acc_n, total - acc_n) / total
+    needs_human = any(bool(v.needs_human) for v in verdicts)
+    if acc_n == total:
+        reason = f"bft: unanimous accept ({acc_n}/{total})"
+    elif acc_n == 0:
+        reason = f"bft: unanimous reject ({total}/{total})"
+    else:
+        reason = f"bft: split vote accept={acc_n} reject={total - acc_n}"
+    merged = ReviewVerdict(
+        accepted=bool(majority_accepted),
+        reason=reason,
+        confidence=round(conf, 3),
+        needs_human=bool(needs_human),
+    )
+    return merged, {"votes": total, "accepted_count": acc_n, "consensus": round(consensus, 2)}

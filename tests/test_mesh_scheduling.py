@@ -1,12 +1,21 @@
-"""QunMesh M2: HexGrid 邻域感知批选择 + orchestrator 接线测试。"""
+"""QunMesh M2/M3: HexGrid 批选择 + 角色邻域化(就近评审/bft/动态领取)测试。"""
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
 
 import pytest
 
-from coworker.orchestrator.mesh import HexGrid, hex_distance, select_batch_grid
+from coworker.orchestrator.mesh import (
+    HexGrid,
+    bft_vote,
+    claim_idle_agent,
+    hex_distance,
+    review_neighborhood,
+    select_batch_grid,
+)
+from coworker.orchestrator.models import ReviewVerdict, Task
 from coworker.pheromone import PheromoneField, StigmergyBus
 
 
@@ -125,6 +134,131 @@ def test_orchestrator_pher_deposit_channel_safety():
     orch_field._pher_deposit("t1", 1.0, channel="result")  # no-op, 不抛
     orch_none = Orchestrator(provider=None, model="m", workspace="w", pheromone=None)
     orch_none._pher_deposit("t1", 1.0, channel="risk")  # no-op, 不抛
+
+
+# -- QunMesh M3: 就近评审 / swarm_bft / 动态领取 -----------------------------
+
+
+def test_review_neighborhood_formats_signals():
+    """result/risk 信号 → 邻域上下文文本; 无信号/None/旧场 → 空串。"""
+    bus = StigmergyBus()
+    bus.deposit("t1", 1.0, channel="result", payload="chapter 2 draft")
+    bus.deposit("t2", 0.8, channel="risk", payload="missing citations")
+    ctx = review_neighborhood(bus)
+    assert "t1" in ctx and "chapter 2 draft" in ctx
+    assert "t2" in ctx and "missing citations" in ctx
+    assert review_neighborhood(StigmergyBus()) == ""
+    assert review_neighborhood(None) == ""
+    assert review_neighborhood(PheromoneField()) == ""
+
+
+def test_bft_vote_unanimous_split_and_fallback():
+    v_yes = ReviewVerdict(accepted=True, reason="ok", confidence=0.8)
+    v_weak = ReviewVerdict(accepted=True, reason="meh", confidence=0.4)
+    v_no = ReviewVerdict(accepted=False, reason="bad", confidence=0.7)
+    # 一致通过
+    merged, meta = bft_vote([v_yes, v_yes])
+    assert merged.accepted and meta["consensus"] == 1.0 and meta["votes"] == 2
+    # 分裂 2:1 → 多数通过, confidence = 通过票均值
+    merged, meta = bft_vote([v_weak, v_yes, v_no])
+    assert merged.accepted and merged.confidence == pytest.approx(0.6)
+    assert "split" in merged.reason
+    # 一致拒绝 → 拒绝 + min 置信
+    merged, _meta = bft_vote([v_no, v_no])
+    assert not merged.accepted and merged.confidence == pytest.approx(0.7)
+    # 平票 → 保守拒绝
+    merged, _meta = bft_vote([v_yes, v_no])
+    assert not merged.accepted
+    # needs_human 任一即真
+    v_human = ReviewVerdict(accepted=True, reason="ok", confidence=0.9, needs_human=True)
+    merged, _meta = bft_vote([v_human, v_no, v_yes])
+    assert merged.needs_human
+    # 空 → 兜底通过
+    merged, meta = bft_vote([])
+    assert merged.accepted and meta["votes"] == 0
+
+
+def test_orchestrator_review_neighborhood_and_bft(monkeypatch):
+    """mesh_review=True: prompt 注入邻域上下文; 低置信票触发 bft 3 票聚合。"""
+    import coworker.orchestrator.orchestrator as orch_mod
+    from coworker.orchestrator.orchestrator import Orchestrator
+
+    bus = StigmergyBus()
+    bus.deposit("t0", 1.0, channel="result", payload="earlier deliverable")
+    o = Orchestrator(provider=None, model="m", workspace="w", pheromone=bus,
+                     mesh_review=True)
+
+    captured: list[str] = []
+
+    class FakeEngine:
+        pass
+
+    async def fake_run(engine, prompt, on_event=None):
+        captured.append(prompt)
+        if "BFT vote" in prompt:
+            return '{"accepted": true, "reason": "good", "confidence": 0.8, "needs_human": false}', "ok"
+        return '{"accepted": true, "reason": "unsure", "confidence": 0.4, "needs_human": false}', "ok"
+
+    monkeypatch.setattr(orch_mod, "build_reviewer_engine", lambda **kw: FakeEngine())
+    monkeypatch.setattr(orch_mod, "_run_engine_async", fake_run)
+
+    events: list[tuple[str, dict]] = []
+    o.event_sink = lambda k, p: events.append((k, p))
+    verdict = asyncio.run(
+        o._review(Task(id="t9", description="write report"), "the report body")
+    )
+    # 低置信首票 + 2 独立票 → bft 聚合 (2 票 0.8 + 1 票 0.4)
+    assert verdict.accepted
+    assert verdict.confidence == pytest.approx((0.8 + 0.8 + 0.4) / 3, abs=1e-3)
+    assert any(k == "review_bft" for k, _p in events)
+    # 邻域上下文进了 reviewer prompt
+    assert any("earlier deliverable" in p for p in captured)
+    # 共 3 次评审调用 (首票 + 2 加票)
+    assert len(captured) == 3
+
+
+def test_claim_idle_agent_cross_role():
+    """同 role 无空闲 → 跨 role 低负载领取; 全忙 → (None, None); 异常安全。"""
+
+    class FakeAgent:
+        def __init__(self, rid, role, load, available=True):
+            self.id, self.role, self.load, self.is_available = rid, role, load, available
+            self.created_at = 0.0
+
+    class FakePool:
+        def __init__(self, agents):
+            self._agents = agents
+
+        def list(self):
+            return list(self._agents)
+
+        def acquire(self, role, **kw):
+            for a in self._agents:
+                if a.role == role and a.is_available:
+                    a.is_available = False
+                    return a
+            return None
+
+    pool = FakePool([
+        FakeAgent("a-code", "code", 0.0, available=True),
+        FakeAgent("a-rev", "reviewer", 0.6, available=True),
+    ])
+    inst, ev = claim_idle_agent(pool, "cowork", task_id="t1")
+    assert inst is not None and inst.id == "a-code"  # 低负载优先
+    assert ev["claimed_role"] == "code" and ev["want_role"] == "cowork"
+    # 剩余空闲实例继续可领 (跨 role 持续领取)
+    inst2, ev2 = claim_idle_agent(pool, "cowork", task_id="t2")
+    assert inst2 is not None and inst2.id == "a-rev"
+    # 全忙 → (None, None)
+    for a in pool.list():
+        a.is_available = False
+    assert claim_idle_agent(pool, "cowork", task_id="t3") == (None, None)
+    # 异常安全 (list 抛错)
+    class BoomPool:
+        def list(self):
+            raise RuntimeError("boom")
+
+    assert claim_idle_agent(BoomPool(), "cowork", task_id="t4") == (None, None)
 
 
 def test_pheromone_bus_channels_summary_shape():

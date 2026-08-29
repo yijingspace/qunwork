@@ -26,7 +26,7 @@ from ..pheromone import StigmergyBus
 
 from .governance import ESCALATE, NOP, PAUSE, REVERT, WARN, Governance, GovernanceCommand, GovernanceConfig
 from .memory_store import PersistentVectorMemory
-from .mesh import HexGrid, select_batch_grid
+from .mesh import HexGrid, bft_vote, claim_idle_agent, review_neighborhood, select_batch_grid
 from .models import OrchestrationResult, Plan, ReviewVerdict, Task
 
 # The placeholder an executor leaves when a task timed out before producing any
@@ -272,6 +272,11 @@ class Orchestrator:
     # 任务按 agent 负载信息素梯度流向空闲邻域 + 同 agent 批内名额上限 (分散)。
     # False = 旧行为 (回滚开关 mesh_scheduling, 与研究方案 M2 一致)。
     mesh_scheduling: bool = False
+    # QunMesh M3 (角色邻域化): mesh_review=True → reviewer 注入四信道邻域上下文
+    # (result/risk top-k 就近对照) + 低置信裁决触发 swarm_bft 三票聚合;
+    # mesh_claim=True → agent_pool 同 role 无空闲时跨 role 领取 (谁近谁领, 消热点)。
+    mesh_review: bool = False
+    mesh_claim: bool = False
     # T4 convergence guard (LoopCoop fixed-point): how many consecutive rounds
     # without real progress (no new done task, no changed result, no accepted
     # requeue) before the run is declared stalled instead of spinning forever.
@@ -485,6 +490,18 @@ class Orchestrator:
                 )
                 if pool_inst is not None:
                     acquired_agent_id = pool_inst.id
+                elif self.mesh_claim:
+                    # QunMesh M3 动态领取: 同 role 无空闲实例 → 跨 role 取低负载
+                    # 实例 (丝瓜络「谁近谁领」消热点)。role_tag 不变 — 执行引擎的
+                    # persona 由任务携带, 实例只是执行槽位 (节点无角色); 记账按
+                    # 实例 id, release 走既有 finally 路径。失败安全回退旧行为。
+                    pool_inst, claim_ev = claim_idle_agent(
+                        self.agent_pool, role_tag, task_id=task.id,
+                        task_group_id=self.task_group_id,
+                    )
+                    if pool_inst is not None:
+                        acquired_agent_id = pool_inst.id
+                        self._emit("mesh_claim", {"id": task.id, **claim_ev})
             except Exception:
                 pool_inst = None
         try:
@@ -602,9 +619,14 @@ class Orchestrator:
 
     # -- validation ---------------------------------------------------------
     async def _review(self, task: Task, result: str) -> ReviewVerdict:
-        # Reviewer JSON can be flaky — retry before giving up, mirroring the
-        # planner's 3-attempt policy. A single malformed verdict must NEVER crash
-        # the whole asyncio.gather batch (owner-audit 2026-08-07: bug #2).
+        """QunMesh M3 (mesh_review=True): reviewer 注入四信道邻域上下文
+        (result/risk top-k 就近对照); 低置信边缘票 (<0.5) 额外拉 2 票独立复审,
+        swarm_bft 多数决聚合 (prepare→commit, 平票保守拒绝)。False = 完全旧行为。
+
+        Reviewer JSON can be flaky — retry before giving up, mirroring the
+        planner's 3-attempt policy. A single malformed verdict must NEVER crash
+        the whole asyncio.gather batch (owner-audit 2026-08-07: bug #2)."""
+        neighborhood = review_neighborhood(self.pheromone) if self.mesh_review else ""
         last_err: Exception | None = None
         for attempt in range(2):
             try:
@@ -615,18 +637,60 @@ class Orchestrator:
                     model_settings=self.model_settings,
                     usage_sink=self.usage_sink,
                 )
-                prompt = (
-                    f"Task [{task.id}]: {task.description}\n\n"
-                    f"Executor's result (完整产物, 不截断):\n{result}\n\n"
-                    "Validate the result against the task. Return the JSON verdict."
-                )
+                parts = [
+                    f"Task [{task.id}]: {task.description}",
+                    f"Executor's result (完整产物, 不截断):\n{result}",
+                ]
+                if neighborhood:
+                    parts.append(
+                        "Neighborhood context (QunMesh nearby signals):\n" + neighborhood
+                    )
+                if attempt:
+                    parts.append(f"(Independent re-review attempt {attempt + 1} — judge afresh.)")
+                parts.append("Validate the result against the task. Return the JSON verdict.")
+                prompt = "\n\n".join(parts)
                 text, status = await _run_engine_async(
                     engine, prompt, on_event=self._worker_feed("reviewer", task.id)
                 )
                 if not text:
                     # No verdict → treat as accepted with low confidence rather than looping forever.
                     return ReviewVerdict(accepted=True, reason=f"no verdict (status: {status})", confidence=0.3)
-                return parse_verdict(text)
+                verdict = parse_verdict(text)
+                # swarm_bft: 低置信接受是边缘票 — prepare(2 票独立复审) → commit(多数决)。
+                # 预算保护: 仅低置信触发 (+2 次评审), 拒绝票走既有重排队通道不加票。
+                if (
+                    self.mesh_review
+                    and verdict.accepted
+                    and float(verdict.confidence or 0.0) < 0.5
+                ):
+                    votes = [verdict]
+                    for extra in range(2):
+                        try:
+                            v_engine = build_reviewer_engine(
+                                workspace=self.workspace,
+                                provider=self.provider,
+                                model=self.model,
+                                model_settings=self.model_settings,
+                                usage_sink=self.usage_sink,
+                            )
+                            v_prompt = prompt + (
+                                f"\n\n(BFT vote {extra + 2}/{3} — independent judgment, ignore earlier reviews.)"
+                            )
+                            v_text, _v_status = await _run_engine_async(
+                                v_engine, v_prompt, on_event=self._worker_feed("reviewer", task.id)
+                            )
+                            if v_text:
+                                votes.append(parse_verdict(v_text))
+                        except (ValueError, RuntimeError):
+                            continue
+                    merged, bft_meta = bft_vote(votes)
+                    self._emit(
+                        "review_bft",
+                        {"id": task.id, "accepted": merged.accepted, "confidence": merged.confidence,
+                         "reason": merged.reason, "needs_human": merged.needs_human, **bft_meta},
+                    )
+                    return merged
+                return verdict
             except (ValueError, RuntimeError) as exc:
                 last_err = exc
                 self._emit("reviewer_retry", {"id": task.id, "attempt": attempt + 1, "error": str(exc)})
