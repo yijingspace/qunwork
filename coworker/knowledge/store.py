@@ -133,11 +133,15 @@ class KnowledgeStore:
         db_path: str | Path,
         embedder: Optional[Embedder] = None,
         workspace: Optional[str] = None,
+        access_log: bool = True,
     ) -> None:
         self._path = Path(db_path)
         self._path.parent.mkdir(parents=True, exist_ok=True)
         self._embedder = embedder
         self._default_workspace = str(workspace) if workspace else None
+        # 黄金衡分形存储 M0 (P1 前置): 访问频率时间序列埋点。use_count 只有
+        # 累计值, 七衡分层验证需要 f_i (次/小时) — access_log 提供时间维度。
+        self._access_log = access_log
         self._lock = threading.Lock()
         self._con = sqlite3.connect(str(self._path), check_same_thread=False)
         self._con.execute(
@@ -210,6 +214,19 @@ class KnowledgeStore:
         )
         self._con.execute(
             "CREATE INDEX IF NOT EXISTS ix_kh_item ON knowledge_history(item_id, version)"
+        )
+        # M0 访问日志: 每次检索命中写一行 (item_id, action, ts)。双维度清理
+        # (天数+条数) 沿用 probe_history prune 模式, 防无限增长。
+        self._con.execute(
+            """CREATE TABLE IF NOT EXISTS knowledge_access_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                item_id INTEGER NOT NULL,
+                action TEXT NOT NULL DEFAULT 'search',
+                ts REAL NOT NULL
+            )"""
+        )
+        self._con.execute(
+            "CREATE INDEX IF NOT EXISTS ix_kal_item_ts ON knowledge_access_log(item_id, ts)"
         )
         self._con.commit()
 
@@ -636,14 +653,69 @@ class KnowledgeStore:
                 break
         # Asset lifecycle (Phase 3): a retrieval ticks the usage counter — the
         # governance feedback signal for the asset loop (used assets rank better).
+        # M0: 同事务写 access_log 时间序列 (P1 七衡分层的数据源)。
         if results:
             with self._lock:
                 self._con.executemany(
                     "UPDATE knowledge_items SET use_count = use_count + 1 WHERE id = ?",
                     [(r["item_id"],) for r in results],
                 )
+                if self._access_log:
+                    now = time.time()
+                    self._con.executemany(
+                        "INSERT INTO knowledge_access_log (item_id, action, ts) VALUES (?, 'search', ?)",
+                        [(r["item_id"], now) for r in results],
+                    )
                 self._con.commit()
         return results
+
+    # -- M0 access log (黄金衡分形存储 P1 前置) --------------------------------
+    def prune_access_log(self, *, keep_days: int = 30, keep_count: int = 100_000) -> dict:
+        """双维度清理访问日志: 天数窗口 (ts 早于 keep_days 天) + 条数窗口
+        (仅保留最新 keep_count 条)。返回 {removed, kept, keep_days, keep_count}。
+        与 probe_history prune 同款约定, 防日志无限增长。"""
+        with self._lock:
+            before = self._con.execute(
+                "SELECT COUNT(*) FROM knowledge_access_log"
+            ).fetchone()[0]
+            cutoff = time.time() - keep_days * 86400
+            self._con.execute("DELETE FROM knowledge_access_log WHERE ts < ?", (cutoff,))
+            self._con.execute(
+                "DELETE FROM knowledge_access_log WHERE id NOT IN "
+                "(SELECT id FROM knowledge_access_log ORDER BY id DESC LIMIT ?)",
+                (keep_count,),
+            )
+            self._con.commit()
+            after = self._con.execute(
+                "SELECT COUNT(*) FROM knowledge_access_log"
+            ).fetchone()[0]
+        return {
+            "removed": before - after,
+            "kept": after,
+            "keep_days": keep_days,
+            "keep_count": keep_count,
+        }
+
+    def access_frequency(self, *, window_hours: Optional[float] = None) -> dict[int, float]:
+        """P1 数据源: 每 item 的访问频率 {item_id: f_i}。
+
+        window_hours=None → 累计代理: use_count (全历史, 无时间维度);
+        window_hours=T → access_log 在最近 T 小时内的次数换算为次/小时。
+        """
+        with self._lock:
+            if window_hours is None:
+                rows = self._con.execute(
+                    "SELECT id, use_count FROM knowledge_items WHERE use_count > 0"
+                ).fetchall()
+                return {int(r[0]): float(r[1]) for r in rows}
+            cutoff = time.time() - window_hours * 3600
+            rows = self._con.execute(
+                "SELECT item_id, COUNT(*) FROM knowledge_access_log "
+                "WHERE ts >= ? GROUP BY item_id",
+                (cutoff,),
+            ).fetchall()
+        hours = max(window_hours, 1e-9)
+        return {int(r[0]): float(r[1]) / hours for r in rows}
 
     # -- internals -------------------------------------------------------------
     def _index_chunks(self, item_id: int, title: str, content: str) -> None:

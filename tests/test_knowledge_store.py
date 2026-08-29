@@ -367,3 +367,75 @@ def test_knowledge_dedupe_dry_run(tmp_path):
     assert row[0] == 0
     store.close()
 
+
+# -- M0 访问日志 (黄金衡分形存储 P1 前置) --------------------------------------
+
+
+def test_access_log_records_search_hits(tmp_path):
+    """检索命中 → access_log 写入时间序列 + use_count 累计。"""
+    store = KnowledgeStore(tmp_path / "kb.db")
+    item_id = store.add_text("固态电池", "固态电池以固态电解质替代液态电解液。", workspace="ws")
+    hits = store.search("固态电池", workspace="ws", k=3)
+    assert hits and hits[0]["item_id"] == item_id
+    # 窗口模式: 命中项频率 ≥ 1 次/小时 (刚发生)
+    freq = store.access_frequency(window_hours=1.0)
+    assert freq.get(item_id, 0) >= 1.0
+    # 累计模式: use_count 代理
+    cum = store.access_frequency()
+    assert cum.get(item_id) == 1.0
+    store.close()
+
+
+def test_access_log_disabled(tmp_path):
+    """access_log=False → 不写时间序列 (开关可关)。"""
+    store = KnowledgeStore(tmp_path / "kb.db", access_log=False)
+    item_id = store.add_text("固态电池", "固态电池以固态电解质替代液态电解液。", workspace="ws")
+    hits = store.search("固态电池", workspace="ws", k=3)
+    assert hits
+    n = store._con.execute("SELECT COUNT(*) FROM knowledge_access_log").fetchone()[0]
+    assert n == 0
+    # use_count 照常累计 (原资产生命周期不受影响)
+    assert store.access_frequency().get(item_id) == 1.0
+    store.close()
+
+
+def test_access_log_prune_both_dimensions(tmp_path):
+    """双维度清理: 天数窗口删老记录, 条数窗口保最新 N 条。"""
+    import time as _time
+
+    store = KnowledgeStore(tmp_path / "kb.db")
+    # 注入一条 40 天前的老记录 (超 30 天窗口)
+    old_ts = _time.time() - 40 * 86400
+    store._con.execute(
+        "INSERT INTO knowledge_access_log (item_id, action, ts) VALUES (1, 'search', ?)",
+        (old_ts,),
+    )
+    # 注入 keep_count+5 条近期记录 (条数窗口只保最新 keep_count)
+    now = _time.time()
+    keep_count = 10
+    for i in range(keep_count + 5):
+        store._con.execute(
+            "INSERT INTO knowledge_access_log (item_id, action, ts) VALUES (2, 'search', ?)",
+            (now - i, ),
+        )
+    store._con.commit()
+    result = store.prune_access_log(keep_days=30, keep_count=keep_count)
+    assert result["keep_days"] == 30 and result["keep_count"] == keep_count
+    assert result["removed"] == 6  # 1 老记录 + 5 超出条数窗口
+    assert result["kept"] == keep_count
+    # 剩余全部是最新记录
+    remaining = store._con.execute(
+        "SELECT COUNT(*) FROM knowledge_access_log WHERE item_id=2"
+    ).fetchone()[0]
+    assert remaining == keep_count
+    store.close()
+
+
+def test_access_frequency_window_empty(tmp_path):
+    """无命中时窗口模式返回空 dict, 不抛错。"""
+    store = KnowledgeStore(tmp_path / "kb.db")
+    store.add_text("量子计算", "量子比特利用叠加与纠缠态。", workspace="ws")
+    assert store.access_frequency(window_hours=1.0) == {}
+    assert store.access_frequency() == {}
+    store.close()
+
