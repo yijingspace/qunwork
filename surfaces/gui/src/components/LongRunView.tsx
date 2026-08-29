@@ -18,6 +18,7 @@ import {
   getLongrunStorage,
   getLongrunTelemetry,
   getLongrunWeekCompare,
+  getMeshMode,
   getPheromoneStatus,
   probeLongrunAlertChannels,
   pruneProbeHistory,
@@ -28,6 +29,7 @@ import {
   setLongrunAlertChannels,
   setLongrunAlertSettings,
   setLongrunProbeSchedule,
+  setMeshMode as setMeshModeApi,
   testLongrunAlertChannels,
   type AggregationStats,
   type AlertChannelConfig,
@@ -320,7 +322,15 @@ function StoragePanel({ storage }: { storage: LongrunStorage | null }) {
 }
 
 /** QunMesh M1/M2: 信息素总线四信道总览 (load/task/result/risk)。 */
-function PheromonePanel({ status }: { status: PheromoneStatus | null }) {
+function PheromonePanel({
+  status,
+  meshMode,
+  onModeChange,
+}: {
+  status: PheromoneStatus | null;
+  meshMode: string;
+  onModeChange: (m: string) => void;
+}) {
   const t = useT();
   if (!status) return <div className="text-[12px] text-faint">{t("Loading…")}</div>;
   const channels = status.channels ?? {};
@@ -350,6 +360,23 @@ function PheromonePanel({ status }: { status: PheromoneStatus | null }) {
         </span>
         <span className="text-[11px] text-muted">
           {t("load")} ≈ {status.total_load ?? 0}
+        </span>
+        <span className="ml-auto flex items-center gap-1">
+          {(["off", "serial", "hybrid", "full"] as const).map((m) => (
+            <button
+              key={m}
+              data-testid={`mesh-mode-${m}`}
+              onClick={() => m !== meshMode && onModeChange(m)}
+              className={
+                "text-[10px] px-1.5 py-0.5 rounded font-mono " +
+                (m === meshMode
+                  ? "bg-ink text-paper"
+                  : "border border-line text-muted hover:opacity-80")
+              }
+            >
+              {m}
+            </button>
+          ))}
         </span>
       </div>
       <div className="grid grid-cols-2 md:grid-cols-4 gap-2.5">
@@ -1024,6 +1051,12 @@ export function LongRunView({ onBack }: { onBack: () => void }) {
   const [detail, setDetail] = useState<LongrunCheckpointDetail | null>(null);
   const [storage, setStorage] = useState<LongrunStorage | null>(null);
   const [pheromone, setPheromone] = useState<PheromoneStatus | null>(null);
+  // QunMesh M4 后续项: mesh_mode 运行时档位。
+  const [meshMode, setMeshMode] = useState<string>("off");
+  const changeMeshMode = useCallback((m: string) => {
+    setMeshMode(m);
+    setMeshModeApi(m).catch(() => {});
+  }, []);
   const [maintenanceBusy, setMaintenanceBusy] = useState(false);
   const [maintenanceResult, setMaintenanceResult] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -1078,6 +1111,7 @@ export function LongRunView({ onBack }: { onBack: () => void }) {
     getLongrunCheckpoints().then((r) => setSessions(r.sessions ?? [])).catch(() => {});
     getLongrunStorage().then(setStorage).catch(() => {});
     getPheromoneStatus().then(setPheromone).catch(() => {});
+    getMeshMode().then((r) => r.ok && setMeshMode(r.mesh_mode)).catch(() => {});
     getLongrunAlertChannels()
       .then((r) => {
         if (r.ok) {
@@ -1763,7 +1797,7 @@ export function LongRunView({ onBack }: { onBack: () => void }) {
           </Card>
 
           <Card title={t("Pheromone bus — QunMesh stigmergy channels")}>
-            <PheromonePanel status={pheromone} />
+            <PheromonePanel status={pheromone} meshMode={meshMode} onModeChange={changeMeshMode} />
           </Card>
         </div>
       </div>

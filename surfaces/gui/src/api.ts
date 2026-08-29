@@ -1774,6 +1774,23 @@ export async function getPheromoneStatus(): Promise<PheromoneStatus> {
   return await res.json();
 }
 
+// QunMesh M4 后续项: mesh_mode 运行时档位 (GET 读默认, PUT 持久化+审计)。
+export async function getMeshMode(): Promise<{ ok: boolean; mesh_mode: string }> {
+  const res = await fetch(`${httpBase()}/v1/mesh/mode`);
+  return await res.json();
+}
+
+export async function setMeshMode(
+  mesh_mode: string,
+): Promise<{ ok: boolean; mesh_mode?: string; error?: string }> {
+  const res = await fetch(`${httpBase()}/v1/mesh/mode`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ mesh_mode }),
+  });
+  return await res.json();
+}
+
 export async function runLongrunMaintenance(
   dryRun = false,
 ): Promise<Record<string, unknown>> {

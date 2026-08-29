@@ -354,6 +354,58 @@ def test_orchestrator_mesh_mode_post_init():
     assert o5.mesh_scheduling and not o5._mesh_topology_enabled
 
 
+# -- QunMesh M4 后续项: 枢纽分域 / mesh_mode 热切换 ---------------------------
+
+
+def test_domain_of_task_stable_hash():
+    """域分配: 稳定 (同任务永远同域) + 均匀落域 + n_domains=1 归零。"""
+    from coworker.orchestrator.mesh import domain_of_task
+
+    d1 = domain_of_task("write chapter 2")
+    assert d1 == domain_of_task("write chapter 2")  # 稳定
+    assert 0 <= d1 < 4
+    domains = {domain_of_task(f"task variant {i}") for i in range(50)}
+    assert len(domains) > 1  # 有分散 (50 个不同任务不该全落一域)
+    assert domain_of_task("anything", n_domains=1) == 0
+
+
+def test_select_batch_domain_cluster():
+    """domain_of 提供时同负载档内域聚簇 (同域任务相邻); 无域函数保持原序。"""
+    bus = StigmergyBus()
+    ready = [FakeTask(f"t{i}", agent="cowork") for i in range(6)]
+    ready[0].deps = []
+    # 6 个同 agent 同负载任务: 域 1,0,1,0,1,0 → 聚簇后 0 域在前
+    dom = {"t0": 1, "t1": 0, "t2": 1, "t3": 0, "t4": 1, "t5": 0}
+    batch = select_batch_grid(ready, bus, 6, grid=HexGrid(),
+                              domain_of=lambda t: dom[t.id], n_domains=2)
+    ids = [t.id for t in batch]
+    first_domain = dom[ids[0]]
+    # 前半批同域 (聚簇): 前 3 个任务全属一域
+    assert len({dom[i] for i in ids[:3]}) == 1
+    assert dom[ids[0]] in (0, 1) and first_domain == dom[ids[2]]
+
+
+def test_orchestrator_set_mesh_mode_hot_switch():
+    """set_mesh_mode 热切换: 运行中实例档位覆盖 + mesh_mode_changed 事件。"""
+    from coworker.orchestrator.orchestrator import Orchestrator
+
+    o = Orchestrator(provider=None, model="m", workspace="w", mesh_mode="off")
+    assert not o.mesh_scheduling and not o._mesh_topology_enabled
+    events: list[tuple[str, dict]] = []
+    o.event_sink = lambda k, p: events.append((k, p))
+
+    state = o.set_mesh_mode("full")
+    assert state == {"scheduling": True, "claim": True, "review": True, "topology": True}
+    assert o.mesh_mode == "full" and o._mesh_topology_enabled
+    assert any(k == "mesh_mode_changed" and p["mode"] == "full" for k, p in events)
+
+    o.set_mesh_mode("off")
+    assert not o.mesh_scheduling and not o.mesh_review
+    # 非法档位 → off 兜底 (不抛)
+    o.set_mesh_mode("bogus")
+    assert o.mesh_mode == "off"
+
+
 def test_pheromone_bus_channels_summary_shape():
     """channels_summary 四信道形状 (pheromone_status 的 channels 字段)。"""
     bus = StigmergyBus()

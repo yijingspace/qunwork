@@ -747,6 +747,9 @@ export async function mockApi(page: import("@playwright/test").Page) {
     });
   });
 
+  // QunMesh M4 后续项: mesh_mode 档位 (PUT 热切换的 mock 状态)。
+  let meshModeState = "off";
+
   await page.route("**/v1/**", async (route) => {
     const req = route.request();
     const p = new URL(req.url()).pathname;
@@ -1500,6 +1503,7 @@ export async function mockApi(page: import("@playwright/test").Page) {
         levels: { "task-a": 1 },
         total_load: 1,
         bus: "stigmergy",
+        mesh_mode: "off",
         channels: {
           load: { signals: 1, intensity: 1 },
           task: { signals: 3, intensity: 3 },
@@ -1514,6 +1518,15 @@ export async function mockApi(page: import("@playwright/test").Page) {
           migrations: [{ hotspot: "task-a", load: 3, neighbor_avg: 0.5, target: "task-b" }],
         },
       });
+    }
+    // QunMesh M4 后续项: mesh_mode 档位读写。
+    if (p.endsWith("/v1/mesh/mode")) {
+      if (m === "PUT") {
+        const b = req.postDataJSON() || {};
+        meshModeState = String(b.mesh_mode || "off");
+        return json({ ok: true, mesh_mode: meshModeState });
+      }
+      return json({ ok: true, mesh_mode: meshModeState });
     }
     if (p.endsWith("/v1/7x24/alerts/aggregations/stats")) {
       return json({ ok: true, days: [{ alerts: 1 }, { alerts: 3 }, { alerts: 5 }], top_tasks: [["t1", 5]] });

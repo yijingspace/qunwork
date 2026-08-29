@@ -119,13 +119,17 @@ def select_batch_grid(
     executor_agent: str = "cowork",
     grid: HexGrid | None = None,
     spread_ratio: float = 0.5,
+    domain_of: Callable[[Any], int] | None = None,
+    n_domains: int = 4,
 ) -> list:
     """邻域感知批选择 (网格调度核心)。
 
     - 负载梯度: agent load 信息素低者任务优先 (空闲邻域先领活);
     - 邻域分散: ≥2 个不同 agent 时, 同 agent 批内名额上限为
       ceil(n * spread_ratio), 强制跨邻域分摊 (GuaClaw 拥堵规避的单机等价);
-    - 稳定排序保持 ready 原相对序 (同负载不抖动)。
+    - 枢纽分域 (M4+, 可选): domain_of 提供任务域编号时, 同负载档内按域聚簇 —
+      同域任务连发复用 executor engine 的消息历史 (依赖上下文就近);
+    - 稳定排序保持 ready 原相对序 (同键不抖动)。
     返回选中的任务子列表 (不改 ready 本身)。
     """
     n = max(1, int(max_parallel))
@@ -142,11 +146,18 @@ def select_batch_grid(
             grid.place(name)
     loads = agent_loads(pheromone, names)
 
-    # 负载梯度稳定排序 (key 带 index 防跨同负载抖动)
-    indexed = sorted(
-        enumerate(ready),
-        key=lambda pair: (loads.get(str(getattr(pair[1], "agent", "") or executor_agent), 0.0), pair[0]),
-    )
+    def _sort_key(pair: tuple[int, Any]) -> tuple:
+        t = pair[1]
+        load = loads.get(str(getattr(t, "agent", "") or executor_agent), 0.0)
+        if domain_of is not None:
+            try:
+                return (load, domain_of(t) % max(1, n_domains), pair[0])
+            except Exception:
+                return (load, 0, pair[0])
+        return (load, pair[0])
+
+    # 负载梯度稳定排序 (key 带 index 防跨同键抖动)
+    indexed = sorted(enumerate(ready), key=_sort_key)
     if len(names) < 2:
         return [t for _, t in indexed[:n]]
 
@@ -205,6 +216,21 @@ def claim_idle_agent(pool: Any, want_role: str, *, task_id: str, task_group_id: 
     except Exception:
         return None, None
     return None, None
+
+
+# ---------------------------------------------------------------------------
+# QunMesh M4+: 枢纽分域 (domain planner 单机等价) — 同域任务批内聚簇
+# ---------------------------------------------------------------------------
+
+def domain_of_task(description: str, n_domains: int = 4) -> int:
+    """任务 → 域编号 (稳定哈希, 纯函数): 研究方案 §4.2「Task → 爻位」的单机
+    等价 — description 决定归属 (同任务永远同域), md5 稳定跨进程一致。"""
+    if n_domains <= 1:
+        return 0
+    import hashlib
+
+    digest = hashlib.md5((description or "").encode("utf-8")).hexdigest()
+    return int(digest[:8], 16) % n_domains
 
 
 # ---------------------------------------------------------------------------

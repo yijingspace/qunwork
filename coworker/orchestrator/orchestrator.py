@@ -26,7 +26,7 @@ from ..pheromone import StigmergyBus
 
 from .governance import ESCALATE, NOP, PAUSE, REVERT, WARN, Governance, GovernanceCommand, GovernanceConfig
 from .memory_store import PersistentVectorMemory
-from .mesh import HexGrid, _mesh_mode_flags, bft_vote, claim_idle_agent, review_neighborhood, select_batch_grid, topology_health
+from .mesh import HexGrid, _mesh_mode_flags, bft_vote, claim_idle_agent, domain_of_task, review_neighborhood, select_batch_grid, topology_health
 from .models import OrchestrationResult, Plan, ReviewVerdict, Task
 
 # The placeholder an executor leaves when a task timed out before producing any
@@ -312,6 +312,27 @@ class Orchestrator:
         self.mesh_claim = bool(self.mesh_claim) or mode_flags["claim"]
         self.mesh_review = bool(self.mesh_review) or mode_flags["review"]
         self._mesh_topology_enabled = self.mesh_mode.strip().lower() == "full"
+        # QunMesh M4+: 枢纽分域标注 (plan 落定时填充; full 档启用)。
+        self._last_domains: dict[str, int] = {}
+
+    def set_mesh_mode(self, mode: str) -> dict[str, bool]:
+        """mesh_mode 运行时热切换 (M4 后续项): 更新四档推导的三开关与拓扑
+        遥测标志 — 调度循环每轮动态读这些开关, 下一轮调度立即生效 (批选择/
+        动态领取/邻域评审); 评审中的任务沿用切换前路径 (语义安全)。发射
+        mesh_mode_changed 审计事件。返回生效后的开关状态。"""
+        mode = str(mode or "off").strip().lower()
+        if mode not in ("off", "serial", "hybrid", "full"):
+            mode = "off"  # 非法档位兜底 (不抛 — 热切换失败安全)
+        flags = _mesh_mode_flags(mode)
+        self.mesh_mode = mode
+        self.mesh_scheduling = flags["scheduling"]
+        self.mesh_claim = flags["claim"]
+        self.mesh_review = flags["review"]
+        self._mesh_topology_enabled = mode == "full"
+        state = {"scheduling": self.mesh_scheduling, "claim": self.mesh_claim,
+                 "review": self.mesh_review, "topology": self._mesh_topology_enabled}
+        self._emit("mesh_mode_changed", {"mode": mode, **state})
+        return state
 
     # -- S6 失败模式蒸馏辅助 --------------------------------------------------
     def _failure_modes(self, limit: int = 5) -> list[dict[str, Any]]:
@@ -356,8 +377,14 @@ class Orchestrator:
         if self.pheromone is not None and len(ready) > 1:
             if self.mesh_scheduling:
                 try:
+                    domain_fn = (
+                        (lambda t: self._last_domains.get(t.id, -1))
+                        if self._mesh_topology_enabled and self._last_domains
+                        else None
+                    )
                     return select_batch_grid(
-                        ready, self.pheromone, n, executor_agent=self.executor_agent
+                        ready, self.pheromone, n, executor_agent=self.executor_agent,
+                        domain_of=domain_fn,
                     )
                 except Exception:
                     logger.exception("mesh batch select failed; falling back")
@@ -798,6 +825,20 @@ class Orchestrator:
         # QunMesh 生产端: 规划落定 → task 招领信息素 (谁近谁领的梯度源)。
         for t in plan.tasks:
             self._pher_deposit(t.id, 1.0, channel="task", payload=(t.description or "")[:120])
+        # QunMesh M4+ 枢纽分域: full 档时按稳定哈希把任务标注到域 (Task → 爻位),
+        # 批选择同负载档内域聚簇 (同域连发复用 engine 上下文); 只标注不改 agent。
+        if self._mesh_topology_enabled and plan.tasks:
+            try:
+                self._last_domains = {
+                    t.id: domain_of_task(t.description) for t in plan.tasks
+                }
+                by_domain: dict[int, int] = {}
+                for d in self._last_domains.values():
+                    by_domain[d] = by_domain.get(d, 0) + 1
+                self._emit("mesh_domains", {"domains": dict(sorted(by_domain.items()))})
+            except Exception:
+                logger.exception("mesh domain assign failed")
+                self._last_domains = {}
         self._emit(
             "plan_ready",
             {

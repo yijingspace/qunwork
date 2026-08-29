@@ -5016,7 +5016,26 @@ class SessionManager:
                 pass
         else:
             out["bus"] = "field"
+        out["mesh_mode"] = str((self._prefs or {}).get("mesh_mode", "off") or "off")
         return out
+
+    def set_mesh_mode(self, mode: str) -> dict[str, Any]:
+        """QunMesh M4 后续项: mesh_mode 默认档位持久化 (off/serial/hybrid/full)。
+        写 prefs (后续新 run 生效) + 审计; 正在运行中的 run 由其 Orchestrator
+        引用持有者调用 set_mesh_mode 热切换 (调度循环每轮动态读开关)。"""
+        mode = str(mode or "off").strip().lower()
+        if mode not in ("off", "serial", "hybrid", "full"):
+            raise ValueError(f"invalid mesh_mode: {mode!r}")
+        self._prefs["mesh_mode"] = mode
+        try:
+            self.audit_store.append({
+                "kind": "mesh_mode_changed",
+                "mode": mode,
+                "ts": time.time(),
+            })
+        except Exception:
+            pass
+        return {"ok": True, "mesh_mode": mode}
 
     # -- P2P 团队同步 (设计方案第六章) ----------------------------------------
     def _sync_knowledge_upsert(self, payload: dict) -> None:

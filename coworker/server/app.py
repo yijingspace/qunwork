@@ -1542,6 +1542,23 @@ def create_app(manager: SessionManager) -> FastAPI:
         """Stigmergic load field: busy signals per executor role + total load."""
         return manager.pheromone_status()
 
+    # -- QunMesh M4 后续项: mesh_mode 运行时热切换 -----------------------------
+    @app.get("/v1/mesh/mode")
+    def get_mesh_mode() -> dict[str, Any]:
+        """当前 mesh_mode 默认档位 (off/serial/hybrid/full)。"""
+        return {"ok": True, "mesh_mode": str(
+            (getattr(manager, "_prefs", {}) or {}).get("mesh_mode", "off") or "off"
+        )}
+
+    @app.put("/v1/mesh/mode")
+    def put_mesh_mode(body: dict = None) -> dict[str, Any]:
+        """设置 mesh_mode 默认档位: 写 prefs (后续新 run 生效) + 审计。
+        正在运行中的 run 需 Orchestrator.set_mesh_mode 热切换 (G2 通道)。"""
+        try:
+            return manager.set_mesh_mode(str((body or {}).get("mesh_mode", "off")))
+        except ValueError as exc:
+            return {"ok": False, "error": str(exc)}
+
     # -- 7x24 长程任务管理 (健康控制台 / 遥测 / 检查点 / 存储) -------------------
     @app.get("/v1/7x24/health")
     def longrun_health() -> dict[str, Any]:
