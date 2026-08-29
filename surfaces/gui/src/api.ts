@@ -1747,6 +1747,23 @@ export async function getLongrunStorage(): Promise<LongrunStorage> {
   return await res.json();
 }
 
+// QunMesh M1/M2: 信息素总线四信道总览 (/v1/pheromone, manager.pheromone_status)。
+export interface PheromoneChannels {
+  [channel: string]: { signals: number; intensity: number };
+}
+
+export interface PheromoneStatus {
+  levels?: Record<string, number>;
+  total_load?: number;
+  bus?: "stigmergy" | "field";
+  channels?: PheromoneChannels;
+}
+
+export async function getPheromoneStatus(): Promise<PheromoneStatus> {
+  const res = await fetch(`${httpBase()}/v1/pheromone`);
+  return await res.json();
+}
+
 export async function runLongrunMaintenance(
   dryRun = false,
 ): Promise<Record<string, unknown>> {

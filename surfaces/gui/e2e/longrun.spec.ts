@@ -31,6 +31,10 @@ test("7x24 management: renders all four panels with data", async ({ page }) => {
   // 存储面板: 大小 + 记忆。
   await expect(page.getByText("2.4 MB")).toBeVisible();
 
+  // 信息素总线面板 (QunMesh): 四信道总览。
+  await expect(page.getByTestId("pheromone-bus-badge")).toContainText("StigmergyBus");
+  await expect(page.getByTestId("pheromone-task-signals")).toContainText("3");
+
   // 聚合告警 + 跨周对比图。
   await expect(page.getByText("task-b").first()).toBeVisible();
   await expect(page.getByTestId("week-compare-chart")).toBeVisible();

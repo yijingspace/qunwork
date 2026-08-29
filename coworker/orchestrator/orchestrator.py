@@ -22,8 +22,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+from ..pheromone import StigmergyBus
+
 from .governance import ESCALATE, NOP, PAUSE, REVERT, WARN, Governance, GovernanceCommand, GovernanceConfig
 from .memory_store import PersistentVectorMemory
+from .mesh import HexGrid, select_batch_grid
 from .models import OrchestrationResult, Plan, ReviewVerdict, Task
 
 # The placeholder an executor leaves when a task timed out before producing any
@@ -265,6 +268,10 @@ class Orchestrator:
     # 这里就能用到它——None → 保持旧行为 (每次 _execute 都新建 build_engine)。
     agent_pool: Optional[Any] = None
     task_group_id: Optional[str] = None
+    # QunMesh M2 (丝瓜络拓扑): 邻域感知批选择替换 ready[:max_parallel] 截断 —
+    # 任务按 agent 负载信息素梯度流向空闲邻域 + 同 agent 批内名额上限 (分散)。
+    # False = 旧行为 (回滚开关 mesh_scheduling, 与研究方案 M2 一致)。
+    mesh_scheduling: bool = False
     # T4 convergence guard (LoopCoop fixed-point): how many consecutive rounds
     # without real progress (no new done task, no changed result, no accepted
     # requeue) before the run is declared stalled instead of spinning forever.
@@ -306,14 +313,36 @@ class Orchestrator:
             except Exception:
                 logger.exception("event_sink %s failed", kind)
 
+    def _pher_deposit(self, key: str, amount: float, *, channel: str = "load",
+                      payload: Optional[str] = None) -> None:
+        """QunMesh 生产端挂钩 (失败安全): 四信道信息素只进 StigmergyBus
+        (PheromoneField 无四信道 kwargs); 写失败绝不影响编排主流程。"""
+        if self.pheromone is None or not isinstance(self.pheromone, StigmergyBus):
+            return
+        try:
+            self.pheromone.deposit(key, amount, channel=channel, payload=payload)
+        except Exception:
+            logger.exception("pheromone deposit %s/%s failed", channel, key)
+
     def _select_batch(self, ready: list) -> list:
         """P0 增量1 (信息素负载均衡): choose this round's parallel batch. Without a
         pheromone field this is the legacy `ready[:max_parallel]`. With one, the
         scheduler reads the stigmergic load signal: when the field is loaded
         (sum of live busy signals ≥ max_parallel), the batch shrinks proportionally
-        so the colony never over-parallelizes against its own load."""
+        so the colony never over-parallelizes against its own load.
+
+        QunMesh M2 (mesh_scheduling=True): 邻域感知批选择 — 负载梯度引导 +
+        同 agent 名额上限 (mesh.select_batch_grid), 失败安全退回本方法的
+        信息素收缩路径。"""
         n = max(1, self.max_parallel)
         if self.pheromone is not None and len(ready) > 1:
+            if self.mesh_scheduling:
+                try:
+                    return select_batch_grid(
+                        ready, self.pheromone, n, executor_agent=self.executor_agent
+                    )
+                except Exception:
+                    logger.exception("mesh batch select failed; falling back")
             try:
                 load = self.pheromone.total_load()
             except Exception:
@@ -689,6 +718,9 @@ class Orchestrator:
                     {"seconds": self.timeout_seconds, "stage": "plan", "final_batch": []},
                 )
         self._last_plan = plan
+        # QunMesh 生产端: 规划落定 → task 招领信息素 (谁近谁领的梯度源)。
+        for t in plan.tasks:
+            self._pher_deposit(t.id, 1.0, channel="task", payload=(t.description or "")[:120])
         self._emit(
             "plan_ready",
             {
@@ -825,6 +857,10 @@ class Orchestrator:
                 # bug #10: a crashed attempt is still a recorded step — without
                 # this the governance autonomy ratio ignores failed work.
                 gov.record_step(task, task.result, False)
+                # QunMesh: executor 崩溃 → risk 信息素 (枢纽重规划梯度源)。
+                self._pher_deposit(
+                    task.id, 1.0, channel="risk", payload=f"executor error: {exc}"[:120]
+                )
                 self._emit("task_result", {"id": task.id, "error": str(exc), "status": task.status})
                 return True
 
@@ -853,6 +889,13 @@ class Orchestrator:
                 task.status = "done"
                 task.result = result
             elif verdict.needs_human or task.retries >= self.max_retries:
+                # QunMesh: 评审拒绝 → risk 信息素 (强度 ∝ 不确信度)。
+                self._pher_deposit(
+                    task.id,
+                    max(0.2, 1.0 - float(verdict.confidence or 0.0)),
+                    channel="risk",
+                    payload=(verdict.reason or "")[:120],
+                )
                 task.status = "needs_human"
                 task.result = result
                 task.retries += 1
@@ -895,6 +938,14 @@ class Orchestrator:
                 task.result = result
                 task.retries += 1
             gov.record_step(task, result, verdict.accepted)
+            # QunMesh: 任务终结 → done/needs_human 撤 task 招领 + result 通知
+            # (下游依赖与就近评审的梯度源); pending (重排队下一轮重跑) 招领保留。
+            if task.status != "pending":
+                self._pher_deposit(task.id, -1.0, channel="task")
+            if task.status == "done":
+                self._pher_deposit(
+                    task.id, 1.0, channel="result", payload=(task.result or "")[:120]
+                )
             self._emit("task_done", {"id": task.id, "status": task.status, "confidence": task.confidence})
             if task.status == "done":
                 # S9 并行协作去重: worker 结果写入 blackboard 前去重

@@ -18,6 +18,7 @@ import {
   getLongrunStorage,
   getLongrunTelemetry,
   getLongrunWeekCompare,
+  getPheromoneStatus,
   probeLongrunAlertChannels,
   pruneProbeHistory,
   restoreLongrunArchivedAlert,
@@ -39,6 +40,7 @@ import {
   type LongrunCheckpointSession,
   type LongrunHealth,
   type LongrunStorage,
+  type PheromoneStatus,
   type LongrunTelemetry,
   type ProbeSchedule,
   type WeekCompare,
@@ -313,6 +315,49 @@ function StoragePanel({ storage }: { storage: LongrunStorage | null }) {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+/** QunMesh M1/M2: 信息素总线四信道总览 (load/task/result/risk)。 */
+function PheromonePanel({ status }: { status: PheromoneStatus | null }) {
+  const t = useT();
+  if (!status) return <div className="text-[12px] text-faint">{t("Loading…")}</div>;
+  const channels = status.channels ?? {};
+  const card = (name: string, label: string) => {
+    const c = channels[name] ?? { signals: 0, intensity: 0 };
+    return (
+      <div className="rounded-lg border border-line bg-paper px-3 py-2">
+        <div className="text-[10.5px] uppercase tracking-wide text-faint">{t(label)}</div>
+        <div className="text-[20px] font-semibold">{c.signals ?? 0}</div>
+        <div className="text-[11px] text-muted">Σ {c.intensity ?? 0}</div>
+      </div>
+    );
+  };
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center gap-2">
+        <span
+          data-testid="pheromone-bus-badge"
+          className={
+            "text-[10px] px-1.5 py-0.5 rounded " +
+            (status.bus === "stigmergy"
+              ? "bg-emerald-600/10 text-emerald-700"
+              : "bg-paper text-faint border border-line")
+          }
+        >
+          {status.bus === "stigmergy" ? t("StigmergyBus") : t("Legacy field")}
+        </span>
+        <span className="text-[11px] text-muted">
+          {t("load")} ≈ {status.total_load ?? 0}
+        </span>
+      </div>
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-2.5">
+        {card("load", "Load signals")}
+        <div data-testid="pheromone-task-signals">{card("task", "Task claims")}</div>
+        {card("result", "Result notices")}
+        {card("risk", "Risk gradient")}
+      </div>
     </div>
   );
 }
@@ -941,6 +986,7 @@ export function LongRunView({ onBack }: { onBack: () => void }) {
   const [sessions, setSessions] = useState<LongrunCheckpointSession[]>([]);
   const [detail, setDetail] = useState<LongrunCheckpointDetail | null>(null);
   const [storage, setStorage] = useState<LongrunStorage | null>(null);
+  const [pheromone, setPheromone] = useState<PheromoneStatus | null>(null);
   const [maintenanceBusy, setMaintenanceBusy] = useState(false);
   const [maintenanceResult, setMaintenanceResult] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -994,6 +1040,7 @@ export function LongRunView({ onBack }: { onBack: () => void }) {
     getLongrunTelemetry().then(setTelemetry).catch(() => {});
     getLongrunCheckpoints().then((r) => setSessions(r.sessions ?? [])).catch(() => {});
     getLongrunStorage().then(setStorage).catch(() => {});
+    getPheromoneStatus().then(setPheromone).catch(() => {});
     getLongrunAlertChannels()
       .then((r) => {
         if (r.ok) {
@@ -1676,6 +1723,10 @@ export function LongRunView({ onBack }: { onBack: () => void }) {
 
           <Card title={t("Storage — conversation growth · archives · memory")}>
             <StoragePanel storage={storage} />
+          </Card>
+
+          <Card title={t("Pheromone bus — QunMesh stigmergy channels")}>
+            <PheromonePanel status={pheromone} />
           </Card>
         </div>
       </div>

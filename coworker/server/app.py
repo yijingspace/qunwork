@@ -590,6 +590,12 @@ def create_app(manager: SessionManager) -> FastAPI:
                 ),
                 # P0 增量1: shared stigmergic load field — batch sizes adapt to it.
                 pheromone=manager.pheromone,
+                # QunMesh M2: 邻域感知批选择开关 (body 优先, prefs 兜底)。
+                mesh_scheduling=bool(
+                    body.get("mesh_scheduling")
+                    if body.get("mesh_scheduling") is not None
+                    else (getattr(manager, "_prefs", {}) or {}).get("mesh_scheduling", False)
+                ),
                 # P1 增量: optional agent pool + task group id.
                 agent_pool=getattr(manager, "agent_pool", None),
                 task_group_id=body.get("task_group_id") or None,

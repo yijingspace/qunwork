@@ -1494,6 +1494,20 @@ export async function mockApi(page: import("@playwright/test").Page) {
         memory: { count: 7, stale: 2 },
       });
     }
+    // QunMesh M1/M2: 信息素总线四信道。
+    if (p.endsWith("/v1/pheromone")) {
+      return json({
+        levels: { "task-a": 1 },
+        total_load: 1,
+        bus: "stigmergy",
+        channels: {
+          load: { signals: 1, intensity: 1 },
+          task: { signals: 3, intensity: 3 },
+          result: { signals: 2, intensity: 2 },
+          risk: { signals: 0, intensity: 0 },
+        },
+      });
+    }
     if (p.endsWith("/v1/7x24/alerts/aggregations/stats")) {
       return json({ ok: true, days: [{ alerts: 1 }, { alerts: 3 }, { alerts: 5 }], top_tasks: [["t1", 5]] });
     }
