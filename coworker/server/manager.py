@@ -318,9 +318,18 @@ class SessionManager:
         self.webapp_tickets = WebAppTickets()
         # P0 增量1 (信息素负载均衡): one shared stigmergic load field — every
         # orchestrated run deposits/withdraws here, and /v1/pheromone exposes it.
-        from ..pheromone import PheromoneField
+        # QunMesh M1: StigmergyBus 四信道总线 (SQLite 持久化 + 场恢复);
+        # pheromone_bus_enabled=false 回退旧 PheromoneField (回滚开关)。
+        from ..pheromone import PheromoneField, StigmergyBus, _pheromone_bus_from_config
 
-        self.pheromone = PheromoneField()
+        self.pheromone = _pheromone_bus_from_config(self._prefs)
+        if isinstance(self.pheromone, StigmergyBus) and self.pheromone._con is None:
+            try:
+                self.pheromone = StigmergyBus(
+                    db_path=self._data_base / "pheromone_bus.db"
+                )
+            except Exception:
+                self.pheromone = PheromoneField()
         # P1 增量 (团队 / Agent 状态池): one shared pool, persistence in team.db.
         # 团队功能默认是「懒加载 + 幂等」——ensure_team 在第一次 API 被调用时才建行，
         # 保证单机模式也不产生副作用。
@@ -4985,11 +4994,21 @@ class SessionManager:
     # -- P0 增量1: 信息素负载信号 ---------------------------------------------
     def pheromone_status(self) -> dict[str, Any]:
         """The stigmergic load field: live busy signals per executor role +
-        total colony load (≈ active task count). Read-only."""
-        return {
-            "levels": self.pheromone.levels(),
-            "total_load": round(self.pheromone.total_load(), 3),
+        total colony load (≈ active task count). Read-only.
+        QunMesh M1: StigmergyBus 额外暴露四信道总览 (channels) 与实现标识 (bus);
+        旧 PheromoneField 下 bus="field"、无 channels — 字段向后兼容。"""
+        p = self.pheromone
+        out: dict[str, Any] = {
+            "levels": p.levels(),
+            "total_load": round(p.total_load(), 3),
         }
+        chan = getattr(p, "channels_summary", None)
+        if callable(chan):
+            out["bus"] = "stigmergy"
+            out["channels"] = chan()
+        else:
+            out["bus"] = "field"
+        return out
 
     # -- P2P 团队同步 (设计方案第六章) ----------------------------------------
     def _sync_knowledge_upsert(self, payload: dict) -> None:
