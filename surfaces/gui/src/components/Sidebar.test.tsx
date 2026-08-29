@@ -74,9 +74,11 @@ const baseProps = {
   onOpenMembers: vi.fn(),
   onOpenPermissions: vi.fn(),
   onOpenUsage: vi.fn(),
+  onOpenLongrun: vi.fn(),
   membersActive: false,
   permissionsActive: false,
   usageActive: false,
+  longrunActive: false,
 };
 
 afterEach(() => {

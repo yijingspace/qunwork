@@ -1456,6 +1456,108 @@ export async function mockApi(page: import("@playwright/test").Page) {
       return json({ ok: true });
     }
 
+    // ── 7x24 长程任务管理 (LongRunView) ────────────────────────────────────
+    if (p.endsWith("/v1/7x24/health")) {
+      return json({
+        heartbeat: { tasks: 2, alive: ["task-a"], unhealthy: ["task-b"], detection_time_seconds: 25.0 },
+        automation: { total: 5, enabled: 4, failed_recent: 1, run_count_total: 42 },
+        wakes: { pending: 1, due: 0 },
+        detection_time_seconds: 25.0,
+      });
+    }
+    if (p.endsWith("/v1/7x24/telemetry")) {
+      return json({
+        degradations: [
+          { task_id: "t1", level: 2, action: "downgrade_model", fidelity: 0.85, ts: 1000 },
+        ],
+        convergence_history: [
+          {
+            run_id: "r1", intent: "研究报告", status: "completed",
+            report: { gap: 0.5712, theoretical_rounds: 9, iterations: 9,
+                      convergence_curve: [0.1, 0.5, 1], final_convergence: 1,
+                      converged: true, stalled: false },
+          },
+        ],
+      });
+    }
+    if (p.endsWith("/v1/7x24/checkpoints") && m === "GET") {
+      return json({
+        sessions: [
+          { session_id: "s1", title: "会话一", message_count: 500, archived: true },
+        ],
+      });
+    }
+    if (p.endsWith("/v1/7x24/storage")) {
+      return json({
+        sessions: { count: 2, jsonl_total_bytes: 2_500_000, archived_sessions: 1, archive_bytes: 50_000,
+                    top: [{ session_id: "s1", jsonl_bytes: 2_000_000, archived: true }] },
+        memory: { count: 7, stale: 2 },
+      });
+    }
+    if (p.endsWith("/v1/7x24/alerts/aggregations/stats")) {
+      return json({ ok: true, days: [{ alerts: 1 }, { alerts: 3 }, { alerts: 5 }], top_tasks: [["t1", 5]] });
+    }
+    if (p.endsWith("/v1/7x24/alerts/aggregations/week-compare")) {
+      return json({ ok: true, labels: ["08-22", "08-23", "08-24"], this_week: [1, 2, 3], last_week: [1, 1, 2],
+                    total_this: 6, total_last: 4, delta_pct: 50 });
+    }
+    if (p.endsWith("/v1/7x24/alerts/aggregations")) {
+      return json({ ok: true, aggregations: [
+        { id: 1, task_id: "task-b", kind: "heartbeat_stalled", level: "critical",
+          started_at: 1000, updated_at: 7200, count: 5, resolved: 0 },
+      ], count: 1 });
+    }
+    if (p.endsWith("/v1/7x24/alerts") && m === "GET") {
+      return json({ ok: true, alerts: [
+        { id: 2, kind: "heartbeat_stalled", task_id: "task-b", message: "任务 task-b 心跳停滞", ts: 2000 },
+      ], count: 1 });
+    }
+    if (p.endsWith("/v1/7x24/alerts/archive") && m === "POST") {
+      return json({ ok: true, archived: 3, kept: 2, archived_total: 5 });
+    }
+    if (p.endsWith("/v1/7x24/audit")) {
+      return json({ ok: true, audit: [
+        { id: 1, kind: "audit", message: "回滚会话 s1 到恢复前备份 (10 条)", ts: 2000 },
+      ], count: 1 });
+    }
+    if (p.endsWith("/v1/7x24/alert-channels") && m === "GET") {
+      return json({ ok: true, enabled: ["email"], channels: {
+        email: { enabled: true, smtp_host: "smtp.example.com", levels: [] },
+        telegram: { enabled: false }, feishu: { enabled: false },
+        dingtalk: { enabled: false }, wecom: { enabled: false },
+      } });
+    }
+    if (p.endsWith("/v1/7x24/alert-channels/probe") && m === "POST") {
+      return json({ ok: true, healthy: ["email"], results: {
+        email: { ok: true, ms: 120.5 },
+        telegram: { ok: false, error: "incomplete config" },
+      } });
+    }
+    if (p.endsWith("/v1/7x24/alert-settings") && m === "GET") {
+      return json({ ok: true, settings: {
+        silence_after: 3,
+        silence_seconds: 600,
+        archive_keep_days: 30,
+        health_thresholds: { good: 80, warn: 50 },
+        probe_history_keep_days: 30,
+        probe_history_keep_count: 10000,
+      } });
+    }
+    if (p.endsWith("/v1/7x24/alert-settings") && m === "PUT") {
+      return json({ ok: true, settings: {
+        ...((req.postDataJSON() as { settings?: Record<string, unknown> })?.settings ?? {}),
+      } });
+    }
+    if (p.endsWith("/v1/7x24/probe-history/prune") && m === "POST") {
+      return json({ ok: true, removed: 3, kept: 47, keep_days: 30, keep_count: 10000 });
+    }
+    if (p.includes("/v1/7x24/checkpoints/s1")) {
+      // 检查点链详情 / 恢复 / 回滚。
+      if (p.includes("/restore")) return json({ ok: true, applied: false, summary: { messages: 500, tasks: 3 } });
+      if (p.includes("/rollback")) return json({ ok: true, rolled_back_messages: 10 });
+      return json({ ok: true, session_id: "s1", chain: [{ seq: 1, n_layer: 1, granularity: "full", created_at: 1000, expires_at: null }], count: 1, latest_restorable: true });
+    }
+
     // Anything else: an empty-but-valid body. GET list endpoints read `?? []`/`?? {}` fallbacks.
     return json({});
   });

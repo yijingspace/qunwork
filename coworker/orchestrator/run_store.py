@@ -67,6 +67,20 @@ class OrchestrationRunStore:
         self._db.execute(
             "CREATE INDEX IF NOT EXISTS idx_oe_run ON orchestration_events(run_id, seq)"
         )
+        # 7x24 长程任务 (突破方案五): 降级记录 — 每次分形降级动作落一条,
+        # 供审计与恢复 (哪些任务降过级、降了几级、保真度多少)。
+        self._db.execute(
+            """CREATE TABLE IF NOT EXISTS orchestration_degradations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id TEXT NOT NULL,
+                task_id TEXT NOT NULL,
+                level INTEGER NOT NULL,
+                action TEXT NOT NULL,
+                fidelity REAL NOT NULL,
+                error TEXT,
+                ts REAL NOT NULL
+            )"""
+        )
         self._db.commit()
 
     # -- runs ---------------------------------------------------------------
@@ -124,6 +138,53 @@ class OrchestrationRunStore:
         ).fetchone()
         return int(row[0]) + 1
 
+    # -- degradations (7x24 突破五) ------------------------------------------
+    def record_degradation(
+        self,
+        run_id: str,
+        task_id: str,
+        level: int,
+        action: str,
+        *,
+        fidelity: float = 0.0,
+        error: Optional[str] = None,
+    ) -> int:
+        """记录一次分形降级 (L1→L6), 返回记录 id。"""
+        with self._lock:
+            cur = self._db.execute(
+                "INSERT INTO orchestration_degradations "
+                "(run_id, task_id, level, action, fidelity, error, ts) VALUES (?,?,?,?,?,?,?)",
+                (run_id, task_id, int(level), action, float(fidelity), error, time.time()),
+            )
+            self._db.commit()
+        return int(cur.lastrowid)
+
+    def list_degradations(self, run_id: Optional[str] = None) -> list[dict[str, Any]]:
+        """降级审计轨迹: 按 run 过滤或全部 (时间正序)。"""
+        if run_id:
+            rows = self._db.execute(
+                "SELECT run_id, task_id, level, action, fidelity, error, ts "
+                "FROM orchestration_degradations WHERE run_id = ? ORDER BY ts",
+                (run_id,),
+            ).fetchall()
+        else:
+            rows = self._db.execute(
+                "SELECT run_id, task_id, level, action, fidelity, error, ts "
+                "FROM orchestration_degradations ORDER BY ts",
+            ).fetchall()
+        return [
+            {
+                "run_id": r[0],
+                "task_id": r[1],
+                "level": r[2],
+                "action": r[3],
+                "fidelity": r[4],
+                "error": r[5],
+                "ts": r[6],
+            }
+            for r in rows
+        ]
+
     # -- reads --------------------------------------------------------------
     def get_run(self, run_id: str) -> Optional[dict[str, Any]]:
         with self._lock:
@@ -137,6 +198,11 @@ class OrchestrationRunStore:
                 "SELECT kind, payload FROM orchestration_events WHERE run_id = ? ORDER BY seq",
                 (run_id,),
             ).fetchall()
+            degradations = self._db.execute(
+                "SELECT task_id, level, action, fidelity, error, ts "
+                "FROM orchestration_degradations WHERE run_id = ? ORDER BY ts",
+                (run_id,),
+            ).fetchall()
         return {
             "run_id": row[0],
             "intent": row[1],
@@ -148,6 +214,18 @@ class OrchestrationRunStore:
             "value_tag": row[7],
             "events": [
                 {"kind": k, "payload": json.loads(p)} for k, p in events
+            ],
+            # 7x24 长程任务 (突破方案五): 降级轨迹 — 供 GUI 展示降级链。
+            "degradations": [
+                {
+                    "task_id": d[0],
+                    "level": d[1],
+                    "action": d[2],
+                    "fidelity": d[3],
+                    "error": d[4],
+                    "ts": d[5],
+                }
+                for d in degradations
             ],
         }
 

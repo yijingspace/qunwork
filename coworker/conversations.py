@@ -297,7 +297,9 @@ class ConversationStore:
                     if legacy:
                         self._append(sid, legacy)
 
-            existing = self._count(sid)
+            # 增量基准 = 完整历史 (归档 + 活跃): 归档过的会话里, 活跃 .jsonl
+            # 计数比完整历史小, 若按活跃计数追加会把归档消息重复写回。
+            existing = len(self.full_history(sid))
             if len(record.messages) > existing:
                 self._append(sid, record.messages[existing:])
             elif len(record.messages) < existing:  # rare; not append-only
@@ -331,6 +333,72 @@ class ConversationStore:
             self._conn.commit()
         self.touch_workspace(record.workspace)
 
+    # -- 7x24 长程任务 (突破三): 皮萨诺压缩归档 ----------------------------------
+    # 长会话 (7×24 任务可产生数百万条消息) 的 .jsonl 无限增长 (B4)。归档策略:
+    #   * `archive_compressed(session_id, keep_recent)`: 把最旧的 N-keep_recent 条
+    #     消息用 PisanoMemoryCompressor 无损压缩写入 `conversations/<sid>.pisano`,
+    #     并从活跃 .jsonl 截断 (只留最近 keep_recent 条);
+    #   * `read_archived(session_id)`: 无损解压归档, 与活跃消息合并还原完整历史;
+    #   * 归档在会话初始化时自动合并 (`load()` 已接), 查询历史时按需展开。
+
+    def _archive_file(self, sid: str) -> Path:
+        return self.conv_dir / f"{sid}.pisano"
+
+    def archive_compressed(
+        self, session_id: str, keep_recent: int = 200
+    ) -> Optional[dict[str, Any]]:
+        """把会话的旧消息压缩归档, 活跃 .jsonl 只保留最近 keep_recent 条。
+
+        基于**完整历史** (已有归档 + 活跃) 压缩: 重复归档时旧归档内容并入
+        新压缩包 (无损, 不丢已归档消息)。返回归档摘要或 None (无可归档内容)。
+        """
+        from .memory.compressor import PisanoMemoryCompressor
+
+        messages = self.full_history(session_id)  # 归档 + 活跃
+        if not messages or len(messages) <= keep_recent:
+            return None
+        old = messages[:-keep_recent]
+        recent = messages[-keep_recent:]
+        comp = PisanoMemoryCompressor()
+        packed = comp.compress_messages(old)
+        archive_path = self._archive_file(session_id)
+        archive_path.write_text(
+            json.dumps(packed, ensure_ascii=False, default=str), encoding="utf-8"
+        )
+        # 截断活跃 .jsonl (仅保留最近 keep_recent 条)。
+        with open(self._file(session_id), "w", encoding="utf-8") as f:
+            for m in recent:
+                f.write(json.dumps(m) + "\n")
+        with self._lock:
+            self._conn.execute(
+                "UPDATE sessions SET n_msgs = ? WHERE session_id = ?",
+                (len(recent), session_id),
+            )
+            self._conn.commit()
+        return {
+            "archived": len(old),
+            "recent": len(recent),
+            "compression_ratio": packed.get("compression_ratio", 0.0),
+            "archive_file": str(archive_path),
+        }
+
+    def read_archived(self, session_id: str) -> list[dict]:
+        """无损解压归档消息 (旧历史)。无归档时返回空列表。"""
+        from .memory.compressor import PisanoMemoryCompressor
+
+        path = self._archive_file(session_id)
+        if not path.exists():
+            return []
+        try:
+            packed = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return []
+        return PisanoMemoryCompressor().decompress(packed)
+
+    def full_history(self, session_id: str) -> list[dict]:
+        """完整历史 = 归档 (旧) + 活跃 (新)。供历史回放/导出。"""
+        return self.read_archived(session_id) + (self._read_jsonl(session_id) or [])
+
     def load(self, session_id: str) -> Optional[SessionRecord]:
         with self._lock:
             row = self._conn.execute(
@@ -338,8 +406,9 @@ class ConversationStore:
             ).fetchone()
         if not row:
             return None
-        messages = self._read_jsonl(session_id)
-        if messages is None:
+        # 7x24 (突破三): 完整历史 = 皮萨诺归档 (旧) + 活跃 .jsonl (新)。
+        messages = self.full_history(session_id)
+        if not messages:
             try:
                 messages = json.loads(row["messages"] or "[]")
             except json.JSONDecodeError:

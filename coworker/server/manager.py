@@ -89,6 +89,23 @@ _SCOPES = {s.value for s in Scope}
 logger = logging.getLogger("coworker.manager")
 
 
+def _probe_retention_from_config(config: dict[str, Any]) -> dict[str, int]:
+    """探针历史保留窗口 (天数/条数) 从 alert_channels 配置解析。
+
+    模块级纯函数 — manager 方法内联调用, 兼容 stub/测试场景 (不依赖实例方法)。
+    """
+    settings = (config or {}).get("settings") or {}
+    try:
+        keep_days = max(1, int(settings.get("probe_history_keep_days", 30)))
+    except (TypeError, ValueError):
+        keep_days = 30
+    try:
+        keep_count = max(1, int(settings.get("probe_history_keep_count", 10000)))
+    except (TypeError, ValueError):
+        keep_count = 10000
+    return {"keep_days": keep_days, "keep_count": keep_count}
+
+
 def _grants_of(engine) -> dict[str, Any]:
     """The engine's session-scoped "Always allow" approvals, in persistable shape."""
     tools = sorted(getattr(engine.permissions, "session_allow_tools", None) or ())
@@ -253,9 +270,32 @@ class SessionManager:
         # Automation: scheduled tasks store + the tick scheduler (started in the lifespan).
         # The scheduler also resumes self-wake'd sessions each tick (extra_tick).
         self.task_store = TaskStore(base / "automation.db")
+        # 7x24 长程任务 (突破方案四): 蜂巢心跳 — 每 tick 评估后台任务健康度,
+        # 持久化到默认状态目录 (heartbeat.json), 卡死任务交由
+        # `_on_heartbeat_stalled` 唤醒对应会话自查 (self-wake heartbeat wake)。
+        from ..heartbeat import HoneycombHeartbeat
+
+        self.heartbeat = HoneycombHeartbeat(
+            tick_seconds=30.0,
+            threshold=0.3,
+            persist_default=True,
+            on_unhealthy=self._on_heartbeat_stalled,
+        )
+        # 7x24 告警历史持久化: 已推送的 7x24_alert 事件落库, 可回溯查询。
+        from ..alerts import AlertStore
+
+        self.alert_store = AlertStore(base / "alerts.db")
+        # 7x24 告警多渠道通知 (邮件/Telegram/飞书/钉钉/企业微信)。
+        from ..notify import AlertNotifier
+
+        self.alert_notifier = AlertNotifier(
+            self._load_alert_channels_config()
+        )
         self.scheduler = Scheduler(
-            self.task_store, self._run_scheduled_task, extra_tick=self.resume_due_wakes,
+            self.task_store, self._run_scheduled_task, extra_tick=self._combined_extra_tick,
             rhythm_gate=self.rhythm_is_valley,
+            heartbeat=self.heartbeat,
+            heartbeat_handler=self._heartbeat_stalled_handler,
         )
         # Multi-agent orchestration: run store for real-time progress + history.
         from ..orchestrator.run_store import OrchestrationRunStore
@@ -3139,6 +3179,134 @@ class SessionManager:
                 self.wakes.mark_fired(wake.id)
         return resumed
 
+    # -- 7x24 长程任务 (突破方案四): 蜂巢心跳卡死处理 ---------------------------
+    def _on_heartbeat_stalled(self, task_id: str, health: float) -> None:
+        """心跳回调: 单个任务健康度跌破阈值 → 把对应会话的 heartbeat wake 标为
+        due (self-wake 会唤醒会话自查/重启自己的卡死任务)。best-effort。"""
+        try:
+            self.wakes.heartbeat_stalled(task_id)
+        except Exception:
+            logger.warning("heartbeat stalled handling failed for %s", task_id)
+
+    async def _heartbeat_stalled_handler(self, stalled: list[str]) -> None:
+        """Scheduler heartbeat tick 收集到卡死任务 → 记日志 + 标 heartbeat wake due,
+        让对应会话被唤醒 + 向 /ws/events 推送告警事件 (桌面端实时提醒)。
+
+        告警去重: 同一任务只在首次卡死时推送一次 (``_stalled_alerts`` 集合);
+        任务恢复 (不在 stalled 中) 后清除标记, 下次卡死可再次提醒。
+        """
+        if not hasattr(self, "_stalled_alerts"):
+            self._stalled_alerts: set[str] = set()
+        for task_id in stalled:
+            self._on_heartbeat_stalled(task_id, 0.0)
+            logger.warning(
+                "heartbeat: task %s stalled (no pulse within grace window) — wake queued", task_id
+            )
+            # 告警历史持久化 (落库可回溯 + 同任务聚合计数 + 静默期判定)。
+            # 静默参数 (阈值/时长) 来自可配置的告警设置。
+            should_notify = True
+            if getattr(self, "alert_store", None) is not None:
+                try:
+                    _sil = self._alert_silence_params()
+                    _id, should_notify = self.alert_store.record(
+                        "heartbeat_stalled",
+                        f"任务 {task_id} 心跳停滞 — 已自动唤醒会话自查",
+                        task_id=task_id,
+                        payload={"health": 0.0},
+                        level="critical",
+                        silence_after=_sil["silence_after"],
+                        silence_seconds=_sil["silence_seconds"],
+                    )
+                except Exception:
+                    logger.exception("alert persist failed")
+            # 静默期内: 不重复广播/多渠道通知 (聚合告警静默期)。
+            if not should_notify:
+                continue
+            if task_id not in self._stalled_alerts:
+                self._stalled_alerts.add(task_id)
+                try:
+                    await self.broadcast_event(
+                        {
+                            "type": "7x24_alert",
+                            "payload": {
+                                "kind": "heartbeat_stalled",
+                                "task_id": task_id,
+                                "message": f"任务 {task_id} 心跳停滞 — 已自动唤醒会话自查",
+                                "ts": time.time(),
+                            },
+                        }
+                    )
+                    # 多渠道外部通知 (邮件/Telegram/飞书/钉钉/企业微信, best-effort,
+                    # 心跳停滞 = critical 级别 → 按渠道订阅级别路由)。
+                    notifier = getattr(self, "alert_notifier", None)
+                    if notifier is not None and notifier.enabled_channels:
+                        try:
+                            await notifier.send(
+                                f"⚠ 7×24 告警: 任务 {task_id} 心跳停滞 — 已自动唤醒会话自查",
+                                title="7×24 任务卡死告警",
+                                task_id=task_id,
+                                level="critical",
+                            )
+                        except Exception:
+                            logger.exception("alert notifier send failed")
+                except Exception:
+                    logger.exception("7x24 alert broadcast failed")
+        # 恢复检测 (独立于 stalled 是否为空): 只保留仍卡死的告警标记,
+        # 已恢复任务 → resolve 聚合告警 + 发"已恢复"通知, 下次卡死可再次提醒。
+        for tid in list(getattr(self, "_stalled_alerts", set())):
+            if tid not in set(stalled):
+                recovered = None
+                try:
+                    if getattr(self, "alert_store", None) is not None:
+                        recovered = self.alert_store.resolve(tid)
+                except Exception:
+                    logger.exception("alert resolve failed")
+                try:
+                    if recovered and recovered.get("first_resolve"):
+                        await self.broadcast_event(
+                            {
+                                "type": "7x24_recovered",
+                                "payload": {
+                                    "kind": "heartbeat_recovered",
+                                    "task_id": tid,
+                                    "message": (
+                                        f"任务 {tid} 已恢复心跳 (卡死 {recovered.get('count')} 次, "
+                                        f"持续 {recovered.get('duration', 0):.0f}s)"
+                                    ),
+                                    "ts": time.time(),
+                                },
+                            }
+                        )
+                        notifier = getattr(self, "alert_notifier", None)
+                        if notifier is not None and notifier.enabled_channels:
+                            await notifier.send(
+                                f"✅ 7×24 恢复: 任务 {tid} 已恢复心跳 (卡死 "
+                                f"{recovered.get('count')} 次, 持续 {recovered.get('duration', 0):.0f}s)",
+                                title="7×24 任务恢复通知",
+                                task_id=tid,
+                                level="info",
+                            )
+                except Exception:
+                    logger.exception("7x24 recovered notify failed")
+        self._stalled_alerts = {
+            tid for tid in self._stalled_alerts if tid in set(stalled)
+        }
+
+    async def _combined_extra_tick(self) -> None:
+        """scheduler 每 tick 调用: 唤醒到期 self-wake 会话 + 周期探针检查。
+
+        探针到期 (按 interval_minutes) 时执行 run_scheduled_probe —
+        失败渠道自动落库告警。两者都 best-effort, 互不阻断。
+        """
+        try:
+            await self.resume_due_wakes()
+        except Exception:
+            logger.exception("extra_tick resume wakes failed")
+        try:
+            await self._maybe_run_scheduled_probe()
+        except Exception:
+            logger.exception("extra_tick scheduled probe failed")
+
     def mark_running(self, session_id: str) -> None:
         self._running_sessions.add(session_id)
 
@@ -6021,7 +6189,12 @@ class SessionManager:
                 if candidate.exists():
                     vector_db_path = candidate
         result = run_maintenance(
-            self.memory_store, vector_db_path=vector_db_path, dry_run=dry_run
+            self.memory_store,
+            vector_db_path=vector_db_path,
+            dry_run=dry_run,
+            # 7x24 (突破三): 会话定期归档 — 超长会话旧消息皮萨诺压缩存档。
+            conversation_store=self.session_store,
+            session_archive_threshold=500,
         )
         # S2: 蜂群经验库治理 (经验去重 + 冷经验清理, 不无限膨胀)。
         try:
@@ -6034,7 +6207,945 @@ class SessionManager:
                 harness.close()
         except Exception:
             pass
+        # 7x24 (第十三轮): 告警/审计自动归档 — 与记忆维护同周期,
+        # 超过配置 keep_days 天的告警/审计记录归档 (真实执行时才归档)。
+        if not dry_run:
+            try:
+                result["alerts_archive"] = self.longrun_alert_archive(
+                    keep_days=self._alert_archive_keep_days()
+                )
+            except Exception:
+                logger.exception("alert archive in maintenance failed")
+        # 7x24 (第二十二轮): 探针历史保留窗口清理 — 与记忆维护同周期,
+        # 按配置 (天数/条数) 清理 probe_history, 防无限增长 (真实执行才清理)。
+        if not dry_run:
+            try:
+                result["probe_history_prune"] = self.longrun_probe_history_prune()
+            except Exception:
+                logger.exception("probe history prune in maintenance failed")
         return result
+
+    # -- 7x24 长程任务管理 (突破方案落地: 桌面端健康控制台) --------------------
+    def longrun_alerts(
+        self,
+        *,
+        limit: int = 50,
+        task_id: Optional[str] = None,
+        since: Optional[float] = None,
+        until: Optional[float] = None,
+    ) -> dict[str, Any]:
+        """① 告警历史: 已持久化的 7x24 告警 (可回溯, 可按任务/时间范围过滤)。"""
+        store = getattr(self, "alert_store", None)
+        if store is None:
+            return {"ok": True, "alerts": [], "count": 0}
+        try:
+            alerts = store.list(limit=limit, task_id=task_id, since=since, until=until)
+            return {"ok": True, "alerts": alerts, "count": len(alerts)}
+        except Exception as exc:
+            return {"ok": False, "error": str(exc), "alerts": []}
+
+    def longrun_alert_aggregations(
+        self, *, resolved: Optional[bool] = None, limit: int = 50
+    ) -> dict[str, Any]:
+        """③ 告警聚合: 同任务连续卡死合并为一条持续告警 (次数/时长/是否解决)。"""
+        store = getattr(self, "alert_store", None)
+        if store is None:
+            return {"ok": True, "aggregations": [], "count": 0}
+        try:
+            aggs = store.list_aggregations(resolved=resolved, limit=limit)
+            return {"ok": True, "aggregations": aggs, "count": len(aggs)}
+        except Exception as exc:
+            return {"ok": False, "error": str(exc), "aggregations": []}
+
+    def longrun_aggregation_stats(self, *, days: int = 14) -> dict[str, Any]:
+        """② 聚合历史统计: 快照当日 + 返回最近 days 天趋势 (每日告警数/解决数)。"""
+        store = getattr(self, "alert_store", None)
+        if store is None:
+            return {"ok": False, "error": "no alert store"}
+        try:
+            store.snapshot_aggregation_history()
+            stats = store.aggregation_stats(days=days)
+            return {"ok": True, **stats}
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)}
+
+    def longrun_audit(self, *, limit: int = 50) -> dict[str, Any]:
+        """③ 操作审计: 回滚/恢复/渠道变更等管理操作记录 (kind='audit')。"""
+        store = getattr(self, "alert_store", None)
+        if store is None:
+            return {"ok": True, "audit": [], "count": 0}
+        try:
+            audit = store.list_audit(limit=limit)
+            return {"ok": True, "audit": audit, "count": len(audit)}
+        except Exception as exc:
+            return {"ok": False, "error": str(exc), "audit": []}
+
+    def _audit_action(self, action: str, detail: str, *, task_id: Optional[str] = None) -> None:
+        """内部: 写一条操作审计 (best-effort)。"""
+        store = getattr(self, "alert_store", None)
+        if store is None:
+            return
+        try:
+            store.audit(action, detail, task_id=task_id)
+        except Exception:
+            logger.exception("audit write failed")
+
+    # -- 7x24 告警多渠道通知配置 (邮件/Telegram/飞书/钉钉/企业微信) ---------------
+    def _alert_channels_config_path(self) -> Path:
+        base = getattr(self, "base_dir", None)
+        if base is not None:
+            return Path(base) / "alert_channels.json"
+        return Path.home() / ".config" / "coworker" / "alert_channels.json"
+
+    def _load_alert_channels_config(self) -> dict[str, Any]:
+        path = self._alert_channels_config_path()
+        try:
+            if path.is_file():
+                return json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            logger.warning("alert channels config unreadable at %s", path)
+        return {}
+
+    def _save_alert_channels_config(self, config: dict[str, Any]) -> None:
+        path = self._alert_channels_config_path()
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
+        except OSError:
+            logger.exception("alert channels config save failed at %s", path)
+
+    def longrun_alert_channels(self) -> dict[str, Any]:
+        """① 告警渠道配置 (脱敏) + 已启用渠道。"""
+        notifier = getattr(self, "alert_notifier", None)
+        if notifier is None:
+            return {"ok": True, "channels": {}, "enabled": []}
+        try:
+            return {
+                "ok": True,
+                "channels": notifier.public_config(),
+                "enabled": notifier.enabled_channels,
+            }
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)}
+
+    # -- ② 告警静默设置 (聚合静默期: 阈值/时长, 可配置持久化) --------------------
+    def longrun_alert_settings(self) -> dict[str, Any]:
+        """② 告警设置: 聚合静默阈值/时长 + 归档保留天数 + 健康分阈值 +
+        探针历史保留窗口。
+
+        默认: silence_after=3, silence_seconds=600, archive_keep_days=30,
+        health_thresholds={good: 80, warn: 50}, probe_history_keep_days=30,
+        probe_history_keep_count=10000。
+        """
+        config = self._load_alert_channels_config()
+        settings = config.get("settings") or {}
+        h = settings.get("health_thresholds") or {}
+        return {
+            "ok": True,
+            "settings": {
+                "silence_after": int(settings.get("silence_after", 3)),
+                "silence_seconds": int(settings.get("silence_seconds", 600)),
+                "archive_keep_days": int(settings.get("archive_keep_days", 30)),
+                "health_thresholds": {
+                    "good": float(h.get("good", 80.0)),
+                    "warn": float(h.get("warn", 50.0)),
+                },
+                "probe_history_keep_days": int(
+                    settings.get("probe_history_keep_days", 30)
+                ),
+                "probe_history_keep_count": int(
+                    settings.get("probe_history_keep_count", 10000)
+                ),
+            },
+        }
+
+    def set_longrun_alert_settings(self, settings: dict[str, Any]) -> dict[str, Any]:
+        """② 保存告警设置 (阈值/时长/归档天数/健康分阈值/探针历史保留窗口),
+        持久化到 alert_channels.json。"""
+        settings = settings or {}
+        config = self._load_alert_channels_config()
+        current = config.get("settings") or {}
+        for key in (
+            "silence_after", "silence_seconds", "archive_keep_days",
+            "probe_history_keep_days", "probe_history_keep_count",
+        ):
+            if key in settings:
+                try:
+                    current[key] = max(1, int(settings[key]))
+                except (TypeError, ValueError):
+                    pass
+        # 健康分阈值: {good, warn} (0-100, 且 warn <= good)。
+        if isinstance(settings.get("health_thresholds"), dict):
+            h = dict(current.get("health_thresholds") or {})
+            raw = settings["health_thresholds"]
+            try:
+                good = float(raw.get("good", h.get("good", 80.0)))
+                warn = float(raw.get("warn", h.get("warn", 50.0)))
+            except (TypeError, ValueError):
+                good, warn = 80.0, 50.0
+            good = min(100.0, max(1.0, good))
+            warn = min(good, max(0.0, warn))
+            current["health_thresholds"] = {"good": good, "warn": warn}
+        config["settings"] = current
+        self._save_alert_channels_config(config)
+        # 操作审计。
+        self._audit_action(
+            "alert_settings_update",
+            f"更新告警设置: 阈值={current.get('silence_after', 3)}, "
+            f"时长={current.get('silence_seconds', 600)}s, "
+            f"归档天数={current.get('archive_keep_days', 30)}, "
+            f"健康阈值={current.get('health_thresholds')}, "
+            f"探针保留={current.get('probe_history_keep_days', 30)}天/"
+            f"{current.get('probe_history_keep_count', 10000)}条",
+        )
+        # 返回最新设置 (直接构造, 兼容 stub 调用场景)。
+        h = current.get("health_thresholds") or {}
+        return {
+            "ok": True,
+            "settings": {
+                "silence_after": int(current.get("silence_after", 3)),
+                "silence_seconds": int(current.get("silence_seconds", 600)),
+                "archive_keep_days": int(current.get("archive_keep_days", 30)),
+                "health_thresholds": {
+                    "good": float(h.get("good", 80.0)),
+                    "warn": float(h.get("warn", 50.0)),
+                },
+                "probe_history_keep_days": int(
+                    current.get("probe_history_keep_days", 30)
+                ),
+                "probe_history_keep_count": int(
+                    current.get("probe_history_keep_count", 10000)
+                ),
+            },
+        }
+
+    def _probe_history_retention(self) -> dict[str, int]:
+        """当前探针历史保留窗口 (alert_settings.probe_history_keep_days /
+        probe_history_keep_count), 供周期探针/维护自动清理读取。
+        直接读配置 (兼容 stub/测试场景)。"""
+        try:
+            return _probe_retention_from_config(self._load_alert_channels_config())
+        except Exception:
+            return {"keep_days": 30, "keep_count": 10000}
+
+    def longrun_probe_history_prune(self) -> dict[str, Any]:
+        """③ 手动触发探针历史清理: 按保留窗口 (可配) 清理 probe_history。"""
+        store = getattr(self, "alert_store", None)
+        if store is None:
+            return {"ok": False, "error": "no alert store"}
+        try:
+            # 内联读保留窗口 (兼容 stub 调用场景, 不依赖实例方法)。
+            try:
+                ret = _probe_retention_from_config(self._load_alert_channels_config())
+            except Exception:
+                ret = {"keep_days": 30, "keep_count": 10000}
+            result = store.prune_probe_history(**ret)
+            self._audit_action(
+                "probe_history_prune",
+                f"清理探针历史: 移除 {result['removed']} 条 "
+                f"(保留 {result['kept']} 条, 窗口 {ret['keep_days']} 天/"
+                f"{ret['keep_count']} 条)",
+            )
+            result["ok"] = True
+            return result
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)}
+
+    def _prune_probe_history(self) -> None:
+        """内部: 按保留窗口清理 probe_history (best-effort, 供周期探针/维护调用)。"""
+        store = getattr(self, "alert_store", None)
+        if store is None:
+            return
+        try:
+            # 内联读保留窗口 (兼容 stub 调用场景, 不依赖实例方法)。
+            try:
+                ret = _probe_retention_from_config(self._load_alert_channels_config())
+            except Exception:
+                ret = {"keep_days": 30, "keep_count": 10000}
+            store.prune_probe_history(**ret)
+        except Exception:
+            logger.exception("probe history prune failed")
+
+    def _alert_archive_keep_days(self) -> int:
+        """当前归档保留天数 (供自动归档读取, 直接读配置兼容 stub)。"""
+        try:
+            config = self._load_alert_channels_config()
+            settings = config.get("settings") or {}
+            return max(1, int(settings.get("archive_keep_days", 30)))
+        except Exception:
+            return 30
+
+    def _alert_silence_params(self) -> dict[str, int]:
+        """当前静默参数 (供 _heartbeat_stalled_handler 落库时使用)。
+
+        直接读配置 (不依赖实例方法), 兼容 stub/测试场景。
+        """
+        try:
+            config = self._load_alert_channels_config()
+            settings = config.get("settings") or {}
+            return {
+                "silence_after": max(1, int(settings.get("silence_after", 3))),
+                "silence_seconds": max(1, int(settings.get("silence_seconds", 600))),
+            }
+        except Exception:
+            return {"silence_after": 3, "silence_seconds": 600}
+
+    def set_longrun_alert_channels(self, channels: dict[str, Any]) -> dict[str, Any]:
+        """① 保存告警渠道配置 (仅更新提供的渠道), 重建 notifier。"""
+        from ..notify import AlertNotifier, CHANNEL_KEYS
+
+        channels = channels or {}
+        config = self._load_alert_channels_config()
+        existing = config.get("channels") or {}
+        for key in CHANNEL_KEYS:
+            if key in channels:
+                merged = dict(existing.get(key) or {})
+                merged.update(channels[key] or {})
+                # 空字符串视为未设置 (避免误写空值)。
+                merged = {k: v for k, v in merged.items() if v != ""}
+                existing[key] = merged
+        config["channels"] = existing
+        self._save_alert_channels_config(config)
+        # 重建 notifier 让新配置立即生效。
+        self.alert_notifier = AlertNotifier(config)
+        # ③ 操作审计: 记录渠道配置变更 (脱敏, 只记启用渠道)。
+        self._audit_action(
+            "alert_channels_update",
+            f"更新告警渠道配置: 启用 {self.alert_notifier.enabled_channels or '无'}",
+        )
+        return self.longrun_alert_channels()
+
+    def test_longrun_alert_channels(self) -> dict[str, Any]:
+        """① 测试告警渠道: 向每个启用渠道发一条测试消息。"""
+        notifier = getattr(self, "alert_notifier", None)
+        if notifier is None:
+            return {"ok": False, "error": "notifier not configured"}
+        import asyncio as _asyncio
+
+        results = _asyncio.run(
+            notifier.send("✅ 7×24 告警渠道测试 — 来自 QunWork", title="渠道测试")
+        )
+        return {"ok": True, "results": results}
+
+    def longrun_channel_probe(self) -> dict[str, Any]:
+        """① 告警渠道健康探针: 向各启用渠道发探针消息, 返回成功/延迟/错误。
+        每次探针结果落库 (probe_history), 供健康分/趋势。"""
+        notifier = getattr(self, "alert_notifier", None)
+        if notifier is None:
+            return {"ok": False, "error": "notifier not configured"}
+        import asyncio as _asyncio
+
+        results = _asyncio.run(notifier.probe())
+        healthy = [k for k, v in results.items() if v.get("ok")]
+        # 落库探针历史。
+        self._record_probe_results(results)
+        return {"ok": True, "results": results, "healthy": healthy}
+
+    def _record_probe_results(self, results: dict[str, Any]) -> None:
+        """把探针结果落库 probe_history (best-effort)。"""
+        store = getattr(self, "alert_store", None)
+        if store is None:
+            return
+        try:
+            for ch, v in results.items():
+                store.record_probe(
+                    ch,
+                    bool(v.get("ok")),
+                    ms=v.get("ms"),
+                    error=v.get("error"),
+                )
+        except Exception:
+            logger.exception("probe history persist failed")
+
+    def longrun_channel_health(self) -> dict[str, Any]:
+        """① 渠道健康分/历史趋势 (来自 probe_history), 阈值可配。"""
+        store = getattr(self, "alert_store", None)
+        if store is None:
+            return {"ok": True, "channels": {}}
+        try:
+            # 阈值配置: alert_settings.health_thresholds {good, warn} (默认 80/50)。
+            thr = {"good": 80.0, "warn": 50.0}
+            try:
+                cfg = self._load_alert_channels_config()
+                settings = cfg.get("settings") or {}
+                h = settings.get("health_thresholds") or {}
+                thr["good"] = float(h.get("good", 80.0))
+                thr["warn"] = float(h.get("warn", 50.0))
+            except Exception:
+                pass
+            result = store.probe_health(
+                good_threshold=thr["good"], warn_threshold=thr["warn"]
+            )
+            result["thresholds"] = thr
+            return {"ok": True, **result}
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)}
+
+    def longrun_channel_health_export(self, fmt: str = "json") -> str:
+        """② 导出探针历史 (CSV/JSON)。"""
+        store = getattr(self, "alert_store", None)
+        if store is None:
+            return json.dumps({"ok": False, "error": "no alert store"})
+        return store.export_probe_history(fmt=fmt)
+
+    # -- ② 探针定时化 (周期自动探针 + 失败告警) ---------------------------------
+    def longrun_probe_schedule(self) -> dict[str, Any]:
+        """② 探针调度设置: 是否启用周期探针 + 间隔分钟数。
+
+        默认: 启用, 每 60 分钟一次。持久化到 alert_channels.json。
+        """
+        config = self._load_alert_channels_config()
+        sched = config.get("probe_schedule") or {}
+        return {
+            "ok": True,
+            "schedule": {
+                "enabled": bool(sched.get("enabled", True)),
+                "interval_minutes": int(sched.get("interval_minutes", 60)),
+                "last_probe_ts": sched.get("last_probe_ts"),
+            },
+        }
+
+    def set_longrun_probe_schedule(self, schedule: dict[str, Any]) -> dict[str, Any]:
+        """② 保存探针调度设置 (启用开关 + 间隔分钟)。"""
+        schedule = schedule or {}
+        config = self._load_alert_channels_config()
+        current = config.get("probe_schedule") or {}
+        if "enabled" in schedule:
+            current["enabled"] = bool(schedule["enabled"])
+        if "interval_minutes" in schedule:
+            try:
+                current["interval_minutes"] = max(1, int(schedule["interval_minutes"]))
+            except (TypeError, ValueError):
+                pass
+        config["probe_schedule"] = current
+        self._save_alert_channels_config(config)
+        self._audit_action(
+            "probe_schedule_update",
+            f"更新探针调度: enabled={current.get('enabled', True)}, "
+            f"interval={current.get('interval_minutes', 60)}min",
+        )
+        # 返回最新设置 (直接构造, 兼容 stub 调用场景)。
+        return {
+            "ok": True,
+            "schedule": {
+                "enabled": bool(current.get("enabled", True)),
+                "interval_minutes": int(current.get("interval_minutes", 60)),
+                "last_probe_ts": current.get("last_probe_ts"),
+            },
+        }
+
+    def _probe_due(self) -> bool:
+        """探针是否到期: 距上次探针 >= interval (启用时)。供 scheduler tick 判定。"""
+        try:
+            config = self._load_alert_channels_config()
+            sched = config.get("probe_schedule") or {}
+            if not sched.get("enabled", True):
+                return False
+            interval_min = max(1, int(sched.get("interval_minutes", 60)))
+            last = sched.get("last_probe_ts")
+            if last is None:
+                return True  # 从未探针 → 立即执行
+            return (time.time() - float(last)) >= interval_min * 60
+        except Exception:
+            return False
+
+    async def _maybe_run_scheduled_probe(self) -> None:
+        """scheduler 每 tick 调用: 探针到期则执行 (best-effort, 失败不阻断 tick)。"""
+        if not self._probe_due():
+            return
+        try:
+            self.run_scheduled_probe()
+        except Exception:
+            logger.exception("scheduled probe failed (best-effort)")
+
+    def run_scheduled_probe(self) -> dict[str, Any]:
+        """② 周期探针执行 (供后台定时任务调用): 按调度跑一次探针,
+        失败的渠道落库告警 + 多渠道通知; 返回结果。"""
+        # 直接读配置 (兼容 stub/测试场景, 不依赖实例方法)。
+        try:
+            config = self._load_alert_channels_config()
+            sched_cfg = config.get("probe_schedule") or {}
+            enabled = bool(sched_cfg.get("enabled", True))
+            interval = max(1, int(sched_cfg.get("interval_minutes", 60)))
+        except Exception:
+            enabled, interval = True, 60
+        if not enabled:
+            return {"ok": True, "skipped": "probe disabled"}
+        notifier = getattr(self, "alert_notifier", None)
+        if notifier is None or not notifier.enabled_channels:
+            return {"ok": True, "skipped": "no channels enabled"}
+        import asyncio as _asyncio
+
+        results = _asyncio.run(notifier.probe())
+        failed = [k for k, v in results.items() if not v.get("ok")]
+        # 探针历史落库 (健康分/趋势数据源)。
+        self._record_probe_results(results)
+        # 探针历史保留窗口: 每次探针后按配置清理旧记录 (防无限增长)。
+        # 内联读窗口并清理 (兼容 stub 调用场景, 不依赖实例方法)。
+        try:
+            store = getattr(self, "alert_store", None)
+            if store is not None:
+                try:
+                    ret = _probe_retention_from_config(self._load_alert_channels_config())
+                except Exception:
+                    ret = {"keep_days": 30, "keep_count": 10000}
+                store.prune_probe_history(**ret)
+        except Exception:
+            logger.exception("probe history prune failed")
+        # 更新 last_probe_ts。
+        config = self._load_alert_channels_config()
+        sched_cfg = config.setdefault("probe_schedule", {})
+        sched_cfg["last_probe_ts"] = time.time()
+        self._save_alert_channels_config(config)
+        # 失败渠道 → 落库告警 + 审计 + 多渠道联动通知 (避免渠道静默失效无人知)。
+        for ch in failed:
+            err = (results.get(ch) or {}).get("error") or "probe failed"
+            try:
+                if getattr(self, "alert_store", None) is not None:
+                    self.alert_store.record(
+                        "channel_probe_failed",
+                        f"告警渠道 {ch} 探针失败: {err}",
+                        task_id=f"channel:{ch}",
+                        level="warning",
+                    )
+            except Exception:
+                logger.exception("probe failure alert persist failed")
+            self._audit_action("channel_probe_failed", f"渠道 {ch} 探针失败: {err}")
+        # 多渠道联动: 探针发现渠道失效 → 通过**其他健康渠道**发送 critical 级
+        # "渠道探针失败"告警 (通知者本身若失败也已被探针标记)。
+        if failed:
+            notifier2 = getattr(self, "alert_notifier", None)
+            if notifier2 is not None and notifier2.enabled_channels:
+                try:
+                    _asyncio.run(
+                        notifier2.send(
+                            f"⚠ 渠道探针失败: {', '.join(failed)} — 告警投递可能中断, 请检查配置",
+                            title="7×24 渠道健康告警",
+                            level="critical",
+                        )
+                    )
+                except Exception:
+                    logger.exception("probe failure channel notify failed")
+        return {"ok": True, "results": results, "failed": failed}
+
+    def longrun_alert_archive(self, *, keep_days: int = 30) -> dict[str, Any]:
+        """② 告警/审计定时自动归档: 超过 keep_days 天的记录归档到 alerts_archive。
+
+        支持分渠道保留天数: alert_settings 的 ``channel_archive_keep_days``
+        ({"email": 60, ...}) — 渠道相关告警 (task_id 前缀 ``channel:``) 按各自
+        天数归档, 其余按默认 keep_days。
+        """
+        store = getattr(self, "alert_store", None)
+        if store is None:
+            return {"ok": False, "error": "no alert store"}
+        try:
+            keep_days = max(1, int(keep_days))
+            # 分渠道配置: {channel: days} (内联读配置, 兼容 stub 调用场景)。
+            ch_map = {}
+            try:
+                cfg = self._load_alert_channels_config()
+                settings = cfg.get("settings") or {}
+                raw = settings.get("channel_archive_keep_days") or {}
+                for ch, days in raw.items():
+                    try:
+                        ch_map[str(ch)] = max(1, int(days))
+                    except (TypeError, ValueError):
+                        pass
+            except Exception:
+                ch_map = {}
+            if ch_map:
+                result = store.archive_old_by_channel(
+                    default_keep_days=keep_days, channel_keep_days=ch_map
+                )
+            else:
+                result = store.archive_old(keep_days=keep_days)
+            # 操作审计: 记录归档动作。
+            self._audit_action(
+                "alert_archive",
+                f"归档告警/审计 (默认 {keep_days} 天, 渠道覆盖 {ch_map or '无'}) "
+                f"共 {result['archived']} 条",
+            )
+            result["ok"] = True
+            result["archived_total"] = store.count_archived()
+            return result
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)}
+
+    def _channel_archive_keep_days(self) -> dict[str, int]:
+        """分渠道归档保留天数配置 (alert_settings.channel_archive_keep_days)。"""
+        try:
+            config = self._load_alert_channels_config()
+            settings = config.get("settings") or {}
+            raw = settings.get("channel_archive_keep_days") or {}
+            out = {}
+            for ch, days in raw.items():
+                try:
+                    out[str(ch)] = max(1, int(days))
+                except (TypeError, ValueError):
+                    pass
+            return out
+        except Exception:
+            return {}
+
+    def longrun_archived_alerts(
+        self, *, limit: int = 50, task_id: Optional[str] = None
+    ) -> dict[str, Any]:
+        """③ 归档数据查询: 从 alerts_archive 查历史 (可回溯)。"""
+        store = getattr(self, "alert_store", None)
+        if store is None:
+            return {"ok": True, "archived": [], "count": 0}
+        try:
+            rows = store.list_archived(limit=limit, task_id=task_id)
+            return {"ok": True, "archived": rows, "count": len(rows),
+                    "total_archived": store.count_archived()}
+        except Exception as exc:
+            return {"ok": False, "error": str(exc), "archived": []}
+
+    def longrun_restore_archived_alert(self, archive_id: int) -> dict[str, Any]:
+        """③ 归档数据恢复: 把一条归档记录恢复到活跃表 (撤销归档)。"""
+        store = getattr(self, "alert_store", None)
+        if store is None:
+            return {"ok": False, "error": "no alert store"}
+        try:
+            rec = store.restore_archived(int(archive_id))
+            if rec is None:
+                return {"ok": False, "error": f"archived alert {archive_id} not found"}
+            # 操作审计: 记录恢复动作。
+            self._audit_action(
+                "alert_restore",
+                f"恢复归档告警 #{archive_id} (kind={rec.get('kind')})",
+                task_id=rec.get("task_id"),
+            )
+            return {"ok": True, "restored": rec}
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)}
+
+    def longrun_health(self) -> dict[str, Any]:
+        """A: 长程任务健康控制台 — 心跳/自动化/唤醒三块状态聚合。"""
+        hb = getattr(self, "heartbeat", None)
+        heartbeat_status = {}
+        if hb is not None:
+            try:
+                heartbeat_status = hb.status()
+            except Exception:
+                heartbeat_status = {"error": "heartbeat unavailable"}
+        # 自动化任务状态: 启用数 / 近期失败 / 卡死候选 (run 很久无成功)。
+        tasks = []
+        try:
+            tasks = self.task_store.list()
+        except Exception:
+            tasks = []
+        task_status = {
+            "total": len(tasks),
+            "enabled": sum(1 for t in tasks if t.enabled),
+            "failed_recent": sum(
+                1 for t in tasks if t.last_status == "error" and t.last_run
+            ),
+            "run_count_total": sum(t.run_count for t in tasks),
+        }
+        # self-wake: pending / due wakes。
+        wake_status = {"pending": 0, "due": 0}
+        try:
+            wakes = self.wakes.pending()
+            wake_status["pending"] = len(wakes)
+            wake_status["due"] = len(self.wakes.due())
+        except Exception:
+            pass
+        return {
+            "heartbeat": heartbeat_status,
+            "automation": task_status,
+            "wakes": wake_status,
+            "detection_time_seconds": (
+                heartbeat_status.get("detection_time_seconds") if heartbeat_status else None
+            ),
+        }
+
+    def longrun_telemetry(self, limit: int = 20) -> dict[str, Any]:
+        """B: 运行遥测聚合 — 全局降级事件流 + 收敛报告历史对比。"""
+        degs = []
+        convs = []
+        try:
+            degs = self.orchestration_store.list_degradations()
+            runs = self.orchestration_store.list_runs(limit=limit)
+            for r in runs:
+                run = self.orchestration_store.get_run(r["run_id"])
+                if not run:
+                    continue
+                # 从事件流提取 convergence_report。
+                for ev in run.get("events") or []:
+                    if ev["kind"] == "convergence_report":
+                        convs.append(
+                            {
+                                "run_id": run["run_id"],
+                                "intent": run["intent"],
+                                "status": run["status"],
+                                "report": ev["payload"],
+                            }
+                        )
+                        break
+        except Exception:
+            logger.exception("longrun telemetry aggregation failed")
+        return {"degradations": degs, "convergence_history": convs}
+
+    def longrun_checkpoints(self) -> dict[str, Any]:
+        """C: 检查点浏览器 — 列出各会话检查点链 + 存储开销。"""
+        out: list[dict[str, Any]] = []
+        try:
+            for rec in self.session_store.list():
+                sid = rec.session_id
+                try:
+                    n_msgs = self.session_store._count(sid)
+                except Exception:
+                    n_msgs = rec.message_count
+                out.append(
+                    {
+                        "session_id": sid,
+                        "title": rec.title or sid,
+                        "message_count": n_msgs,
+                        "archived": self.session_store._archive_file(sid).exists(),
+                    }
+                )
+        except Exception:
+            logger.exception("longrun checkpoint listing failed")
+        return {"sessions": out}
+
+    def longrun_checkpoint_detail(self, session_id: str) -> dict[str, Any]:
+        """C: 单会话检查点链详情 (七层粒度时间线)。"""
+        try:
+            cp_path = self._checkpoint_db_path()
+            if cp_path is None:
+                return {"ok": False, "error": "no checkpoint store configured"}
+            from ..checkpoint import FractalCheckpoint
+
+            cp = FractalCheckpoint(cp_path)
+            try:
+                chain = cp.list_checkpoints(session_id)
+                latest = cp.restore_latest(session_id)
+                return {
+                    "ok": True,
+                    "session_id": session_id,
+                    "chain": chain,
+                    "count": len(chain),
+                    "latest_restorable": latest is not None,
+                }
+            finally:
+                cp.close()
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)}
+
+    def longrun_checkpoint_rollback(self, session_id: str) -> dict[str, Any]:
+        """② 备份一键回滚: 从 ``backup:{sid}`` 检查点恢复会话 (撤销上次真实恢复)。
+
+        读取恢复前自动备份的检查点 (含 ``restore_backup_of`` 标记), 把其中
+        消息写回会话存储; 无备份时报错。返回被回滚的消息数与备份摘要。
+        """
+        import time as _t
+
+        cp_path = self._checkpoint_db_path()
+        if cp_path is None:
+            return {"ok": False, "error": "no checkpoint store configured"}
+        from ..checkpoint import FractalCheckpoint
+        from ..sessions import SessionRecord
+
+        backup_key = f"backup:{session_id}"
+        cp = FractalCheckpoint(cp_path)
+        try:
+            t0 = _t.perf_counter()
+            backup = cp.restore_latest(backup_key)
+            restore_ms = (_t.perf_counter() - t0) * 1000
+            if backup is None or backup.get("restore_backup_of") != session_id:
+                return {
+                    "ok": False,
+                    "error": f"session {session_id} has no restore backup (run apply-restore first)",
+                }
+            msgs = backup.get("messages")
+            if not isinstance(msgs, list):
+                return {"ok": False, "error": "backup has no messages"}
+            try:
+                existing = self.session_store.load(session_id)
+                record = existing if existing is not None else SessionRecord(
+                    session_id=session_id,
+                    workspace=self.default_workspace or ".",
+                    model=backup.get("model") or "cowork",
+                    mode=backup.get("mode") or "code",
+                    messages=[],
+                )
+                record.messages = list(msgs)
+                record.message_count = len(msgs)
+                self.session_store.save(record)
+                # ③ 操作审计: 记录回滚动作。
+                self._audit_action(
+                    "checkpoint_rollback",
+                    f"回滚会话 {session_id} 到恢复前备份 ({len(msgs)} 条消息)",
+                    task_id=session_id,
+                )
+                # 回滚成功 → 标记聚合告警已解决 (若该会话对应卡死任务)。
+                try:
+                    if getattr(self, "alert_store", None) is not None:
+                        self.alert_store.resolve(session_id)
+                except Exception:
+                    pass
+                return {
+                    "ok": True,
+                    "session_id": session_id,
+                    "rolled_back_messages": len(msgs),
+                    "restore_ms": round(restore_ms, 2),
+                    "backup_key": backup_key,
+                }
+            except Exception as exc:
+                return {"ok": False, "error": f"rollback write failed: {exc}"}
+        finally:
+            cp.close()
+
+    def longrun_checkpoint_restore(self, session_id: str, *, apply: bool = False) -> dict[str, Any]:
+        """C: 检查点恢复 — 从最新检查点恢复会话状态并返回摘要。
+
+        两种模式:
+          * ``apply=False`` (默认, 演练): 只读 — 验证恢复路径可用 + 返回恢复
+            出的状态概况 (消息数/任务数/结果/耗时), 不写回任何存储;
+          * ``apply=True`` (真实恢复): 把检查点消息写回 ``ConversationStore``
+            (该会话的活跃 .jsonl + 索引), 会话引擎下次加载即恢复到检查点状态。
+        返回摘要含 ``applied`` 标记。
+        """
+        import time as _t
+
+        cp_path = self._checkpoint_db_path()
+        if cp_path is None:
+            return {"ok": False, "error": "no checkpoint store configured"}
+        from ..checkpoint import FractalCheckpoint
+        from ..sessions import SessionRecord
+
+        cp = FractalCheckpoint(cp_path)
+        try:
+            t0 = _t.perf_counter()
+            state = cp.restore_latest(session_id)
+            restore_ms = (_t.perf_counter() - t0) * 1000
+            if state is None:
+                return {
+                    "ok": False,
+                    "error": f"session {session_id} has no restorable checkpoint",
+                }
+            msgs = state.get("messages")
+            tasks = state.get("tasks")
+            summary = {
+                "messages": len(msgs) if isinstance(msgs, list) else None,
+                "tasks": len(tasks) if isinstance(tasks, list) else None,
+                "result": state.get("result"),
+                "phase": state.get("phase"),
+                "keys": sorted(state.keys()),
+            }
+            applied = False
+            backup_seq = None
+            if apply and isinstance(msgs, list):
+                # 真实恢复: 先自动备份当前会话 (可回滚), 再写回会话存储。
+                try:
+                    existing = self.session_store.load(session_id)
+                    if existing is not None:
+                        # 备份: 把当前会话消息存为检查点 (n_layer=1 full 粒度,
+                        # 保留全量消息供回滚; 标记 restore_backup_of)。
+                        backup_state = {
+                            "messages": list(existing.messages),
+                            "backup": True,
+                            "restore_backup_of": session_id,
+                            "result": "pre-restore backup",
+                        }
+                        backup_seq = cp.save_checkpoint(
+                            f"backup:{session_id}", backup_state, n_layer=1
+                        )
+                    record = existing if existing is not None else SessionRecord(
+                        session_id=session_id,
+                        workspace=self.default_workspace or ".",
+                        model=state.get("model") or "cowork",
+                        mode=state.get("mode") or "code",
+                        messages=[],
+                    )
+                    record.messages = list(msgs)
+                    record.message_count = len(msgs)
+                    self.session_store.save(record)
+                    applied = True
+                    # ③ 操作审计: 记录真实恢复动作。
+                    self._audit_action(
+                        "checkpoint_apply_restore",
+                        f"从检查点真实恢复会话 {session_id} ({len(msgs)} 条消息)",
+                        task_id=session_id,
+                    )
+                except Exception as exc:
+                    return {"ok": False, "error": f"apply failed: {exc}", "summary": summary}
+            return {
+                "ok": True,
+                "session_id": session_id,
+                "restore_ms": round(restore_ms, 2),
+                "applied": applied,
+                "backup_seq": backup_seq,
+                "backup_key": f"backup:{session_id}" if applied and backup_seq else None,
+                "summary": summary,
+            }
+        finally:
+            cp.close()
+
+    def longrun_storage(self) -> dict[str, Any]:
+        """D: 存储健康 — 会话存储占用 / 归档效果 / 记忆库规模。"""
+        import sqlite3 as _sqlite3
+
+        conv_total_bytes = 0
+        archived_count = 0
+        archive_bytes = 0
+        top_sessions: list[dict[str, Any]] = []
+        try:
+            conv_dir = self.session_store.conv_dir
+            for f in conv_dir.glob("*.jsonl"):
+                size = f.stat().st_size
+                conv_total_bytes += size
+                top_sessions.append(
+                    {
+                        "session_id": f.stem,
+                        "jsonl_bytes": size,
+                        "archived": (conv_dir / f"{f.stem}.pisano").exists(),
+                    }
+                )
+            for f in conv_dir.glob("*.pisano"):
+                archive_bytes += f.stat().st_size
+                archived_count += 1
+            top_sessions.sort(key=lambda x: x["jsonl_bytes"], reverse=True)
+        except Exception:
+            logger.exception("longrun storage scan failed")
+        # 记忆库规模。
+        memory_info: dict[str, Any] = {"count": 0, "stale": 0}
+        try:
+            items = self.memory_store.list(include_stale=True)
+            memory_info["count"] = len(items)
+            memory_info["stale"] = sum(1 for it in items if it.stale)
+        except Exception:
+            pass
+        return {
+            "sessions": {
+                "count": len(top_sessions),
+                "jsonl_total_bytes": conv_total_bytes,
+                "archived_sessions": archived_count,
+                "archive_bytes": archive_bytes,
+                "top": top_sessions[:20],
+            },
+            "memory": memory_info,
+        }
+
+    def longrun_maintenance(self, *, dry_run: bool = False) -> dict[str, Any]:
+        """A: 一键维护 — 记忆维护 + 会话定期归档 (7x24 突破三)。"""
+        return self.memory_maintenance(dry_run=dry_run)
+
+    def _checkpoint_db_path(self) -> Optional[Path]:
+        """7x24 检查点库路径: 默认 ``<base>/.qunwork/checkpoints.db`` 或首个
+        工作区的 .qunwork。缺省状态库路径存在时返回 None。"""
+        base = getattr(self, "base_dir", None)
+        if base is not None:
+            cand = Path(base) / ".qunwork" / "checkpoints.db"
+            if cand.exists():
+                return cand
+        ws = self.default_workspace
+        if ws:
+            cand = Path(ws) / ".qunwork" / "checkpoints.db"
+            if cand.exists():
+                return cand
+        return None
 
     # -- Refine 机制 (蜂群经验进化闭环, 对标 Prime Agent Continual Harness) ---
     def _harness(self, workspace: Optional[str] = None) -> Any:
@@ -6043,6 +7154,7 @@ class SessionManager:
 
         ws = self.resolve_workspace(workspace) or self.default_workspace or "."
         return HarnessStore(Path(ws) / ".qunwork")
+
 
     def list_swarm_lessons(
         self, *, workspace: Optional[str] = None, kind: Optional[str] = None, limit: int = 50

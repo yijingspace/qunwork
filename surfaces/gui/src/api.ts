@@ -1245,6 +1245,25 @@ export async function importTeamPackage(
   return await res.json();
 }
 
+export interface OrchestrationDegradation {
+  task_id: string;
+  level: number;
+  action: string;
+  fidelity: number;
+  error?: string;
+  ts: number;
+}
+
+export interface ConvergenceReport {
+  gap: number;
+  theoretical_rounds: number;
+  iterations: number;
+  convergence_curve: number[];
+  final_convergence: number;
+  converged: boolean;
+  stalled: boolean;
+}
+
 export interface OrchestrationRunSnapshot {
   ok: boolean;
   error?: string;
@@ -1255,6 +1274,8 @@ export interface OrchestrationRunSnapshot {
   created_at?: number;
   updated_at?: number;
   events: { kind: string; payload: Record<string, unknown> }[];
+  // 7x24 长程任务: 降级轨迹 (突破五) + 收敛报告 (突破二)。
+  degradations?: OrchestrationDegradation[];
 }
 
 export async function getOrchestrateRun(runId: string): Promise<OrchestrationRunSnapshot> {
@@ -1274,6 +1295,466 @@ export interface OrchestrationHistoryItem {
 
 export async function getOrchestrateHistory(): Promise<{ runs: OrchestrationHistoryItem[] }> {
   const res = await fetch(`${httpBase()}/v1/orchestrate/history`);
+  return await res.json();
+}
+
+// ── 7x24 长程任务管理 (健康控制台 / 遥测 / 检查点 / 存储) ────────────────────
+
+export interface LongrunHealth {
+  heartbeat: {
+    tasks: number;
+    alive: string[];
+    unhealthy: string[];
+    detection_time_seconds?: number;
+  };
+  automation: {
+    total: number;
+    enabled: number;
+    failed_recent: number;
+    run_count_total: number;
+  };
+  wakes: { pending: number; due: number };
+  detection_time_seconds?: number;
+}
+
+export interface LongrunTelemetry {
+  degradations: OrchestrationDegradation[];
+  convergence_history: {
+    run_id: string;
+    intent: string;
+    status: string;
+    report: ConvergenceReport;
+  }[];
+}
+
+export interface LongrunCheckpointSession {
+  session_id: string;
+  title: string;
+  message_count: number;
+  archived: boolean;
+}
+
+export interface LongrunCheckpointDetail {
+  ok: boolean;
+  error?: string;
+  session_id?: string;
+  chain?: {
+    seq: number;
+    n_layer: number;
+    granularity: string;
+    created_at: number;
+    expires_at: number | null;
+  }[];
+  count?: number;
+  latest_restorable?: boolean;
+}
+
+export interface LongrunCheckpointRestore {
+  ok: boolean;
+  error?: string;
+  session_id?: string;
+  restore_ms?: number;
+  applied?: boolean;
+  backup_seq?: string | null;
+  backup_key?: string | null;
+  rolled_back_messages?: number;
+  summary?: {
+    messages?: number | null;
+    tasks?: number | null;
+    result?: string | null;
+    phase?: string | null;
+    keys?: string[];
+  };
+}
+
+/** ③ 告警聚合条目 (同任务连续卡死合并)。 */
+export interface LongrunAlertAggregation {
+  id: number;
+  task_id: string;
+  kind: string;
+  level: string;
+  started_at: number;
+  updated_at: number;
+  count: number;
+  resolved: number;
+  silenced_until?: number | null;
+}
+
+/** ② 聚合历史统计: 每日趋势。 */
+export interface AggregationStats {
+  ok: boolean;
+  error?: string;
+  days: { alerts: number; resolved: number; tasks: number }[];
+  top_tasks: [string, number][];
+}
+
+/** ③ 操作审计条目。 */
+export interface LongrunAuditEntry {
+  id: number;
+  kind: string;
+  task_id?: string | null;
+  message: string;
+  ts: number;
+  payload?: Record<string, unknown>;
+}
+
+/** ① 告警渠道配置 (脱敏)。 */
+export interface AlertChannelConfig {
+  enabled: boolean;
+  levels?: string[];
+  smtp_host?: string;
+  smtp_port?: number;
+  username?: string;
+  password?: string;
+  to?: string[];
+  from?: string;
+  use_tls?: boolean;
+  bot_token?: string;
+  chat_id?: string;
+  webhook_url?: string;
+  secret?: string;
+}
+
+/** ① 告警历史条目。 */
+export interface LongrunAlert {
+  id: number;
+  kind: string;
+  task_id?: string | null;
+  message: string;
+  ts: number;
+  payload?: Record<string, unknown>;
+}
+
+/** /ws/events 推送的 7x24 告警事件。 */
+export interface LongrunAlertEvent {
+  type: "7x24_alert";
+  payload: {
+    kind: string;
+    task_id?: string;
+    message: string;
+    ts: number;
+  };
+}
+
+export interface LongrunStorage {
+  sessions: {
+    count: number;
+    jsonl_total_bytes: number;
+    archived_sessions: number;
+    archive_bytes: number;
+    top: { session_id: string; jsonl_bytes: number; archived: boolean }[];
+  };
+  memory: { count: number; stale: number };
+}
+
+export async function getLongrunHealth(): Promise<LongrunHealth> {
+  const res = await fetch(`${httpBase()}/v1/7x24/health`);
+  return await res.json();
+}
+
+export async function getLongrunTelemetry(limit = 20): Promise<LongrunTelemetry> {
+  const res = await fetch(`${httpBase()}/v1/7x24/telemetry?limit=${limit}`);
+  return await res.json();
+}
+
+export async function getLongrunCheckpoints(): Promise<{ sessions: LongrunCheckpointSession[] }> {
+  const res = await fetch(`${httpBase()}/v1/7x24/checkpoints`);
+  return await res.json();
+}
+
+export async function getLongrunCheckpointDetail(
+  sessionId: string,
+): Promise<LongrunCheckpointDetail> {
+  const res = await fetch(`${httpBase()}/v1/7x24/checkpoints/${encodeURIComponent(sessionId)}`);
+  return await res.json();
+}
+
+export async function restoreLongrunCheckpoint(
+  sessionId: string,
+  apply = false,
+): Promise<LongrunCheckpointRestore> {
+  const res = await fetch(
+    `${httpBase()}/v1/7x24/checkpoints/${encodeURIComponent(sessionId)}/restore${apply ? "?apply=true" : ""}`,
+    { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" },
+  );
+  return await res.json();
+}
+
+export async function rollbackLongrunCheckpoint(
+  sessionId: string,
+): Promise<LongrunCheckpointRestore> {
+  const res = await fetch(
+    `${httpBase()}/v1/7x24/checkpoints/${encodeURIComponent(sessionId)}/rollback`,
+    { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" },
+  );
+  return await res.json();
+}
+
+export async function getLongrunAlertAggregations(
+  limit = 50,
+): Promise<{ ok: boolean; aggregations: LongrunAlertAggregation[]; count: number; error?: string }> {
+  const res = await fetch(`${httpBase()}/v1/7x24/alerts/aggregations?limit=${limit}`);
+  return await res.json();
+}
+
+export async function getLongrunAggregationStats(
+  days = 14,
+): Promise<AggregationStats> {
+  const res = await fetch(`${httpBase()}/v1/7x24/alerts/aggregations/stats?days=${days}`);
+  return await res.json();
+}
+
+export async function getLongrunAudit(
+  limit = 50,
+): Promise<{ ok: boolean; audit: LongrunAuditEntry[]; count: number; error?: string }> {
+  const res = await fetch(`${httpBase()}/v1/7x24/audit?limit=${limit}`);
+  return await res.json();
+}
+
+/** ① 审计导出 (CSV/JSON)。返回 {ok, content, format} 或直接文本。 */
+export async function exportLongrunAudit(
+  format: "csv" | "json" = "json",
+  limit = 500,
+): Promise<string> {
+  const res = await fetch(`${httpBase()}/v1/7x24/audit/export?format=${format}&limit=${limit}`);
+  return await res.text();
+}
+
+/** ② 告警设置 (静默阈值/时长 + 归档保留天数 + 健康分阈值 + 探针历史保留窗口)。 */
+export interface AlertSettings {
+  silence_after: number;
+  silence_seconds: number;
+  archive_keep_days?: number;
+  /** 渠道健康分阈值 (good/warn 边界, 0-100, warn <= good)。 */
+  health_thresholds?: { good: number; warn: number };
+  /** 探针历史保留窗口: 超过 keep_days 天的记录清理。 */
+  probe_history_keep_days?: number;
+  /** 探针历史保留窗口: 最多保留 keep_count 条。 */
+  probe_history_keep_count?: number;
+}
+
+export interface ProbeHistoryPruneResult {
+  ok: boolean;
+  removed?: number;
+  kept?: number;
+  keep_days?: number;
+  keep_count?: number;
+  error?: string;
+}
+
+/** ③ 手动触发探针历史清理 (按配置保留窗口)。 */
+export async function pruneProbeHistory(): Promise<ProbeHistoryPruneResult> {
+  const res = await fetch(`${httpBase()}/v1/7x24/probe-history/prune`, { method: "POST" });
+  return await res.json();
+}
+
+export async function getLongrunAlertSettings(): Promise<{ ok: boolean; settings: AlertSettings; error?: string }> {
+  const res = await fetch(`${httpBase()}/v1/7x24/alert-settings`);
+  return await res.json();
+}
+
+export async function setLongrunAlertSettings(
+  settings: Partial<AlertSettings>,
+): Promise<{ ok: boolean; settings: AlertSettings; error?: string }> {
+  const res = await fetch(`${httpBase()}/v1/7x24/alert-settings`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ settings }),
+  });
+  return await res.json();
+}
+
+/** ③ 跨周对比: 本周 vs 上周每日告警数。 */
+export interface WeekCompare {
+  ok: boolean;
+  error?: string;
+  labels: string[];
+  this_week: number[];
+  last_week: number[];
+  total_this: number;
+  total_last: number;
+  delta_pct: number;
+}
+
+export async function getLongrunWeekCompare(): Promise<WeekCompare> {
+  const res = await fetch(`${httpBase()}/v1/7x24/alerts/aggregations/week-compare`);
+  return await res.json();
+}
+
+export async function getLongrunAlerts(
+  limit = 50,
+  taskId?: string,
+  since?: number,
+  until?: number,
+): Promise<{ ok: boolean; alerts: LongrunAlert[]; count: number; error?: string }> {
+  const params = new URLSearchParams({ limit: String(limit) });
+  if (taskId) params.set("task_id", taskId);
+  if (since != null) params.set("since", String(since));
+  if (until != null) params.set("until", String(until));
+  const res = await fetch(`${httpBase()}/v1/7x24/alerts?${params.toString()}`);
+  return await res.json();
+}
+
+export async function getLongrunAlertChannels(): Promise<{
+  ok: boolean;
+  channels: Record<string, AlertChannelConfig>;
+  enabled: string[];
+  error?: string;
+}> {
+  const res = await fetch(`${httpBase()}/v1/7x24/alert-channels`);
+  return await res.json();
+}
+
+export async function setLongrunAlertChannels(
+  channels: Record<string, Partial<AlertChannelConfig>>,
+): Promise<{ ok: boolean; channels: Record<string, AlertChannelConfig>; enabled: string[]; error?: string }> {
+  const res = await fetch(`${httpBase()}/v1/7x24/alert-channels`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ channels }),
+  });
+  return await res.json();
+}
+
+export async function testLongrunAlertChannels(): Promise<{
+  ok: boolean;
+  results: Record<string, { ok: boolean; error?: string }>;
+  error?: string;
+}> {
+  const res = await fetch(`${httpBase()}/v1/7x24/alert-channels/test`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: "{}",
+  });
+  return await res.json();
+}
+
+/** ① 渠道健康探针: 各启用渠道连通性 + 延迟。 */
+export async function probeLongrunAlertChannels(): Promise<{
+  ok: boolean;
+  results: Record<string, { ok: boolean; ms?: number; error?: string }>;
+  healthy: string[];
+  error?: string;
+}> {
+  const res = await fetch(`${httpBase()}/v1/7x24/alert-channels/probe`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: "{}",
+  });
+  return await res.json();
+}
+
+/** ② 告警/审计自动归档: 超过 keep_days 天的记录归档。 */
+export async function archiveLongrunAlerts(keepDays = 30): Promise<{
+  ok: boolean;
+  archived: number;
+  kept: number;
+  archived_total?: number;
+  error?: string;
+}> {
+  const res = await fetch(`${httpBase()}/v1/7x24/alerts/archive`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ keep_days: keepDays }),
+  });
+  return await res.json();
+}
+
+/** ① 渠道健康分/历史趋势。 */
+export interface ChannelHealth {
+  ok_count: number;
+  total: number;
+  success_rate: number;
+  health_score: number;
+  rating: "good" | "warn" | "bad";
+  avg_ms?: number | null;
+  last_ts?: number | null;
+  trend: { ts: number; ok: boolean; ms?: number | null }[];
+}
+
+export async function getLongrunChannelHealth(): Promise<{
+  ok: boolean;
+  channels: Record<string, ChannelHealth>;
+  thresholds?: { good: number; warn: number };
+  error?: string;
+}> {
+  const res = await fetch(`${httpBase()}/v1/7x24/channel-health`);
+  return await res.json();
+}
+
+/** ② 导出探针历史 (CSV/JSON)。 */
+export async function exportLongrunChannelHealth(
+  format: "csv" | "json" = "json",
+  limit = 500,
+): Promise<string> {
+  const res = await fetch(`${httpBase()}/v1/7x24/channel-health/export?format=${format}&limit=${limit}`);
+  return await res.text();
+}
+
+/** ② 归档 keep_days 分渠道配置。 */
+export async function getLongrunArchivedAlerts(
+  limit = 50,
+  taskId?: string,
+): Promise<{
+  ok: boolean;
+  archived: LongrunAlert[];
+  count: number;
+  total_archived: number;
+  error?: string;
+}> {
+  const q = taskId ? `?limit=${limit}&task_id=${encodeURIComponent(taskId)}` : `?limit=${limit}`;
+  const res = await fetch(`${httpBase()}/v1/7x24/alerts/archived${q}`);
+  return await res.json();
+}
+
+/** ③ 归档数据恢复: 把一条归档记录恢复到活跃表 (撤销归档)。 */
+export async function restoreLongrunArchivedAlert(
+  archiveId: number,
+): Promise<{ ok: boolean; restored?: LongrunAlert; error?: string }> {
+  const res = await fetch(`${httpBase()}/v1/7x24/alerts/archived/${archiveId}/restore`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: "{}",
+  });
+  return await res.json();
+}
+
+/** ② 探针定时化调度设置。 */
+export interface ProbeSchedule {
+  enabled: boolean;
+  interval_minutes: number;
+  last_probe_ts?: number | null;
+}
+
+export async function getLongrunProbeSchedule(): Promise<{ ok: boolean; schedule: ProbeSchedule; error?: string }> {
+  const res = await fetch(`${httpBase()}/v1/7x24/probe-schedule`);
+  return await res.json();
+}
+
+export async function setLongrunProbeSchedule(
+  schedule: Partial<ProbeSchedule>,
+): Promise<{ ok: boolean; schedule: ProbeSchedule; error?: string }> {
+  const res = await fetch(`${httpBase()}/v1/7x24/probe-schedule`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ schedule }),
+  });
+  return await res.json();
+}
+
+export async function getLongrunStorage(): Promise<LongrunStorage> {
+  const res = await fetch(`${httpBase()}/v1/7x24/storage`);
+  return await res.json();
+}
+
+export async function runLongrunMaintenance(
+  dryRun = false,
+): Promise<Record<string, unknown>> {
+  const res = await fetch(`${httpBase()}/v1/7x24/maintenance`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ dry_run: dryRun }),
+  });
   return await res.json();
 }
 

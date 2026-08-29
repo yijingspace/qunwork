@@ -7,18 +7,60 @@ on: [push, pull_request]
 
 jobs:
   pytest:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python-version: ["3.12", "3.13"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: ${{ matrix.python-version }}
       - name: Install
         run: |
           python -m pip install --upgrade pip
           pip install -e ".[messaging,dev]"
-      - name: Test
-        run: pytest tests -q
+          pip install pytest-cov
+      - name: Test (full suite, coverage)
+        run: pytest tests -q --cov=coworker --cov-report=term-missing --cov-report=xml:coverage.xml --cov-fail-under=60
+      # 7×24 长程任务架构回归 (五大突破 + 管理控制台 + 压力场景)。
+      - name: Test (7×24 long-run suite)
+        run: pytest tests/test_longrun.py tests/test_stress_longrun.py -q
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-${{ matrix.os }}-${{ matrix.python-version }}
+          path: coverage.xml
+
+  # 7×24 突破方案数学模型验证 (分形检查点 / LoopCoop 收敛 / 皮萨诺压缩 /
+  # 蜂巢心跳 / 分形降级 — verify/run_all.py 5 脚本, 全过才绿)。
+  verify-7x24:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python-version: ["3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[messaging,dev]"
+      - name: Verify (five breakthroughs)
+        working-directory: .
+        run: python verify/run_all.py
+      - name: Verify (each script independently)
+        shell: bash
+        run: |
+          for s in verify_checkpoint_fractal verify_convergence_loopcoop \
+                   verify_compress_pisano verify_heartbeat_honeycomb \
+                   verify_degradation_fractal; do
+            python "verify/$s.py"
+          done
 
   gui-unit:
     runs-on: ubuntu-latest
@@ -37,7 +79,10 @@ jobs:
         run: npm test
 
   gui-e2e:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

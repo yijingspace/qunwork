@@ -61,6 +61,7 @@ import { OrganizationView } from "./components/OrganizationView";
 import { MembersView } from "./components/MembersView";
 import { PermissionsView } from "./components/PermissionsView";
 import { UsageTab } from "./components/UsageTab";
+import { LongRunView } from "./components/LongRunView";
 import { ApprovalCard } from "./components/ApprovalCard";
 import { DirectoryRequestCard } from "./components/DirectoryRequestCard";
 import { PlanCard } from "./components/PlanCard";
@@ -225,6 +226,7 @@ export function App() {
     | "members"
     | "permissions"
     | "usage"
+    | "longrun"
   >("session");
   // A remembered Scheduled-detail target must not outlive the surface (see the
   // scheduledOpenId comment above): nav re-entry lands on the list, never a
@@ -1393,6 +1395,8 @@ export function App() {
         permissionsActive={surface === "permissions"}
         onOpenUsage={() => setSurface("usage")}
         usageActive={surface === "usage"}
+        onOpenLongrun={() => setSurface("longrun")}
+        longrunActive={surface === "longrun"}
         collapsed={navCollapsed}
         onCollapse={toggleNav}
         onPeekLeave={() => setNavPeek(false)}
@@ -1433,6 +1437,8 @@ export function App() {
             <UsageTab />
           </div>
         </div>
+      ) : surface === "longrun" ? (
+        <LongRunView onBack={() => setSurface("session")} />
       ) : surface === "persona" ? (
         <PersonaView
           personaId={personaViewId || agent}

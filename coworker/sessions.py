@@ -34,3 +34,8 @@ class SessionRecord:
     # (e.g. origin="slack", origin_label="#general · T0ABCD"). Set once at spawn.
     origin: Optional[str] = None
     origin_label: Optional[str] = None
+    # 7x24 长程任务 (突破方案一): latest fractal checkpoint reference for this
+    # session — set by the FractalCheckpoint engine on every save; lets the
+    # conversation store / resume path locate the nearest recoverable state
+    # after a crash instead of starting from zero (B1: 会话状态无检查点)。
+    checkpoint: Optional[str] = None

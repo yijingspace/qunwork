@@ -24,6 +24,11 @@ class SearchCache:
     def __init__(self, db_path: Path):
         self._db_path = db_path
         self._conn: Optional[sqlite3.Connection] = None
+        # 预创建父目录 — 状态目录可能尚未创建 (COWORKER_STATE_DIR 指向新路径)。
+        try:
+            self._db_path.parent.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            pass
         self._ensure_table()
 
     def _get_conn(self) -> sqlite3.Connection:

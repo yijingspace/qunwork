@@ -21,6 +21,10 @@ from typing import Optional
 KIND_TIMER = "timer"
 KIND_COMPLETION = "completion"
 KIND_EVENT = "event"  # wake when a named connector/webhook event fires (Phase 3)
+# 7x24 长程任务 (突破方案四): wake when a task's heartbeat stalls — the session
+# is re-invoked so the agent can inspect/restart its own stalled work instead of
+# letting it die silently. Fired by the scheduler tick via `heartbeat_stalled()`.
+KIND_HEARTBEAT = "heartbeat"
 
 STATE_PENDING = "pending"
 STATE_DUE = "due"
@@ -96,6 +100,29 @@ class WakeStore:
             self._save()
         return w
 
+    def add_heartbeat(self, session_id: str, *, task_id: str = "", note: str = "") -> Wake:
+        """7x24 (突破四): wake this session when `task_id`'s heartbeat stalls
+        (no pulse within the grace window). The scheduler tick marks these due
+        via `heartbeat_stalled()`; the agent then resumes to inspect the task."""
+        w = Wake(
+            uuid.uuid4().hex,
+            session_id,
+            KIND_HEARTBEAT,
+            job_id=task_id or None,
+            note=note,
+        )
+        with self._lock:
+            self._wakes[w.id] = w
+            self._save()
+        return w
+
+    def heartbeat_stalled(self, task_id: str) -> list[Wake]:
+        """Mark heartbeat wakes for ``task_id`` as due (the task's heart stopped
+        beating — no pulse within the grace window). Returns them."""
+        return self._mark_due(
+            lambda w: w.kind == KIND_HEARTBEAT and w.job_id == task_id
+        )
+
     def due(self, now: Optional[datetime] = None) -> list[Wake]:
         """Timer wakes whose fire time has passed, plus completion/event wakes marked due."""
         now = now or _now()
@@ -109,7 +136,7 @@ class WakeStore:
                 and datetime.fromisoformat(w.fire_at) <= now
             ):
                 out.append(w)
-            elif w.kind in (KIND_COMPLETION, KIND_EVENT) and w.state == STATE_DUE:
+            elif w.kind in (KIND_COMPLETION, KIND_EVENT, KIND_HEARTBEAT) and w.state == STATE_DUE:
                 out.append(w)
         return out
 

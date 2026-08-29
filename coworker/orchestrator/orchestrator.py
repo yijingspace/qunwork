@@ -269,6 +269,11 @@ class Orchestrator:
     # without real progress (no new done task, no changed result, no accepted
     # requeue) before the run is declared stalled instead of spinning forever.
     stall_rounds_threshold: int = 2
+    # 7x24 长程任务 (突破方案二): LoopCoop 收敛监控 — when provided, every
+    # orchestration round records the convergence curve; the final report is
+    # emitted as a "convergence_report" event (谱隙 |λ₂|, 理论收敛轮数, 实测曲线).
+    # None = legacy behaviour (no convergence telemetry).
+    loopcoop: Optional[Any] = None
     _runs: int = field(default=0, init=False)
     _run_seq: int = field(default=0, init=False)
     _last_plan: Optional[Plan] = field(default=None, init=False)
@@ -644,6 +649,15 @@ class Orchestrator:
 
     async def _run(self, intent: str, deadline: Optional[float] = None) -> OrchestrationResult:
         self._emit("run_started", {"intent": intent})
+        # 7x24 长程任务 (突破方案二): 收敛监控器 — 每轮记录收敛度曲线。
+        monitor = self.loopcoop
+        if monitor is None:
+            try:
+                from .convergence import LoopCoopMonitor
+
+                monitor = LoopCoopMonitor()
+            except Exception:
+                monitor = None
         # G2: operator directives accumulate per scheduling round (see while-loop).
         directives: list[str] = []
         # T4: consecutive no-progress rounds → stall (fixed point without completion).
@@ -1043,6 +1057,12 @@ class Orchestrator:
                 t.id: (t.result or "")[:200] for t in plan.tasks if t.result
             }
             results = await asyncio.gather(*(process(t) for t in batch))
+            # 7x24 长程任务 (突破方案二): 每轮记录收敛度 (done+accepted 比例)。
+            if monitor is not None:
+                try:
+                    monitor.record_round(plan)
+                except Exception:
+                    logger.exception("loopcoop record_round failed")
             # T4 convergence guard: a round only "progresses" if something real
             # changed (a new done task, a changed result, or an accepted requeue
             # that flips a task back to pending). Repeated no-op rounds mean the
@@ -1100,6 +1120,13 @@ class Orchestrator:
                 f"(done {sum(1 for t in plan.tasks if t.done)}/{len(plan.tasks)})"
             )
         self._emit("run_completed", {"status": status, "runs": self._runs})
+        # 7x24 长程任务 (突破方案二): 输出收敛报告事件 — 谱隙 |λ₂|、理论轮数、
+        # 实测收敛曲线与最终收敛度。best-effort, 监控失败不影响运行结果。
+        if monitor is not None:
+            try:
+                self._emit("convergence_report", monitor.report())
+            except Exception:
+                logger.exception("convergence_report emit failed")
         result = OrchestrationResult(
             intent=intent,
             plan=plan,

@@ -13,7 +13,9 @@ import {
   orchestrate,
   orchestrateControl,
   type CoordinationReport,
+  type ConvergenceReport,
   type DecisionTraceEntry,
+  type OrchestrationDegradation,
   type OrchestrationHistoryItem,
   type OrchestrationRunSnapshot,
   type SwarmLesson,
@@ -99,9 +101,79 @@ function fmtDuration(sec: number, t: (k: string) => string): string {
   return m > 0 ? `${m}${t("m")}${s}${t("s")}` : `${s}${t("s")}`;
 }
 
+/** 7x24 长程任务 (突破二): LoopCoop 收敛曲线 — SVG 折线, 展示每轮收敛度。 */
+function ConvergenceCurve({ report }: { report: ConvergenceReport }) {
+  const curve = report.convergence_curve ?? [];
+  const W = 280;
+  const H = 64;
+  const PAD = 6;
+  const maxV = Math.max(1, ...curve, report.final_convergence ?? 0);
+  const pts = curve
+    .map((v, i) => {
+      const x = curve.length <= 1 ? PAD : PAD + (i / (curve.length - 1)) * (W - 2 * PAD);
+      const y = H - PAD - (v / maxV) * (H - 2 * PAD);
+      return `${x.toFixed(1)},${y.toFixed(1)}`;
+    })
+    .join(" ");
+  return (
+    <div className="mb-3">
+      <div className="flex items-center gap-2 text-[11px] text-muted mb-1">
+        <span>🔁 LoopCoop</span>
+        <span className="text-faint">|λ₂|={report.gap?.toFixed(4) ?? "?"}</span>
+        <span className="text-faint">· 理论 {report.theoretical_rounds ?? "?"} 轮 → 99%</span>
+        <span className="text-faint">· 实测 {report.iterations ?? "?"} 轮</span>
+        <span className={report.converged ? "text-emerald-600" : "text-amber-600"}>
+          {report.converged ? "✓ 收敛" : report.stalled ? "⚠ 停滞" : "… 进行中"}
+        </span>
+      </div>
+      {curve.length >= 2 ? (
+        <svg width={W} height={H} viewBox={`0 0 ${W} ${H}`} className="shrink-0" data-testid="convergence-curve">
+          <line x1={PAD} y1={H - PAD} x2={W - PAD} y2={H - PAD} stroke="#475569" strokeWidth="1" />
+          <line x1={PAD} y1={PAD} x2={PAD} y2={H - PAD} stroke="#475569" strokeWidth="1" />
+          <polyline points={pts} fill="none" stroke="#2563eb" strokeWidth="1.5" />
+          {curve.map((v, i) => {
+            const x = PAD + (i / (curve.length - 1)) * (W - 2 * PAD);
+            const y = H - PAD - (v / maxV) * (H - 2 * PAD);
+            return <circle key={i} cx={x} cy={y} r="2" fill="#2563eb" />;
+          })}
+        </svg>
+      ) : (
+        <div className="text-[11px] text-faint">{(report.final_convergence ?? 0).toFixed(2)}</div>
+      )}
+    </div>
+  );
+}
+
+/** 7x24 长程任务 (突破五): 分形降级轨迹 — L1→L6 降级链一览。 */
+function DegradationTrace({ rows }: { rows: OrchestrationDegradation[] }) {
+  const actionLabel: Record<string, string> = {
+    continue: "继续重试",
+    downgrade_model: "降模型",
+    narrow_scope: "缩范围",
+    sync_mode: "同步(人工)",
+    checkpoint_pause: "检查点暂停",
+    alert_archive: "告警归档",
+  };
+  return (
+    <div className="mt-1">
+      <div className="text-[10.5px] uppercase tracking-wide text-faint mb-1.5">分形降级轨迹</div>
+      <div className="space-y-1">
+        {rows.map((d, i) => (
+          <div key={i} className="flex items-center gap-2 text-[11px] font-mono">
+            <span className="text-faint shrink-0">L{d.level}</span>
+            <span className="text-muted shrink-0 w-20">{actionLabel[d.action] ?? d.action}</span>
+            <span className="text-faint shrink-0 w-24 truncate">{d.task_id}</span>
+            <span className="text-faint shrink-0">保真 {((d.fidelity ?? 0) * 100).toFixed(0)}%</span>
+            {d.error && <span className="text-faint truncate flex-1">{d.error}</span>}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 /** Simple vertical DAG: each task is a row; dependency arrows link parent -> child. */
-function DAGDiagram({ tasks }: { tasks: TaskView[] }) {
-  const ROW = 64;
+function DAGDiagram({ tasks }: { tasks: TaskView[] }) {  const ROW = 64;
   const PAD = 26;
   const W = 280;
   const H = Math.max(ROW + PAD * 2, tasks.length * ROW + PAD * 2);
@@ -203,6 +275,9 @@ export function SwarmView({ onBack, workspace }: { onBack: () => void; workspace
   const [reportBusy, setReportBusy] = useState(false);
   // 13 Agent 影子模式: 决策回放时间轴 (worker 报告的工具选择/权限/scope/审批)
   const [decisions, setDecisions] = useState<SwarmDecisionRow[]>([]);
+  // 7x24 长程任务: 收敛曲线 (突破二 convergence_report) + 降级轨迹 (突破五)
+  const [convergence, setConvergence] = useState<ConvergenceReport | null>(null);
+  const [degradations, setDegradations] = useState<OrchestrationDegradation[]>([]);
   const mounted = useRef(true);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -336,6 +411,9 @@ export function SwarmView({ onBack, workspace }: { onBack: () => void; workspace
         }
       } else if (ev.kind === "governance") {
         gov.push(`[step ${p.step}] ${p.action}: ${p.reason}`);
+      } else if (ev.kind === "convergence_report") {
+        // 7x24 长程任务 (突破二): LoopCoop 收敛报告 — 谱隙/理论轮数/收敛曲线。
+        setConvergence(p as unknown as ConvergenceReport);
       } else if (ev.kind === "task_requeue_waiting") {
         // G2: reviewer rejected — deck shows an approve/reject card for this task.
         setRequeues((prev) => {
@@ -350,6 +428,8 @@ export function SwarmView({ onBack, workspace }: { onBack: () => void; workspace
     setThoughts(thoughts);
     setGovernance(gov);
     setDecisions(decisionsAcc);
+    // 7x24 长程任务 (突破五): 降级轨迹直接来自 run snapshot。
+    setDegradations(snap.degradations ?? []);
   };
 
   // -- G2 command deck --------------------------------------------------------
@@ -445,6 +525,8 @@ export function SwarmView({ onBack, workspace }: { onBack: () => void; workspace
     setThoughts([]);
     setGovernance([]);
     setDecisions([]);
+    setConvergence(null);
+    setDegradations([]);
     setFinalReport("");
     setStartedAt(Date.now());
     setElapsed(0);
@@ -969,6 +1051,17 @@ export function SwarmView({ onBack, workspace }: { onBack: () => void; workspace
             {governance.map((g, i) => (
               <div key={i} className="text-[11px] text-faint font-mono mb-0.5">{g}</div>
             ))}
+          </div>
+        )}
+
+        {/* 7x24 长程任务: LoopCoop 收敛曲线 (突破二) + 分形降级轨迹 (突破五) */}
+        {(convergence || degradations.length > 0) && (
+          <div className="mb-4 rounded-lg border border-line bg-panel p-3">
+            <div className="text-[11px] uppercase tracking-[0.07em] text-faint font-semibold mb-2">
+              {t("7x24 long-run telemetry")}
+            </div>
+            {convergence && <ConvergenceCurve report={convergence} />}
+            {degradations.length > 0 && <DegradationTrace rows={degradations} />}
           </div>
         )}
 

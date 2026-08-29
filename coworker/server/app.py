@@ -1518,6 +1518,191 @@ def create_app(manager: SessionManager) -> FastAPI:
         """Stigmergic load field: busy signals per executor role + total load."""
         return manager.pheromone_status()
 
+    # -- 7x24 长程任务管理 (健康控制台 / 遥测 / 检查点 / 存储) -------------------
+    @app.get("/v1/7x24/health")
+    def longrun_health() -> dict[str, Any]:
+        """A: 长程任务健康控制台 — 心跳/自动化/唤醒状态总览。"""
+        return manager.longrun_health()
+
+    @app.get("/v1/7x24/telemetry")
+    def longrun_telemetry(limit: int = 20) -> dict[str, Any]:
+        """B: 运行遥测聚合 — 全局降级事件流 + 收敛报告历史对比。"""
+        return manager.longrun_telemetry(limit=limit)
+
+    @app.get("/v1/7x24/alerts")
+    def longrun_alerts(
+        limit: int = 50,
+        task_id: Optional[str] = None,
+        since: Optional[float] = None,
+        until: Optional[float] = None,
+    ) -> dict[str, Any]:
+        """① 告警历史: 落库可回溯, 可按任务/时间范围 (since/until, epoch 秒) 过滤。"""
+        return manager.longrun_alerts(limit=limit, task_id=task_id, since=since, until=until)
+
+    @app.get("/v1/7x24/alert-channels")
+    def longrun_alert_channels() -> dict[str, Any]:
+        """① 告警多渠道通知配置 (脱敏)。"""
+        return manager.longrun_alert_channels()
+
+    @app.put("/v1/7x24/alert-channels")
+    def set_longrun_alert_channels(body: dict) -> dict[str, Any]:
+        """① 保存告警渠道配置 (邮件/Telegram/飞书/钉钉/企业微信)。"""
+        return manager.set_longrun_alert_channels((body or {}).get("channels"))
+
+    @app.post("/v1/7x24/alert-channels/test")
+    def test_longrun_alert_channels() -> dict[str, Any]:
+        """① 测试告警渠道: 向每个启用渠道发测试消息。"""
+        return manager.test_longrun_alert_channels()
+
+    @app.post("/v1/7x24/alert-channels/probe")
+    def longrun_channel_probe() -> dict[str, Any]:
+        """① 告警渠道健康探针: 各启用渠道连通性 + 延迟 (落库历史)。"""
+        return manager.longrun_channel_probe()
+
+    @app.get("/v1/7x24/channel-health")
+    def longrun_channel_health() -> dict[str, Any]:
+        """① 渠道健康分/历史趋势 (probe_history, 阈值可配)。"""
+        return manager.longrun_channel_health()
+
+    @app.get("/v1/7x24/channel-health/export")
+    def longrun_channel_health_export(format: str = "json", limit: int = 500):
+        """② 导出探针历史 (CSV/JSON)。"""
+        from fastapi.responses import PlainTextResponse
+
+        content = manager.longrun_channel_health_export(fmt=format)
+        if format == "csv":
+            return PlainTextResponse(
+                content,
+                media_type="text/csv",
+                headers={"Content-Disposition": 'attachment; filename="qunwork-channel-health.csv"'},
+            )
+        return json.loads(content)
+
+    @app.post("/v1/7x24/alerts/archive")
+    def longrun_alert_archive(body: dict) -> dict[str, Any]:
+        """② 告警/审计自动归档: 超过 keep_days 天的记录归档 (默认 30)。"""
+        keep_days = int((body or {}).get("keep_days", 30))
+        return manager.longrun_alert_archive(keep_days=keep_days)
+
+    @app.get("/v1/7x24/alerts/archived")
+    def longrun_archived_alerts(
+        limit: int = 50, task_id: Optional[str] = None
+    ) -> dict[str, Any]:
+        """③ 归档数据查询: 从 alerts_archive 查历史 (可回溯)。"""
+        return manager.longrun_archived_alerts(limit=limit, task_id=task_id)
+
+    @app.post("/v1/7x24/alerts/archived/{archive_id}/restore")
+    def longrun_restore_archived_alert(archive_id: int) -> dict[str, Any]:
+        """③ 归档数据恢复: 把一条归档记录恢复到活跃表 (撤销归档)。"""
+        return manager.longrun_restore_archived_alert(archive_id)
+
+    @app.get("/v1/7x24/probe-schedule")
+    def longrun_probe_schedule() -> dict[str, Any]:
+        """② 探针定时化: 周期自动探针调度设置。"""
+        return manager.longrun_probe_schedule()
+
+    @app.put("/v1/7x24/probe-schedule")
+    def set_longrun_probe_schedule(body: dict) -> dict[str, Any]:
+        """② 保存探针调度 (启用 + 间隔分钟)。"""
+        return manager.set_longrun_probe_schedule((body or {}).get("schedule"))
+
+    @app.post("/v1/7x24/probe-schedule/run")
+    def run_longrun_scheduled_probe() -> dict[str, Any]:
+        """② 手动触发一次周期探针 (失败渠道落库告警)。"""
+        return manager.run_scheduled_probe()
+
+    @app.post("/v1/7x24/probe-history/prune")
+    def longrun_probe_history_prune() -> dict[str, Any]:
+        """③ 手动触发探针历史清理 (按配置保留窗口: 天数/条数)。"""
+        return manager.longrun_probe_history_prune()
+
+    @app.get("/v1/7x24/checkpoints")
+    def longrun_checkpoints() -> dict[str, Any]:
+        """C: 检查点浏览器 — 会话列表 (消息数/是否归档)。"""
+        return manager.longrun_checkpoints()
+
+    @app.get("/v1/7x24/checkpoints/{session_id}")
+    def longrun_checkpoint_detail(session_id: str) -> dict[str, Any]:
+        """C: 单会话检查点链 (七层粒度时间线)。"""
+        return manager.longrun_checkpoint_detail(session_id)
+
+    @app.post("/v1/7x24/checkpoints/{session_id}/restore")
+    def longrun_checkpoint_restore(session_id: str, apply: bool = False) -> dict[str, Any]:
+        """C: 检查点恢复 — 演练 (默认只读) 或真实恢复 (apply=true 写回会话)。"""
+        return manager.longrun_checkpoint_restore(session_id, apply=apply)
+
+    @app.post("/v1/7x24/checkpoints/{session_id}/rollback")
+    def longrun_checkpoint_rollback(session_id: str) -> dict[str, Any]:
+        """② 备份一键回滚: 从 backup:{sid} 恢复 (撤销上次真实恢复)。"""
+        return manager.longrun_checkpoint_rollback(session_id)
+
+    @app.get("/v1/7x24/alerts/aggregations")
+    def longrun_alert_aggregations(
+        resolved: Optional[bool] = None, limit: int = 50
+    ) -> dict[str, Any]:
+        """③ 告警聚合: 同任务连续卡死合并为持续告警 (次数/时长/解决状态)。"""
+        return manager.longrun_alert_aggregations(resolved=resolved, limit=limit)
+
+    @app.get("/v1/7x24/alerts/aggregations/stats")
+    def longrun_aggregation_stats(days: int = 14) -> dict[str, Any]:
+        """② 聚合历史统计: 每日告警趋势 (快照 + 最近 days 天)。"""
+        return manager.longrun_aggregation_stats(days=days)
+
+    @app.get("/v1/7x24/audit")
+    def longrun_audit(limit: int = 50) -> dict[str, Any]:
+        """③ 操作审计: 回滚/恢复/渠道变更等管理操作记录。"""
+        return manager.longrun_audit(limit=limit)
+
+    @app.get("/v1/7x24/audit/export")
+    def longrun_audit_export(format: str = "json", limit: int = 500):
+        """① 审计导出 (CSV/JSON)。返回文本/JSON 内容。"""
+        store = getattr(manager, "alert_store", None)
+        if store is None:
+            raise HTTPException(status_code=404, detail="no alert store")
+        content = store.export_audit(limit=limit, fmt=format)
+        if format == "csv":
+            from fastapi.responses import PlainTextResponse
+
+            return PlainTextResponse(
+                content,
+                media_type="text/csv",
+                headers={"Content-Disposition": 'attachment; filename="qunwork-audit.csv"'},
+            )
+        return json.loads(content)  # JSON 数组
+
+    @app.get("/v1/7x24/alert-settings")
+    def longrun_alert_settings() -> dict[str, Any]:
+        """② 告警静默设置: 聚合静默阈值/时长 (可配置)。"""
+        return manager.longrun_alert_settings()
+
+    @app.put("/v1/7x24/alert-settings")
+    def set_longrun_alert_settings(body: dict) -> dict[str, Any]:
+        """② 保存告警静默设置 (silence_after / silence_seconds)。"""
+        return manager.set_longrun_alert_settings((body or {}).get("settings"))
+
+    @app.get("/v1/7x24/alerts/aggregations/week-compare")
+    def longrun_aggregation_week_compare() -> dict[str, Any]:
+        """③ 跨周对比: 本周 vs 上周每日告警数。"""
+        store = getattr(manager, "alert_store", None)
+        if store is None:
+            return {"ok": False, "error": "no alert store"}
+        try:
+            store.snapshot_aggregation_history()
+            return {"ok": True, **store.aggregation_week_compare()}
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)}
+
+    @app.get("/v1/7x24/storage")
+    def longrun_storage() -> dict[str, Any]:
+        """D: 存储健康 — 会话存储占用/归档效果/记忆库规模。"""
+        return manager.longrun_storage()
+
+    @app.post("/v1/7x24/maintenance")
+    def longrun_maintenance(body: dict) -> dict[str, Any]:
+        """A: 一键维护 — 记忆去重/衰减/整理 + 会话定期归档。"""
+        dry_run = bool((body or {}).get("dry_run", False))
+        return manager.longrun_maintenance(dry_run=dry_run)
+
     # -- P1 团队 / Agent 状态池 / 任务组生命周期 API ----------------------------
     @app.get("/v1/team")
     def team_info(name: str = "My Team") -> dict[str, Any]:

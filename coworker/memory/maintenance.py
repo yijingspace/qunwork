@@ -416,15 +416,76 @@ def consolidate_vector_memories(
     return {"expired": expired, "consolidated": consolidated, "dry_run": dry_run}
 
 
+def archive_long_sessions(
+    conversation_store: Any,
+    *,
+    threshold: int = 500,
+    keep_recent: int = 200,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """7x24 长程任务 (突破三): 会话定期归档 — 超长会话的旧消息皮萨诺压缩归档。
+
+    与记忆维护同周期运行: 遍历会话, 活跃消息数超过 ``threshold`` 的会话,
+    把最旧的 N-threshold 条无损压缩进 ``<sid>.pisano``, 活跃 .jsonl 只保留
+    最近 ``keep_recent`` 条 (B4: 会话历史无限增长 → 存储可控)。
+
+    返回 ``{"archived": [{session_id, archived, recent, ratio}], "skipped": n}``。
+    """
+    archived: list[dict[str, Any]] = []
+    skipped = 0
+    try:
+        sessions = conversation_store.list()
+    except (AttributeError, TypeError):
+        return {"archived": [], "skipped": 0}
+    for rec in sessions:
+        sid = getattr(rec, "session_id", "")
+        if not sid:
+            continue
+        try:
+            count = conversation_store._count(sid)
+        except (AttributeError, TypeError):
+            skipped += 1
+            continue
+        if count <= threshold:
+            skipped += 1
+            continue
+        if dry_run:
+            archived.append(
+                {"session_id": sid, "archived": count - keep_recent, "recent": keep_recent, "ratio": None}
+            )
+            continue
+        try:
+            summary = conversation_store.archive_compressed(sid, keep_recent=keep_recent)
+        except Exception as exc:  # 单个会话失败不阻断整轮维护
+            logger.warning("archive session %s failed: %s", sid, exc)
+            skipped += 1
+            continue
+        if summary is not None:
+            archived.append(
+                {
+                    "session_id": sid,
+                    "archived": summary["archived"],
+                    "recent": summary["recent"],
+                    "ratio": summary["compression_ratio"],
+                }
+            )
+        else:
+            skipped += 1
+    return {"archived": archived, "skipped": skipped}
+
+
 def run_maintenance(
     memory_store: Any,
     vector_db_path: Optional[str | Path] = None,
     *,
     dry_run: bool = False,
+    conversation_store: Optional[Any] = None,
+    session_archive_threshold: int = 500,
 ) -> dict[str, Any]:
     """统一入口: 一次跑完全部维护 (去重 + 衰减 + 睡眠整理)。返回汇总。
 
     供后台任务 (_memory_maintenance_loop) 与 manager.memory_maintenance 调用。
+    提供 ``conversation_store`` 时额外执行会话定期归档 (7x24 突破三)。
     """
     result: dict[str, Any] = {
         "memories_dedupe": dedupe_memories(memory_store, dry_run=dry_run),
@@ -437,5 +498,11 @@ def run_maintenance(
         result["vector_decay"] = decay_vector_memories(vector_db_path, dry_run=dry_run)
         result["vector_consolidate"] = consolidate_vector_memories(
             vector_db_path, dry_run=dry_run
+        )
+    if conversation_store is not None:
+        result["sessions_archive"] = archive_long_sessions(
+            conversation_store,
+            threshold=session_archive_threshold,
+            dry_run=dry_run,
         )
     return result

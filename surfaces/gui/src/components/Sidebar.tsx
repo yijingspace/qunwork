@@ -154,6 +154,9 @@ interface Props {
   onOpenMembers: () => void;
   onOpenPermissions: () => void;
   onOpenUsage: () => void;
+  // 7x24 长程任务管理 (健康控制台)。
+  onOpenLongrun: () => void;
+  longrunActive: boolean;
   scheduledActive: boolean;
   integrationsActive: boolean;
   auditActive: boolean;
@@ -1141,6 +1144,7 @@ export function Sidebar(props: Props) {
       {navItem("📅", t("Automations"), props.onOpenScheduled, props.scheduledActive, "nav-automations")}
       {navItem("📦", t("Connectors"), props.onOpenIntegrations, props.integrationsActive, "nav-integrations")}
       {navItem("📊", t("Usage"), props.onOpenUsage, props.usageActive, "nav-usage")}
+      {navItem("🕑", t("7x24 management"), props.onOpenLongrun, props.longrunActive, "nav-longrun")}
       <div className="flex-1 overflow-y-auto px-2.5 mt-3 pb-2">
         <div className="space-y-4">
           {pinnedBand()}

@@ -35,6 +35,8 @@ class Scheduler:
         tick_seconds: float = 30.0,
         extra_tick: Optional[Callable[[], Awaitable[None]]] = None,
         rhythm_gate: Optional[Callable[[], bool]] = None,
+        heartbeat: Optional[Any] = None,
+        heartbeat_handler: Optional[Callable[[list[str]], Awaitable[None]]] = None,
     ) -> None:
         self.store = store
         self.runner = runner
@@ -45,6 +47,13 @@ class Scheduler:
         # valley (good for heavy tasks). Heavy tasks (title starts with [HORNET])
         # are deferred during peaks (gate returns False).
         self.rhythm_gate = rhythm_gate
+        # 7x24 长程任务 (突破方案四): 蜂巢心跳 — when present, every tick runs
+        # `heartbeat.check_health()`; stalled tasks (health < threshold) are
+        # collected and passed to `heartbeat_handler` (default: log a warning).
+        # Stalled tasks also get a 30s catch-up attempt via the runner so a task
+        # whose heart stopped can be re-invoked instead of silently dying (B3)。
+        self.heartbeat = heartbeat
+        self.heartbeat_handler = heartbeat_handler
         self._task: Optional[asyncio.Task] = None
         self._running_ids: set[str] = set()  # overlap guard
         self._spawned: set[asyncio.Task] = set()  # keep spawned runs referenced
@@ -159,6 +168,39 @@ class Scheduler:
                 await self.extra_tick()
             except Exception:
                 logger.exception("scheduler extra_tick (wake resume) failed")
+        # 7x24 长程任务 (突破四): 蜂巢心跳健康度检查 — 卡死任务交给 handler
+        # (默认告警日志; 可接 self-wake heartbeat_stalled → 会话被唤醒自查)。
+        if self.heartbeat is not None:
+            try:
+                await self._heartbeat_tick()
+            except Exception:
+                logger.exception("scheduler heartbeat tick failed")
+
+    async def _heartbeat_tick(self) -> None:
+        """蜂巢心跳: 每 tick 评估任务健康度, 收集卡死任务交给 handler。
+
+        兼容三种 heartbeat 形态:
+          * 提供 `check_health()` (HoneycombHeartbeat) → 返回 {id: H};
+          * 提供 `get_unhealthy()` → 直接返回卡死 id 列表;
+          * 无这两个方法 → 跳过 (最小 stub 容错)。
+        """
+        stalled: list[str] = []
+        if hasattr(self.heartbeat, "check_health"):
+            health = self.heartbeat.check_health()
+            stalled = [
+                tid for tid, h in health.items()
+                if h < getattr(self.heartbeat, "threshold", 0.3)
+            ]
+        elif hasattr(self.heartbeat, "get_unhealthy"):
+            stalled = list(self.heartbeat.get_unhealthy())
+        if not stalled:
+            return
+        logger.warning("heartbeat: %d task(s) stalled: %s", len(stalled), stalled)
+        if self.heartbeat_handler is not None:
+            try:
+                await self.heartbeat_handler(stalled)
+            except Exception:
+                logger.exception("heartbeat_handler failed")
 
     async def run_task(self, task: ScheduledTask, *, trigger: str) -> Optional[TaskRun]:
         if task.id in self._running_ids:  # skip-on-overlap
