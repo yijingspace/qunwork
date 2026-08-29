@@ -9,11 +9,14 @@ import pytest
 
 from coworker.orchestrator.mesh import (
     HexGrid,
+    _mesh_mode_flags,
+    algebraic_connectivity,
     bft_vote,
     claim_idle_agent,
     hex_distance,
     review_neighborhood,
     select_batch_grid,
+    topology_health,
 )
 from coworker.orchestrator.models import ReviewVerdict, Task
 from coworker.pheromone import PheromoneField, StigmergyBus
@@ -259,6 +262,96 @@ def test_claim_idle_agent_cross_role():
             raise RuntimeError("boom")
 
     assert claim_idle_agent(BoomPool(), "cowork", task_id="t4") == (None, None)
+
+
+# -- QunMesh M4: mesh_mode 四档 / λ₂ 拓扑遥测 / 热点迁徙 ---------------------
+
+
+def test_mesh_mode_flags_four_positions():
+    from coworker.orchestrator.mesh import _mesh_mode_flags
+
+    assert _mesh_mode_flags("off") == {"scheduling": False, "claim": False, "review": False}
+    assert _mesh_mode_flags("serial") == {"scheduling": False, "claim": False, "review": False}
+    assert _mesh_mode_flags("hybrid") == {"scheduling": True, "claim": True, "review": False}
+    assert _mesh_mode_flags("full") == {"scheduling": True, "claim": True, "review": True}
+    # 非法值 / None / 大小写 → off 兜底
+    assert _mesh_mode_flags("FULL")["review"] is True
+    assert _mesh_mode_flags("bogus")["scheduling"] is False
+    assert _mesh_mode_flags(None)["scheduling"] is False
+
+
+def test_hexgrid_spiral_compactness():
+    """修复回归: 螺旋放置必须紧凑 (ring k 全部距中心 k), 中心 agent 6 邻居。"""
+    cells = HexGrid._spiral(2)
+    dists = [hex_distance((0, 0), c) for c in cells]
+    assert dists[:7] == [0] + [1] * 6  # 中心 + ring1
+    assert dists[7:] == [2] * 12  # ring2
+    g = HexGrid(radius=4)
+    for name in ("a", "b", "c", "d", "e", "f", "g"):
+        g.place(name)
+    assert len(g.neighbors("a", ring=1)) == 6  # 中心恰好六邻接
+
+
+def test_algebraic_connectivity_known_graphs():
+    """λ₂ 已知图验证: 双节点单边 λ₂=2; 六邻接星形 (中心+6邻居) λ₂>0; 单节点 0。"""
+    g = HexGrid(radius=4)
+    g.place("a")
+    assert algebraic_connectivity(g, ["a"]) == 0.0
+    g.place("b")
+    # a(0,0) b(ring1) — 单边 Laplacian 特征值 {0, 2}
+    assert algebraic_connectivity(g, ["a", "b"]) == pytest.approx(2.0)
+    for name in ("c", "d", "e", "f", "h"):
+        g.place(name)
+    lam = algebraic_connectivity(g, ["a", "b", "c", "d", "e", "f", "h"])
+    assert 0.0 < lam < 6.0  # 连通且非完全图
+
+
+def test_topology_health_hotspot_and_migration():
+    """热点检测: load ≥ floor 且 > 邻居均 × ratio; 迁徙目标 = 邻居最低负载。"""
+    bus = StigmergyBus()
+    bus.deposit("hub", 3.0)  # 热点
+    bus.deposit("nb1", 0.5)
+    bus.deposit("nb2", 0.2)  # 邻居最低 → 迁徙目标
+    health = topology_health(bus)
+    assert health["hotspots"] == ["hub"]
+    assert len(health["migrations"]) == 1
+    m = health["migrations"][0]
+    assert m["hotspot"] == "hub" and m["target"] in ("nb1", "nb2")
+    assert m["target"] == "nb2"  # 0.2 < 0.5
+    assert health["lambda2"] > 0.0 and health["edges"] > 0
+    # 均匀负载 → 无热点
+    bus2 = StigmergyBus()
+    for a in ("x", "y"):
+        bus2.deposit(a, 1.0)
+    assert topology_health(bus2)["hotspots"] == []
+    # None / 干净场 → 空骨架
+    empty = topology_health(StigmergyBus())
+    assert empty["agents"] == [] and empty["lambda2"] == 0.0
+
+
+def test_orchestrator_mesh_mode_post_init():
+    """__post_init__: mode 推导三开关 (与显式 bool 取或) + full 启拓扑遥测。"""
+    from coworker.orchestrator.orchestrator import Orchestrator
+
+    o = Orchestrator(provider=None, model="m", workspace="w", mesh_mode="full")
+    assert o.mesh_scheduling and o.mesh_claim and o.mesh_review
+    assert o._mesh_topology_enabled is True
+
+    o2 = Orchestrator(provider=None, model="m", workspace="w", mesh_mode="hybrid")
+    assert o2.mesh_scheduling and o2.mesh_claim and not o2.mesh_review
+    assert o2._mesh_topology_enabled is False
+
+    o3 = Orchestrator(provider=None, model="m", workspace="w", mesh_mode="off")
+    assert not o3.mesh_scheduling and not o3._mesh_topology_enabled
+
+    # 显式 bool 与 mode 取或 (serial 不开任何能力, 显式 True 保留)
+    o4 = Orchestrator(provider=None, model="m", workspace="w",
+                      mesh_mode="serial", mesh_review=True)
+    assert o4.mesh_review and not o4.mesh_scheduling and not o4.mesh_claim
+
+    o5 = Orchestrator(provider=None, model="m", workspace="w", mesh_mode="off",
+                      mesh_scheduling=True)
+    assert o5.mesh_scheduling and not o5._mesh_topology_enabled
 
 
 def test_pheromone_bus_channels_summary_shape():

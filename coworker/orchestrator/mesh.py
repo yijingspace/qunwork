@@ -44,15 +44,19 @@ class HexGrid:
 
     @staticmethod
     def _spiral(radius: int) -> list[tuple[int, int]]:
-        """环序展开: 中心 + 半径 1..radius 的每环 (保证放置连续紧凑)。"""
+        """环序展开: 中心 + 半径 1..radius 的每环 (保证放置连续紧凑)。
+
+        标准 axial 环遍历: 环 k 起点 = (-k, k), 沿六方向各走 k 步 —
+        每格恰距中心 k (修复: 旧实现起点 (k,-k) 与方向序不匹配导致环散开,
+        邻接图失真 — M4 λ₂ 遥测依赖正确网格)。
+        """
         cells: list[tuple[int, int]] = [(0, 0)]
         for k in range(1, radius + 1):
-            # 环 k: 从 (k, -k) 出发沿六方向各走 k 步
-            q, r = k, -k
+            q, r = -k, k
             for dq, dr in HEX_DIRS:
                 for _ in range(k):
-                    cells.append((q, r))
                     q, r = q + dq, r + dr
+                    cells.append((q, r))
         return cells
 
     def place(self, name: str) -> tuple[int, int]:
@@ -201,6 +205,119 @@ def claim_idle_agent(pool: Any, want_role: str, *, task_id: str, task_group_id: 
     except Exception:
         return None, None
     return None, None
+
+
+# ---------------------------------------------------------------------------
+# QunMesh M4: 全拓扑化 (mesh_mode 四档总开关 + λ₂ 网格代数连通度 + 热点迁徙)
+# ---------------------------------------------------------------------------
+
+def _mesh_mode_flags(mode: Any) -> dict[str, bool]:
+    """mesh_mode 四档 → 三开关推导 (模块级纯函数, 容错; 非法值按 off)。
+
+    - off:    全旧行为 (M1-M3 能力全关);
+    - serial: 信息素负载收缩 (M1 语义);
+    - hybrid: + 网格批选择 + 动态领取 (M2/M3 领取, 消热点);
+    - full:   + 邻域评审 + swarm_bft (M3 评审) + 拓扑遥测联动。
+    显式 bool 开关与 mode 的合并由调用方 (Orchestrator) 决定 — 本函数只解析。
+    """
+    m = str(mode or "off").strip().lower()
+    if m == "serial":
+        return {"scheduling": False, "claim": False, "review": False}
+    if m == "hybrid":
+        return {"scheduling": True, "claim": True, "review": False}
+    if m == "full":
+        return {"scheduling": True, "claim": True, "review": True}
+    return {"scheduling": False, "claim": False, "review": False}
+
+
+def algebraic_connectivity(grid: "HexGrid", agents: list[str]) -> float:
+    """六边形通信图的 Laplacian λ₂ (代数连通度) — LoopCoop 谱隙的网格级观测。
+
+    |λ₂| 与信息素铺匀时间互为倒数 (随机游走混合): λ₂ 越大, 邻域间梯度扩散越快,
+    网格越混联。numpy 缺失 / 节点数 <2 → 0.0 (不可观测 / 无连通可言)。
+    """
+    placed = [a for a in agents if grid.pos(a) is not None]
+    n = len(placed)
+    if n < 2:
+        return 0.0
+    try:
+        import numpy as np
+    except Exception:
+        return 0.0
+    idx = {a: i for i, a in enumerate(placed)}
+    lap = np.zeros((n, n), dtype=float)
+    edges = 0
+    for i, a in enumerate(placed):
+        for nb in grid.neighbors(a, ring=1):
+            j = idx[nb]
+            lap[i, j] = -1.0
+            lap[j, i] = -1.0
+            edges += 1
+        lap[i, i] = float(sum(1 for nb in grid.neighbors(a, ring=1)))
+    _ = edges  # 遥测由 topology_health 汇总; 这里只算谱
+    eigenvalues = np.linalg.eigvalsh(lap)
+    eigenvalues.sort()
+    return round(float(eigenvalues[1]), 4)
+
+
+def topology_health(
+    pheromone: Any,
+    grid: "HexGrid | None" = None,
+    *,
+    hotspot_ratio: float = 2.0,
+    hotspot_floor: float = 1.5,
+) -> dict:
+    """网格拓扑健康总览 (纯函数, 容错): λ₂ + 边数 + 热点检测 + 迁徙建议。
+
+    agents 取自 load 信道活跃 key (惰性 place 到 grid); 热点 = load ≥
+    hotspot_floor 且 > 邻居平均 load × hotspot_ratio 的节点; 迁徙建议 =
+    热点邻居中 load 最低者 (丝瓜络「让邻居替我扛」的可见性入口)。
+    """
+    if grid is None:
+        grid = HexGrid()
+    out: dict = {"agents": [], "edges": 0, "lambda2": 0.0, "hotspots": [], "migrations": []}
+    if pheromone is None:
+        return out
+    try:
+        levels = dict(pheromone.levels(channel="load"))
+    except Exception:
+        try:
+            levels = dict(pheromone.levels())
+        except Exception:
+            levels = {}
+    agents = list(levels)
+    if not agents:
+        return out
+    for a in agents:
+        grid.place(a)
+    edges = 0
+    for a in agents:
+        edges += len(grid.neighbors(a, ring=1))
+    edges //= 2
+    hotspots: list[str] = []
+    migrations: list[dict] = []
+    for a, load in levels.items():
+        nbs = grid.neighbors(a, ring=1)
+        if not nbs:
+            continue
+        nb_avg = sum(float(levels.get(n, 0.0)) for n in nbs) / len(nbs)
+        if load >= hotspot_floor and load > nb_avg * hotspot_ratio:
+            hotspots.append(a)
+            target = min(nbs, key=lambda n: float(levels.get(n, 0.0)))
+            migrations.append({
+                "hotspot": a,
+                "load": round(float(load), 3),
+                "neighbor_avg": round(nb_avg, 3),
+                "target": target,
+            })
+    out.update({
+        "agents": sorted(agents),
+        "edges": edges,
+        "lambda2": algebraic_connectivity(grid, agents),
+        "hotspots": sorted(hotspots),
+        "migrations": migrations,
+    })
+    return out
 
 
 def review_neighborhood(pheromone: Any, *, k: int = 4) -> str:

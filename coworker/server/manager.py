@@ -5006,6 +5006,14 @@ class SessionManager:
         if callable(chan):
             out["bus"] = "stigmergy"
             out["channels"] = chan()
+            # QunMesh M4: 网格拓扑健康 (λ₂ 代数连通度 + 热点迁徙建议) —
+            # LoopCoop 谱隙从 run 级升级为网格级观测; 失败安全 (缺省无字段)。
+            try:
+                from coworker.orchestrator.mesh import topology_health
+
+                out["topology"] = topology_health(p)
+            except Exception:
+                pass
         else:
             out["bus"] = "field"
         return out

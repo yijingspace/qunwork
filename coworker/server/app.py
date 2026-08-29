@@ -607,6 +607,13 @@ def create_app(manager: SessionManager) -> FastAPI:
                     if body.get("mesh_claim") is not None
                     else (getattr(manager, "_prefs", {}) or {}).get("mesh_claim", False)
                 ),
+                # QunMesh M4: mesh_mode 四档总开关 (off/serial/hybrid/full),
+                # 与显式 bool 开关取或; full 启用每轮 λ₂ 拓扑遥测。
+                mesh_mode=str(
+                    body.get("mesh_mode")
+                    or (getattr(manager, "_prefs", {}) or {}).get("mesh_mode", "off")
+                    or "off"
+                ),
                 # P1 增量: optional agent pool + task group id.
                 agent_pool=getattr(manager, "agent_pool", None),
                 task_group_id=body.get("task_group_id") or None,

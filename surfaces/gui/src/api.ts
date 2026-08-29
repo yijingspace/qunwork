@@ -1752,11 +1752,21 @@ export interface PheromoneChannels {
   [channel: string]: { signals: number; intensity: number };
 }
 
+// QunMesh M4: 网格拓扑健康 (λ₂ 代数连通度 + 热点迁徙建议)。
+export interface MeshTopology {
+  agents?: string[];
+  edges?: number;
+  lambda2?: number;
+  hotspots?: string[];
+  migrations?: { hotspot: string; load: number; neighbor_avg: number; target: string }[];
+}
+
 export interface PheromoneStatus {
   levels?: Record<string, number>;
   total_load?: number;
   bus?: "stigmergy" | "field";
   channels?: PheromoneChannels;
+  topology?: MeshTopology;
 }
 
 export async function getPheromoneStatus(): Promise<PheromoneStatus> {

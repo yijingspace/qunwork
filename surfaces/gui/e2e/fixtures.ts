@@ -1494,7 +1494,7 @@ export async function mockApi(page: import("@playwright/test").Page) {
         memory: { count: 7, stale: 2 },
       });
     }
-    // QunMesh M1/M2: 信息素总线四信道。
+    // QunMesh M1/M2/M4: 信息素总线四信道 + 网格拓扑健康。
     if (p.endsWith("/v1/pheromone")) {
       return json({
         levels: { "task-a": 1 },
@@ -1505,6 +1505,13 @@ export async function mockApi(page: import("@playwright/test").Page) {
           task: { signals: 3, intensity: 3 },
           result: { signals: 2, intensity: 2 },
           risk: { signals: 0, intensity: 0 },
+        },
+        topology: {
+          agents: ["task-a", "task-b"],
+          edges: 1,
+          lambda2: 2.0,
+          hotspots: ["task-a"],
+          migrations: [{ hotspot: "task-a", load: 3, neighbor_avg: 0.5, target: "task-b" }],
         },
       });
     }

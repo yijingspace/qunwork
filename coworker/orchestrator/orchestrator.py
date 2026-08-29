@@ -26,7 +26,7 @@ from ..pheromone import StigmergyBus
 
 from .governance import ESCALATE, NOP, PAUSE, REVERT, WARN, Governance, GovernanceCommand, GovernanceConfig
 from .memory_store import PersistentVectorMemory
-from .mesh import HexGrid, bft_vote, claim_idle_agent, review_neighborhood, select_batch_grid
+from .mesh import HexGrid, _mesh_mode_flags, bft_vote, claim_idle_agent, review_neighborhood, select_batch_grid, topology_health
 from .models import OrchestrationResult, Plan, ReviewVerdict, Task
 
 # The placeholder an executor leaves when a task timed out before producing any
@@ -277,6 +277,10 @@ class Orchestrator:
     # mesh_claim=True → agent_pool 同 role 无空闲时跨 role 领取 (谁近谁领, 消热点)。
     mesh_review: bool = False
     mesh_claim: bool = False
+    # QunMesh M4 (全拓扑化): mesh_mode 四档总开关 off/serial/hybrid/full —
+    # 按档位推导三开关 (显式 bool 与 mode 取或); full 额外启用每轮拓扑遥测
+    # (λ₂ 网格代数连通度 + 热点迁徙建议, emit mesh_topology 事件)。
+    mesh_mode: str = "off"
     # T4 convergence guard (LoopCoop fixed-point): how many consecutive rounds
     # without real progress (no new done task, no changed result, no accepted
     # requeue) before the run is declared stalled instead of spinning forever.
@@ -299,6 +303,15 @@ class Orchestrator:
     # S10 治理信号链加固: 可选审计 sink — 治理命令 (PAUSE/REVERT/WARN/ESCALATE)
     # 写入持久化审计 (audit log 完整性), 安全干预可追溯。
     audit_sink: Optional[Callable[[dict[str, Any]], None]] = None
+
+    def __post_init__(self) -> None:
+        # QunMesh M4: mesh_mode 四档总开关推导 — 显式 bool 与档位取或
+        # (off/serial/hybrid/full → scheduling/claim/review; full 另启拓扑遥测)。
+        mode_flags = _mesh_mode_flags(self.mesh_mode)
+        self.mesh_scheduling = bool(self.mesh_scheduling) or mode_flags["scheduling"]
+        self.mesh_claim = bool(self.mesh_claim) or mode_flags["claim"]
+        self.mesh_review = bool(self.mesh_review) or mode_flags["review"]
+        self._mesh_topology_enabled = self.mesh_mode.strip().lower() == "full"
 
     # -- S6 失败模式蒸馏辅助 --------------------------------------------------
     def _failure_modes(self, limit: int = 5) -> list[dict[str, Any]]:
@@ -1167,6 +1180,14 @@ class Orchestrator:
                     {"seconds": self.timeout_seconds, "final_batch": [t.id for t in ready[: max(1, self.max_parallel)]]},
                 )
             batch = self._select_batch(ready)
+            # QunMesh M4 (mesh_mode=full): 每轮拓扑遥测 — λ₂ 网格代数连通度
+            # (LoopCoop 谱隙的网格级观测) + 热点迁徙建议。只读旁路, 不影响调度。
+            if self._mesh_topology_enabled:
+                try:
+                    topo = topology_health(self.pheromone)
+                    self._emit("mesh_topology", {"round": self._runs, **topo})
+                except Exception:
+                    logger.exception("mesh_topology emit failed")
             done_before = {t.id for t in plan.tasks if t.done}
             results_before = {
                 t.id: (t.result or "")[:200] for t in plan.tasks if t.result

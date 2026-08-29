@@ -358,6 +358,43 @@ function PheromonePanel({ status }: { status: PheromoneStatus | null }) {
         {card("result", "Result notices")}
         {card("risk", "Risk gradient")}
       </div>
+      {status.topology && (
+        <div className="text-[11px] space-y-1" data-testid="mesh-topology">
+          <div>
+            <span className="text-faint uppercase tracking-wide text-[10.5px]">
+              {t("Mesh λ₂ (algebraic connectivity)")}:
+            </span>{" "}
+            <span className="font-mono font-semibold">
+              {status.topology.lambda2 ?? 0}
+            </span>
+            <span className="text-muted">
+              {" "}
+              · {status.topology.agents?.length ?? 0} {t("agents")} ·{" "}
+              {status.topology.edges ?? 0} {t("edges")}
+            </span>
+          </div>
+          {(status.topology.hotspots?.length ?? 0) > 0 && (
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span className="text-[10.5px] uppercase tracking-wide text-faint">
+                {t("Hotspots")}:
+              </span>
+              {(status.topology.hotspots ?? []).map((h) => (
+                <span
+                  key={h}
+                  className="text-[10px] px-1.5 py-0.5 rounded bg-amber-600/10 text-amber-700 font-mono"
+                >
+                  {h}
+                </span>
+              ))}
+              {(status.topology.migrations ?? []).map((m) => (
+                <span key={m.hotspot} className="text-[10px] text-muted font-mono">
+                  {m.hotspot} → {m.target}
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
