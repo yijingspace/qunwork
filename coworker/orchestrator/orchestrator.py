@@ -544,6 +544,13 @@ class Orchestrator:
                         self._emit("mesh_claim", {"id": task.id, **claim_ev})
             except Exception:
                 pool_inst = None
+        # QunMesh M4 修复: load 信道生产端 — 实例领取时 deposit「谁在忙」信号,
+        # 释放时撤回。拓扑遥测 (topology_health) 的 agents 取自 load 信道活跃
+        # key, 缺此生产端则网格恒为空图 (agents/边/λ₂ 恒 0, 实测 0.21.0)。
+        if acquired_agent_id is not None:
+            self._pher_deposit(
+                acquired_agent_id, 1.0, channel="load", payload=task.id[:120]
+            )
         try:
             # Consume a pre-warmed engine if the caller staged one (built OUTSIDE
             # the task-timeout window — see _process_impl). Always cleared so a
@@ -624,6 +631,9 @@ class Orchestrator:
                     self.agent_pool.release(acquired_agent_id)
                 except Exception:
                     pass
+            # QunMesh M4: 释放实例 → 撤 load 忙信号 (拓扑网格实时反映空闲)。
+            if acquired_agent_id is not None:
+                self._pher_deposit(acquired_agent_id, -1.0, channel="load")
             # 3) Always reap the executor's resources — every build spawned a
             # persistent shell process (LocalExecutor.__init__) that would
             # otherwise leak per task (C2). Runs even when the task timed out

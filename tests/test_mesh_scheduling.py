@@ -220,6 +220,53 @@ def test_orchestrator_review_neighborhood_and_bft(monkeypatch):
     assert len(captured) == 3
 
 
+def test_orchestrator_load_channel_lifecycle(monkeypatch):
+    """M4 修复回归: 实例领取 → load +1, 释放 → load -1 (拓扑 agents 的数据源)。
+    0.21.0 实测缺此生产端 → 拓扑网格恒空图 (agents/边/λ₂ 恒 0)。"""
+    import coworker.orchestrator.orchestrator as orch_mod
+    from coworker.orchestrator.orchestrator import Orchestrator
+
+    bus = StigmergyBus()
+    calls: list[tuple] = []
+    orig_deposit = bus.deposit
+
+    def spy_deposit(key, amount, **kw):
+        calls.append((key, amount, kw.get("channel")))
+        return orig_deposit(key, amount, **kw)
+
+    bus.deposit = spy_deposit
+
+    class FakeInst:
+        id = "inst-1"
+
+    class FakePool:
+        def acquire(self, role, **kw):
+            return FakeInst()
+
+        def heartbeat(self, aid):
+            pass
+
+        def release(self, aid):
+            pass
+
+    async def fake_run(engine, prompt, on_event=None):
+        return "done output", "ok"
+
+    o = Orchestrator(provider=None, model="m", workspace="w", pheromone=bus,
+                     agent_pool=FakePool())
+    # 引擎与运行短路: 直接替换实例方法, 避免 LLM 依赖
+    monkeypatch.setattr(o, "_build_executor_engine", lambda *a, **kw: object())
+    monkeypatch.setattr(orch_mod, "_run_engine_async", fake_run)
+
+    asyncio.run(o._execute(Task(id="tL", description="do thing"), deps=[], hints=[]))
+    loads = [c for c in calls if c[2] == "load"]
+    assert ("inst-1", 1.0, "load") in loads  # 领取 deposit
+    assert ("inst-1", -1.0, "load") in loads  # 释放撤回
+    # 净负载归零 (领取/释放成对)
+    net = sum(a for _k, a, ch in loads)
+    assert net == pytest.approx(0.0)
+
+
 def test_claim_idle_agent_cross_role():
     """同 role 无空闲 → 跨 role 低负载领取; 全忙 → (None, None); 异常安全。"""
 
