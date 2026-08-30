@@ -133,6 +133,61 @@ def test_read_file_truncates_long_lines(tmp_path):
     assert len(out["content"]) < 1000
 
 
+def test_read_file_escape_returns_error_dict_not_exception(tmp_path):
+    """0.21.0 实测失败模式回归: workspace 外绝对路径/.. 穿越必须返回 error dict
+    (含 request_directory/run_shell 提示), 而非像 aisuite 原生版那样抛 ValueError。"""
+    (tmp_path / "ok.txt").write_text("inside\n", encoding="utf-8")
+    tools = file_tools(str(tmp_path))
+    read_file = {t.__name__: t for t in tools}["read_file"]
+    outside = tmp_path.parent / "outside.txt"
+    outside.write_text("secret\n", encoding="utf-8")
+    r1 = read_file(path=str(outside))  # 绝对路径越界
+    assert "error" in r1 and "request_directory" in r1["error"]
+    r2 = read_file(path=r"..\..\outside.txt")  # .. 穿越越界
+    assert "error" in r2 and "run_shell" in r2["error"]
+    assert read_file(path="ok.txt")["content"].endswith("inside")
+
+
+def test_file_tools_multi_roots(tmp_path):
+    """多 root 会话: 附加 root 内文件可读 (相对路径命中 + 绝对路径放行)。"""
+    primary = tmp_path / "primary"
+    secondary = tmp_path / "secondary"
+    primary.mkdir()
+    secondary.mkdir()
+    (primary / "a.txt").write_text("from primary\n", encoding="utf-8")
+    (secondary / "b.txt").write_text("from secondary\n", encoding="utf-8")
+
+    class FakeRoot:
+        def __init__(self, p):
+            self.path = p
+
+    tools = file_tools(str(primary), roots=[FakeRoot(secondary)])
+    by_name = {t.__name__: t for t in tools}
+    # 相对路径命中附加 root
+    assert by_name["read_file"](path="b.txt")["content"].endswith("from secondary")
+    # 附加 root 内绝对路径放行
+    out = by_name["read_file"](path=str(secondary / "b.txt"))
+    assert "error" not in out
+    # 两个 root 之外仍然拒绝
+    other = tmp_path / "other.txt"
+    other.write_text("no\n", encoding="utf-8")
+    assert "error" in by_name["read_file"](path=str(other))
+    # read_file_lines 别名同行为
+    assert by_name["read_file_lines"](path="a.txt")["content"].endswith("from primary")
+
+
+def test_read_file_large_file_windowed_not_raised(tmp_path):
+    """aisuite 原生版 >200KB 抛 ValueError; 安全版窗口化读取不炸。"""
+    big = tmp_path / "big.log"
+    big.write_text("\n".join(f"row {i}" for i in range(30000)) + "\n", encoding="utf-8")
+    assert big.stat().st_size > 200_000
+    read_file = file_tools(str(tmp_path))[0]
+    out = read_file(path="big.log", start_line=29990, max_lines=20)
+    assert out["start_line"] == 29990
+    assert "row 29999" in out["content"]
+    assert "error" not in out
+
+
 def test_read_file_rejects_escape_and_non_files(tmp_path):
     read_file = file_tools(str(tmp_path))[0]
     assert "escapes" in read_file(path="../secret.txt")["error"]
@@ -162,8 +217,10 @@ def test_code_agent_has_grep_and_git_log_not_search_files(tmp_path):
     names = {getattr(t, "__name__", "") for t in code_agent().build_tools(ctx)}
     assert "grep" in names and "git_log" in names
     assert "search_files" not in names  # replaced by grep
-    assert "read_file_lines" not in names  # folded into our windowed read_file
-    assert {"read_file", "write_file", "git_status", "git_diff"} <= names
+    # read_file_lines is now OUR windowed alias (same safe reader), not the native
+    # exception-raising aisuite one — presence is expected, not forbidden.
+    assert "read_file" in names and "read_file_lines" in names
+    assert {"write_file", "git_status", "git_diff"} <= names
 
 
 def test_cowork_has_grep_not_search_files(tmp_path):
