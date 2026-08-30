@@ -544,6 +544,17 @@ class Orchestrator:
                         self._emit("mesh_claim", {"id": task.id, **claim_ev})
             except Exception:
                 pool_inst = None
+        # 0.21.3 实测修正 (orch_de07ee870f9e): 池是注册制且蜂群从不自动注册 —
+        # 空池时 acquire/mesh_claim 全落空, 所有任务无实例记账, load 信道至多
+        # 1 个 key (手动加过的孤例) → 拓扑恒 1 节点 0 边 λ₂=0。弹性供给:
+        # 没有空闲实例就现场长一个 (worker 即节点), 释放回池复用, 节点数随
+        # 并发自然伸缩 — 网格拓扑这才有多节点/边/非零 λ₂。
+        if pool_inst is None and self.agent_pool is not None:
+            try:
+                pool_inst = self.agent_pool.register(role_tag, role_tag, working=True)
+                acquired_agent_id = pool_inst.id
+            except Exception:
+                pool_inst = None
         # QunMesh M4 修复: load 信道生产端 — 实例领取时 deposit「谁在忙」信号,
         # 释放时撤回。拓扑遥测 (topology_health) 的 agents 取自 load 信道活跃
         # key, 缺此生产端则网格恒为空图 (agents/边/λ₂ 恒 0, 实测 0.21.0)。

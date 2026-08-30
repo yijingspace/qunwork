@@ -55,8 +55,20 @@ class AgentPool:
         self._max_per_role: dict[str, int] = max_per_role or {}
 
     # ── lifecycle -----------------------------------------------------------
-    def register(self, role: str, persona_id: str, agent_id: Optional[str] = None) -> AgentInstance:
-        """Register a new (pre-built) engine instance. Returns the added record."""
+    def register(
+        self,
+        role: str,
+        persona_id: str,
+        agent_id: Optional[str] = None,
+        *,
+        working: bool = False,
+    ) -> AgentInstance:
+        """Register a new (pre-built) engine instance. Returns the added record.
+
+        `working=True` (elastic provisioning): the instance is born occupied —
+        without it, the second concurrent task's acquire() immediately grabs the
+        freshly-registered IDLE instance and every task collapses onto one key
+        (实测 0.21.2 run: 拓扑恒 1 节点 0 边)。"""
         with self._lock:
             # Idle cap per role. Callers rely on the pool not silently refusing, so
             # we raise — it's better to surface an over-provisioning mistake early.
@@ -67,6 +79,9 @@ class AgentPool:
                     raise RuntimeError(f"AgentPool: role '{role}' at capacity ({cap})")
             uid = agent_id or f"agent-{uuid.uuid4().hex[:10]}"
             inst = AgentInstance(id=uid, role=role, persona_id=persona_id)
+            if working:
+                inst.state = AgentState.WORKING
+                inst.load = 0.3  # 与 acquire 的初始占用一致
             self._agents[uid] = inst
             return inst
 

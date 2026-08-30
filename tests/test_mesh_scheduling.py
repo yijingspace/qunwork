@@ -267,6 +267,61 @@ def test_orchestrator_load_channel_lifecycle(monkeypatch):
     assert net == pytest.approx(0.0)
 
 
+def test_orchestrator_elastic_pool_provisioning(monkeypatch):
+    """0.21.3 实测回归 (orch_de07ee870f9e): 池是注册制且蜂群从不自动注册 →
+    空池时全部任务无实例记账, load 信道至多 1 个 key → 拓扑恒 1 节点 0 边
+    λ₂=0。弹性供给: 没有空闲实例就现场长一个, 并发任务各记各的节点 —
+    拓扑出现多节点/非零 λ₂, 释放后回池复用。"""
+    import coworker.orchestrator.orchestrator as orch_mod
+    from coworker.orchestrator.orchestrator import Orchestrator
+    from coworker.orchestrator.mesh import topology_health
+    from coworker.team.agent_pool import AgentPool
+
+    bus = StigmergyBus()
+    calls: list[tuple] = []
+    orig_deposit = bus.deposit
+
+    def spy_deposit(key, amount, **kw):
+        calls.append((key, amount, kw.get("channel")))
+        return orig_deposit(key, amount, **kw)
+
+    bus.deposit = spy_deposit
+
+    sampled: dict = {}
+
+    async def fake_run(engine, prompt, on_event=None):
+        # 挂起制造真实并发窗口: task1 领取后仍在跑时 task2 到场,
+        # inst-A 处于 WORKING 不可领 → 触发弹性注册 inst-B。
+        await asyncio.sleep(0.02)
+        # 两任务重叠期间采样拓扑 (运行中 load 有值; 任务完成后 withdraw
+        # 归零, 之后再查拓扑恒空图 — 信息素挥发正常语义, 不可作断言点)
+        if "topology" not in sampled:
+            sampled["topology"] = topology_health(bus)
+        await asyncio.sleep(0.05)
+        return "done output", "ok"
+
+    o = Orchestrator(provider=None, model="m", workspace="w", pheromone=bus,
+                     agent_pool=AgentPool())
+    monkeypatch.setattr(o, "_build_executor_engine", lambda *a, **kw: object())
+    monkeypatch.setattr(orch_mod, "_run_engine_async", fake_run)
+
+    async def run_two():
+        ts = [Task(id=f"tE{i}", description=f"job {i}") for i in range(2)]
+        await asyncio.gather(*(o._execute(t, deps=[], hints=[]) for t in ts))
+
+    asyncio.run(run_two())
+    loads = [c for c in calls if c[2] == "load"]
+    keys = {k for k, _a, _ch in loads}
+    # 并发两任务 → 弹性长出 2 个不同实例 (各记各的节点, 不再挤在 1 个 key)
+    assert len(keys) == 2
+    # 每个实例领取/释放成对, 净负载归零
+    for k in keys:
+        net = sum(a for kk, a, _ch in loads if kk == k)
+        assert net == pytest.approx(0.0)
+    # 拓扑健康: 运行中采样到 2 个节点 (弹性供给的目标效果)
+    assert len(sampled["topology"]["agents"]) == 2
+
+
 def test_claim_idle_agent_cross_role():
     """同 role 无空闲 → 跨 role 低负载领取; 全忙 → (None, None); 异常安全。"""
 
