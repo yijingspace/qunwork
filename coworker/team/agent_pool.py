@@ -62,13 +62,17 @@ class AgentPool:
         agent_id: Optional[str] = None,
         *,
         working: bool = False,
+        task_id: Optional[str] = None,
+        task_group_id: Optional[str] = None,
     ) -> AgentInstance:
         """Register a new (pre-built) engine instance. Returns the added record.
 
         `working=True` (elastic provisioning): the instance is born occupied —
         without it, the second concurrent task's acquire() immediately grabs the
         freshly-registered IDLE instance and every task collapses onto one key
-        (实测 0.21.2 run: 拓扑恒 1 节点 0 边)。"""
+        (实测 0.21.2 run: 拓扑恒 1 节点 0 边)。`task_id` 与 working 配套:
+        注册即上岗必须同时认领任务 — 否则 reap_stale 判 FAULT 后拿不到
+        current_task_id, 无法定位并取消 inflight 协程 (节点故障拾取断链)。"""
         with self._lock:
             # Idle cap per role. Callers rely on the pool not silently refusing, so
             # we raise — it's better to surface an over-provisioning mistake early.
@@ -82,6 +86,9 @@ class AgentPool:
             if working:
                 inst.state = AgentState.WORKING
                 inst.load = 0.3  # 与 acquire 的初始占用一致
+            if task_id is not None:
+                inst.current_task_id = task_id
+                inst.current_task_group = task_group_id
             self._agents[uid] = inst
             return inst
 
@@ -116,12 +123,15 @@ class AgentPool:
             return agent
 
     def release(self, agent_id: str) -> bool:
-        """Mark idle after a task completes (load decays)."""
+        """Mark idle after a task completes (load decays).
+        M5: FAULT 实例不洗白 — reap 判死的节点由 cancel→release 路径回收卡槽
+        (清 current_task/load), 但保持 FAULT 态, is_available 永不复活它。"""
         with self._lock:
             a = self._agents.get(agent_id)
             if a is None:
                 return False
-            a.state = AgentState.IDLE
+            if a.state != AgentState.FAULT:
+                a.state = AgentState.IDLE
             a.current_task_group = None
             a.current_task_id = None
             a.load = max(0.0, a.load - 0.3)

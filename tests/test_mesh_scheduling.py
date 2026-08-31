@@ -515,3 +515,123 @@ def test_pheromone_bus_channels_summary_shape():
     s = bus.channels_summary()
     assert set(s) == {"load", "task", "result", "risk"}
     assert s["task"]["signals"] == 1.0
+
+
+def test_node_fault_requeue_dynamic_pickup(monkeypatch, tmp_path):
+    """M5 (harness 心跳联动) 回归: 心跳静默的 WORKING 实例被 reap_stale 判
+    FAULT → inflight 协程取消 → 任务回池 (retries 不增) → 弹性供给补节点 →
+    幸存者拾取重跑 → 最终完成。对齐研究方案「节点杀死后任务拾取率 100%」
+    (真实调度层, 引擎 stub; scripts/bench_node_kill_live.py 为其压测形态)。"""
+    import re
+    import time
+    import coworker.orchestrator.orchestrator as orch_mod
+    from coworker.orchestrator.models import Plan
+    from coworker.orchestrator.orchestrator import Orchestrator
+    from coworker.team.agent_pool import AgentPool, AgentState
+
+    state: dict = {"frozen": set()}
+    tasks = [Task(id=f"t{i}", description=f"kill-live t{i}") for i in range(3)]
+    pool = AgentPool()
+
+    async def fake_run(engine, prompt, on_event=None):
+        m = re.match(r"^Task \[(t\d+)\]", prompt)
+        tid = m.group(1) if m else None
+        if on_event is not None:
+            on_event("tool_thought", {"text": f"working on {tid}"})
+        deadline = time.monotonic() + 0.5
+        last_beat = time.monotonic()
+        while time.monotonic() < deadline:
+            if tid is not None and tid in state["frozen"]:
+                await asyncio.sleep(60)  # 节点死亡: 协程永久挂死 (心跳随之静默)
+            await asyncio.sleep(0.02)  # 周期性 frozen 检查 → 注入时机无竞态
+            # 真实 LLM 引擎持续产事件 → 事件心跳给在跑实例续命 (重派后不被误杀)
+            if on_event is not None and time.monotonic() - last_beat > 0.1:
+                on_event("tool_thought", {"text": f"working on {tid}"})
+                last_beat = time.monotonic()
+        return f"[{tid}] deliverable body long enough for the report section", "ok"
+
+    o = Orchestrator(
+        provider=None, model="m", workspace=str(tmp_path),
+        initial_plan=Plan(goal="kill test", tasks=tasks),
+        max_parallel=3, timeout_seconds=None, task_timeout_seconds=None,
+        agent_pool=pool, mesh_claim=True, stall_rounds_threshold=5,
+        heartbeat_interval=3600.0,  # 泵等效死亡 (进程死=泵死): victim 唯一心跳源是事件心跳
+        reap_interval=0.1, reap_timeout=0.3, refine_auto=False,
+    )
+    o._build_executor_engine = lambda *a, **kw: object()
+
+    async def fake_review(task, result):
+        return ReviewVerdict(accepted=True, confidence=0.9, reason="stub")
+
+    o._review = fake_review
+    monkeypatch.setattr(orch_mod, "_run_engine_async", fake_run)
+    events: list[tuple[str, dict]] = []
+    o.event_sink = lambda k, p: events.append((k, p))
+
+    async def scenario():
+        run = asyncio.create_task(o.run("kill test"))
+        # 等首批 3 任务全部在跑 → 冻结 t1 + 拨老其实例心跳 (进程僵死语义)
+        while True:
+            if o._last_plan is not None:
+                running = [t for t in o._last_plan.tasks if t.status == "running"]
+                if len(running) == 3:
+                    break
+            await asyncio.sleep(0.02)
+        state["frozen"].add("t1")
+        # status=running 先于 acquire 注册实例 — 等待 t1 的实例出现
+        victim = None
+        while victim is None:
+            victim = next(
+                (a for a in pool.list() if a.current_task_id == "t1"), None
+            )
+            if victim is None:
+                await asyncio.sleep(0.02)
+        victim.last_heartbeat -= 5.0
+        # reap 联动 → t1 回池 (pending) → 解除 frozen (重跑=新执行槽位)
+        while True:
+            t1 = next(t for t in o._last_plan.tasks if t.id == "t1")
+            if t1.status == "pending":
+                state["frozen"].discard("t1")
+                break
+            await asyncio.sleep(0.02)
+        return await asyncio.wait_for(run, timeout=20), victim
+
+    result, victim = asyncio.run(scenario())
+
+    kinds = [k for k, _ in events]
+    assert kinds.count("node_fault") == 1
+    assert kinds.count("node_fault_requeue") == 1
+    assert result.status == "completed"
+    assert all(t.done for t in o._last_plan.tasks)
+    # 节点故障不扣任务重试预算 (retries 不增 — 故障不是任务的错)
+    assert next(t for t in o._last_plan.tasks if t.id == "t1").retries == 0
+    # FAULT 实例不被 release 洗白 (死节点永不复用)
+    assert pool.get(victim.id).state == AgentState.FAULT
+
+
+def test_hub_detection_and_batch_priority():
+    """M5 枢纽分域: 入度 ≥2 的任务识别为枢纽; ready 内枢纽稳定前移。"""
+    from coworker.orchestrator.models import Plan
+    from coworker.orchestrator.orchestrator import Orchestrator
+
+    o = Orchestrator(provider=None, model="m", workspace="w")
+    plan = Plan(goal="g", tasks=[
+        Task(id="t_hub", description="hub", deps=[]),
+        Task(id="t_b", description="b", deps=["t_hub"]),
+        Task(id="t_c", description="c", deps=["t_hub"]),
+        Task(id="t_d", description="d", deps=["t_hub", "t_b"]),
+    ])
+    o._compute_hubs(plan)
+    assert o._last_hubs == {"t_hub"}
+    assert o._last_hub_indegree["t_hub"] == 3
+
+    ready = [Task(id="t_x", description="x"),
+             Task(id="t_hub", description="hub"),
+             Task(id="t_y", description="y")]
+    assert [t.id for t in o._prioritize_hubs(ready)] == ["t_hub", "t_x", "t_y"]
+    # 无枢纽 → 原序不动 (稳定排序; 用新列表 — 上一断言已原地重排)
+    o._last_hubs = set()
+    ready2 = [Task(id="t_x", description="x"),
+              Task(id="t_hub", description="hub"),
+              Task(id="t_y", description="y")]
+    assert [t.id for t in o._prioritize_hubs(ready2)] == ["t_x", "t_hub", "t_y"]

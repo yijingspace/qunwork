@@ -290,6 +290,13 @@ class Orchestrator:
     # emitted as a "convergence_report" event (谱隙 |λ₂|, 理论收敛轮数, 实测曲线).
     # None = legacy behaviour (no convergence telemetry).
     loopcoop: Optional[Any] = None
+    # QunMesh M5 (harness 心跳联动): 心跳泵 + reap 巡检 → 节点故障拾取率。
+    # _execute 期间泵周期 heartbeat(worker 实例)；_reap_loop 周期性 reap_stale，
+    # 心跳静默超 reap_timeout 的 WORKING 实例判 FAULT → 取消其 inflight 协程 →
+    # 任务回池重派 (动态拾取)。reap_interval=None/<=0 = 旧行为 (回滚开关)。
+    heartbeat_interval: float = 15.0
+    reap_interval: Optional[float] = 60.0
+    reap_timeout: float = 300.0
     _runs: int = field(default=0, init=False)
     _run_seq: int = field(default=0, init=False)
     _last_plan: Optional[Plan] = field(default=None, init=False)
@@ -314,6 +321,14 @@ class Orchestrator:
         self._mesh_topology_enabled = self.mesh_mode.strip().lower() == "full"
         # QunMesh M4+: 枢纽分域标注 (plan 落定时填充; full 档启用)。
         self._last_domains: dict[str, int] = {}
+        # QunMesh M5: 枢纽任务集 (DAG 入度 ≥2 的汇聚点, plan 落定时填充) +
+        # inflight 协程跟踪 (task_id → asyncio.Task, reap FAULT 时取消回池)。
+        self._last_hubs: set[str] = set()
+        self._last_hub_indegree: dict[str, int] = {}
+        self._inflight: dict[str, "asyncio.Task"] = {}
+        # reap 发起的取消标记 — CancelledError 处理据此区分"节点故障回池"
+        # 与"外部取消" (operator/wait_for/事件循环关闭), 后者必须传播。
+        self._reap_marks: set[str] = set()
 
     def set_mesh_mode(self, mode: str) -> dict[str, bool]:
         """mesh_mode 运行时热切换 (M4 后续项): 更新四档推导的三开关与拓扑
@@ -362,6 +377,84 @@ class Orchestrator:
             self.pheromone.deposit(key, amount, channel=channel, payload=payload)
         except Exception:
             logger.exception("pheromone deposit %s/%s failed", channel, key)
+
+    # QunMesh M5 (harness 心跳联动): 心跳泵 + reap 巡检。两个后台协程都
+    # best-effort + 失败安全 (异常静默续转), 语义对齐 bench_node_failure.py
+    # 的动态拾取仿真 (静态映射 → 任务滞留 / 动态领取 → 幸存者拾取)。
+
+    def _start_heartbeat(self, agent_id: str) -> Optional["asyncio.Task"]:
+        """Pump heartbeats for a WORKING agent instance while its task runs.
+
+        The event-driven heartbeat in _execute's feed() only fires when the
+        engine produces events; a long silent LLM call would otherwise look
+        stale to reap_stale. This loop keeps the instance visibly alive."""
+        if not self.heartbeat_interval or self.heartbeat_interval <= 0:
+            return None
+        return asyncio.create_task(self._heartbeat_pump(agent_id))
+
+    async def _heartbeat_pump(self, agent_id: str) -> None:
+        try:
+            while True:
+                try:
+                    self.agent_pool.heartbeat(agent_id)
+                except Exception:
+                    pass
+                await asyncio.sleep(self.heartbeat_interval)
+        except asyncio.CancelledError:
+            pass
+
+    async def _reap_loop(self, plan: Optional[Plan]) -> None:
+        """Periodically reap stale worker instances; newly-FAULTED instances
+        get their in-flight task coroutine cancelled so _process_impl requeues
+        the task (dynamic pickup). plan.all_done()/needs_human() are the
+        self-healing exit conditions; the run end also cancels this task."""
+        interval = self.reap_interval or 0
+        if interval <= 0 or self.agent_pool is None:
+            return
+        try:
+            while True:
+                await asyncio.sleep(interval)
+                if plan is not None and (plan.all_done() or plan.needs_human()):
+                    return
+                try:
+                    faulted = self.agent_pool.reap_stale(timeout=self.reap_timeout)
+                except Exception:
+                    continue
+                for aid in faulted:
+                    inst = None
+                    try:
+                        inst = self.agent_pool.get(aid)
+                    except Exception:
+                        pass
+                    tid = getattr(inst, "current_task_id", None) if inst is not None else None
+                    self._emit(
+                        "node_fault",
+                        {"agent": aid, "task_id": tid, "timeout": self.reap_timeout},
+                    )
+                    runner = self._inflight.get(tid) if tid else None
+                    if runner is not None and not runner.done():
+                        self._reap_marks.add(tid)  # 标记: reap 发起的取消
+                        runner.cancel()
+        except asyncio.CancelledError:
+            pass
+
+    def _compute_hubs(self, plan: Optional[Plan]) -> None:
+        """QunMesh M5 枢纽识别: 依赖入度 ≥2 的任务标记为枢纽 (fan-in 汇聚点,
+        早完成早解锁整簇下游)。入度表存 _last_hub_indegree 供 mesh_hubs 事件。"""
+        dep_count: dict[str, int] = {}
+        for t in (plan.tasks if plan is not None else []):
+            for d in t.deps:
+                dep_count[d] = dep_count.get(d, 0) + 1
+        self._last_hub_indegree = dep_count
+        self._last_hubs = {tid for tid, c in dep_count.items() if c >= 2}
+
+    def _prioritize_hubs(self, ready: list) -> list:
+        """QunMesh M5: 枢纽任务 (被 ≥2 个任务依赖的汇聚点) 稳定前移。
+        枢纽早完成早解锁整簇下游; 排序发生在批选择之前, 域聚簇 (M2) 在
+        批内名额分配不受影响。"""
+        if self._last_hubs:
+            ready.sort(key=lambda t: 0 if t.id in self._last_hubs else 1)
+        return ready
 
     def _select_batch(self, ready: list) -> list:
         """P0 增量1 (信息素负载均衡): choose this round's parallel batch. Without a
@@ -551,7 +644,10 @@ class Orchestrator:
         # 并发自然伸缩 — 网格拓扑这才有多节点/边/非零 λ₂。
         if pool_inst is None and self.agent_pool is not None:
             try:
-                pool_inst = self.agent_pool.register(role_tag, role_tag, working=True)
+                pool_inst = self.agent_pool.register(
+                    role_tag, role_tag, working=True,
+                    task_id=task.id, task_group_id=self.task_group_id,
+                )
                 acquired_agent_id = pool_inst.id
             except Exception:
                 pool_inst = None
@@ -562,6 +658,9 @@ class Orchestrator:
             self._pher_deposit(
                 acquired_agent_id, 1.0, channel="load", payload=task.id[:120]
             )
+        # QunMesh M5: 心跳泵 — engine 事件驱动的 heartbeat 只在产事件时触发,
+        # 长静默 LLM 调用会被 reap_stale 误判; 泵周期续心跳保实例可见存活。
+        heartbeat_task = self._start_heartbeat(acquired_agent_id) if acquired_agent_id is not None else None
         try:
             # Consume a pre-warmed engine if the caller staged one (built OUTSIDE
             # the task-timeout window — see _process_impl). Always cleared so a
@@ -636,6 +735,9 @@ class Orchestrator:
 
             text, status = await _run_engine_async(engine, prompt, on_event=feed)
         finally:
+            # QunMesh M5: 先停心跳泵再释放 — 泵存活期间不给已释放实例续心跳。
+            if heartbeat_task is not None:
+                heartbeat_task.cancel()
             # 2) Always release back. The pool tolerates double release safely.
             if acquired_agent_id is not None and self.agent_pool is not None:
                 try:
@@ -860,6 +962,26 @@ class Orchestrator:
             except Exception:
                 logger.exception("mesh domain assign failed")
                 self._last_domains = {}
+        # QunMesh M5 枢纽识别: DAG 入度 ≥2 的任务 = 汇聚枢纽 (阻塞上游最深的
+        # 扇出点) — 调度时优先排批, 枢纽早完成早解锁整簇下游。
+        self._compute_hubs(plan)
+        if self._mesh_topology_enabled and self._last_hubs:
+            self._emit(
+                "mesh_hubs",
+                {
+                    "hubs": sorted(self._last_hubs),
+                    "indegree": {
+                        k: v for k, v in sorted(self._last_hub_indegree.items())
+                        if k in self._last_hubs
+                    },
+                },
+            )
+        # QunMesh M5: reap 巡检后台协程 — 心跳静默超时的 WORKING 实例判 FAULT,
+        # 取消其 inflight 协程 → 任务回池重派 (节点故障动态拾取)。
+        # reap_interval=None/<=0 或无 agent_pool = 旧行为 (回滚开关)。
+        reaper: Optional["asyncio.Task"] = None
+        if self.reap_interval and self.reap_interval > 0 and self.agent_pool is not None:
+            reaper = asyncio.create_task(self._reap_loop(plan))
         self._emit(
             "plan_ready",
             {
@@ -966,12 +1088,19 @@ class Orchestrator:
                 timeout = self.task_timeout_seconds
                 if timeout and len(task.deps) >= 2:
                     timeout = max(timeout, self.task_timeout_seconds * 3)
-                if timeout:
-                    result = await asyncio.wait_for(
-                        _run_task(), timeout=timeout
-                    )
-                else:
-                    result = await _run_task()
+                # QunMesh M5: track the runner coroutine so the reap loop can
+                # cancel it when the worker instance is judged FAULT (node
+                # death) — the cancellation unwinds into the CancelledError
+                # branch below, which requeues the task for dynamic pickup.
+                runner = asyncio.create_task(_run_task())
+                self._inflight[task.id] = runner
+                try:
+                    if timeout:
+                        result = await asyncio.wait_for(runner, timeout=timeout)
+                    else:
+                        result = await runner
+                finally:
+                    self._inflight.pop(task.id, None)
             except asyncio.TimeoutError:
                 # Degrade with whatever the executor already produced — a real
                 # partial draft, not a placeholder — so dependents and the final
@@ -989,6 +1118,24 @@ class Orchestrator:
                 self._emit("task_timeout", {"id": task.id, "seconds": self.task_timeout_seconds})
                 self._emit("task_done", {"id": task.id, "status": task.status, "confidence": task.confidence})
                 return True
+            except asyncio.CancelledError:
+                # QunMesh M5: 节点故障拾取 — worker 实例被 reap_stale 判 FAULT,
+                # 其 inflight runner 被 reap loop 取消。此时 _process_impl 自身
+                # 未被取消 (runner 的取消经 await 传播而来, cancelling()==0) →
+                # 任务回池 (retries 不增 — 故障不是任务的错), 下一轮批调度重派,
+                # 弹性供给补新节点拾取。对齐研究方案「节点杀死后任务拾取率 100%」。
+                # 外部取消 (operator/wait_for/loop shutdown) 会 cancel 本协程
+                # 自身 (cancelling() ≥ 1) → re-raise 传播 — 吞掉外层取消会让
+                # run 永不退出 (wait_for 永等被吞取消的 task)。
+                if not asyncio.current_task().cancelling():
+                    task.status = "pending"
+                    task.result = ""
+                    self._emit(
+                        "node_fault_requeue",
+                        {"id": task.id, "attempt": task.retries},
+                    )
+                    return True
+                raise
             except Exception as exc:  # executor crash → one retry, then escalate
                 task.status = "pending" if task.retries < self.max_retries else "needs_human"
                 task.result = f"executor error: {exc}"
@@ -1241,6 +1388,9 @@ class Orchestrator:
                     "run_timed_out",
                     {"seconds": self.timeout_seconds, "final_batch": [t.id for t in ready[: max(1, self.max_parallel)]]},
                 )
+            # QunMesh M5: 枢纽优先 — 入度 ≥2 的汇聚点排批前 (早完成早解锁整簇
+            # 下游); 稳定排序, 不破坏 ready 内原有顺序语义 (域聚簇在批内选择)。
+            ready = self._prioritize_hubs(ready)
             batch = self._select_batch(ready)
             # QunMesh M4 (mesh_mode=full): 每轮拓扑遥测 — λ₂ 网格代数连通度
             # (LoopCoop 谱隙的网格级观测) + 热点迁徙建议。只读旁路, 不影响调度。
@@ -1284,6 +1434,11 @@ class Orchestrator:
                     break
             if budget_exhausted:
                 break
+
+        # QunMesh M5: 派发结束停 reap 巡检 (自愈退出条件另见 _reap_loop 内的
+        # plan.all_done()/needs_human() 检查, 异常穿透路径由事件循环关闭兜底)。
+        if reaper is not None:
+            reaper.cancel()
 
         status = (
             "paused"
