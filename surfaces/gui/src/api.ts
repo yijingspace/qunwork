@@ -3,7 +3,7 @@ import type { SessionInfo, WsEvent } from "./types";
 declare const __COWORKER_DEV_TOKEN__: string;
 
 // Endpoint resolution order: runtime-injected globals (Tauri sets `window.__COWORKER_HTTP__`
-// for its dynamically-chosen sidecar port) → Vite env → the 127.0.0.1:8765 dev default. This
+// for its dynamically-chosen sidecar port) 鈫?Vite env 鈫?the 127.0.0.1:8765 dev default. This
 // keeps a single codebase: browser `npm run dev` hits 8765; the desktop shell hits its sidecar.
 const httpBase = (): string =>
   (globalThis as any).__COWORKER_HTTP__ ||
@@ -42,6 +42,29 @@ const openWebSocket = (url: string): WebSocket => {
     : new WebSocket(url);
 };
 
+/**
+ * 401/5xx 绛夊紓甯稿搷搴旀鍓嶈褰撴暟鎹敤锛堥敊璇綋 {"error":...} 鐩存帴杩?state锛夛紝
+ * 缁勪欢娣卞鐨?.includes/[0]/.map 璁块棶 undefined 瀛楁 鈫?鏁撮〉 error boundary
+ * 鐧藉睆锛堛€屾棤娉曡繛鎺ユ湰鍦板紩鎿庛€嶅満鏅殑閬楃暀娓叉煋鎶ラ敊锛?026-09-02 瀹氫綅锛夈€?
+ * apiFetch 缁熶竴鍦ㄤ紶杈撳眰鎷︽埅锛氶潪 2xx 鎶?ApiError锛岃皟鐢ㄦ柟鐨?.catch(() => {})
+ * 鍏滃簳鐢熸晥锛岄敊璇綋姘歌繙涓嶈繘娓叉煋鏁版嵁銆?38 澶?fetch 涓?212 澶勭粺涓€璧版鍖呰銆?
+ */
+export class ApiError extends Error {
+  status: number;
+  path: string;
+  constructor(status: number, path: string) {
+    super(`API ${status}: ${path}`);
+    this.status = status;
+    this.path = path;
+  }
+}
+
+async function apiFetch(url: string, init?: RequestInit): Promise<Response> {
+  const res = await fetch(url, init);
+  if (!res.ok) throw new ApiError(res.status, url.replace(/^https?:\/\/[^/]+/, ""));
+  return res;
+}
+
 export interface Health {
   status: string;
   default_workspace: string | null;
@@ -63,20 +86,20 @@ export interface WorkspaceCommandTrust {
 }
 
 export async function getHealth(): Promise<Health> {
-  const res = await fetch(`${httpBase()}/v1/health`);
+  const res = await apiFetch(`${httpBase()}/v1/health`);
   return res.json();
 }
 
 export async function getRecentWorkspaces(): Promise<RecentWorkspace[]> {
-  const res = await fetch(`${httpBase()}/v1/workspaces/recent`);
+  const res = await apiFetch(`${httpBase()}/v1/workspaces/recent`);
   return (await res.json()).workspaces ?? [];
 }
 
-/** Ask the LOCAL sidecar to open the OS folder picker — the browser GUI can't obtain absolute
+/** Ask the LOCAL sidecar to open the OS folder picker 鈥?the browser GUI can't obtain absolute
  * paths from web file dialogs. Blocks until the user picks or cancels; null on cancel/unavailable. */
 export async function pickFolderViaServer(): Promise<string | null> {
   try {
-    const res = await fetch(`${httpBase()}/v1/workspaces/pick`, { method: "POST" });
+    const res = await apiFetch(`${httpBase()}/v1/workspaces/pick`, { method: "POST" });
     const d = await res.json();
     return d.ok && d.path ? d.path : null;
   } catch {
@@ -94,7 +117,7 @@ export async function openWorkspace(
   git_branch?: string | null;
   command_trust?: WorkspaceCommandTrust;
 }> {
-  const res = await fetch(`${httpBase()}/v1/workspaces/open`, {
+  const res = await apiFetch(`${httpBase()}/v1/workspaces/open`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ path, create }),
@@ -103,7 +126,7 @@ export async function openWorkspace(
 }
 
 export async function getTrustedWorkspaces(): Promise<WorkspaceCommandTrust[]> {
-  const res = await fetch(`${httpBase()}/v1/workspaces/trusted`);
+  const res = await apiFetch(`${httpBase()}/v1/workspaces/trusted`);
   return (await res.json()).workspaces ?? [];
 }
 
@@ -111,7 +134,7 @@ export async function setWorkspaceTrusted(
   path: string,
   trusted: boolean,
 ): Promise<{ ok: boolean; error?: string } & WorkspaceCommandTrust> {
-  const res = await fetch(`${httpBase()}/v1/workspaces/trust`, {
+  const res = await apiFetch(`${httpBase()}/v1/workspaces/trust`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ path, trusted }),
@@ -121,12 +144,12 @@ export async function setWorkspaceTrusted(
 
 export async function getSessions(workspace?: string): Promise<SessionInfo[]> {
   const q = workspace ? `?workspace=${encodeURIComponent(workspace)}` : "";
-  const res = await fetch(`${httpBase()}/v1/sessions${q}`);
+  const res = await apiFetch(`${httpBase()}/v1/sessions${q}`);
   return (await res.json()).sessions ?? [];
 }
 
-// A structured connector-delivered inbound message (§3.1). Attached to the user message it framed,
-// for display only — the model still sees the framed `content`; this drives the ConnectorMessageCard.
+// A structured connector-delivered inbound message (搂3.1). Attached to the user message it framed,
+// for display only 鈥?the model still sees the framed `content`; this drives the ConnectorMessageCard.
 export interface MessageSource {
   connector: string; // platform id, e.g. "slack"
   kind: "channel" | "dm";
@@ -150,12 +173,12 @@ export interface ConversationMessage {
 }
 
 export async function getSessionMessages(sessionId: string): Promise<ConversationMessage[]> {
-  const res = await fetch(`${httpBase()}/v1/sessions/${sessionId}/messages`);
+  const res = await apiFetch(`${httpBase()}/v1/sessions/${sessionId}/messages`);
   return (await res.json()).messages ?? [];
 }
 
 export async function renameSession(sessionId: string, title: string): Promise<{ ok: boolean; error?: string }> {
-  const res = await fetch(`${httpBase()}/v1/sessions/${encodeURIComponent(sessionId)}`, {
+  const res = await apiFetch(`${httpBase()}/v1/sessions/${encodeURIComponent(sessionId)}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ title }),
@@ -167,7 +190,7 @@ export async function setSessionFlags(
   sessionId: string,
   flags: { pinned?: boolean; archived?: boolean },
 ): Promise<{ ok: boolean; error?: string }> {
-  const res = await fetch(`${httpBase()}/v1/sessions/${encodeURIComponent(sessionId)}`, {
+  const res = await apiFetch(`${httpBase()}/v1/sessions/${encodeURIComponent(sessionId)}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(flags),
@@ -176,13 +199,13 @@ export async function setSessionFlags(
 }
 
 export async function deleteSession(sessionId: string): Promise<{ ok: boolean; error?: string }> {
-  const res = await fetch(`${httpBase()}/v1/sessions/${encodeURIComponent(sessionId)}`, { method: "DELETE" });
+  const res = await apiFetch(`${httpBase()}/v1/sessions/${encodeURIComponent(sessionId)}`, { method: "DELETE" });
   return res.json();
 }
 
 export interface ArtifactInfo {
   path: string; // workspace-relative (the display/API identifier)
-  abs_path?: string; // absolute — what "Copy path" copies
+  abs_path?: string; // absolute 鈥?what "Copy path" copies
   name: string;
   kind: "markdown" | "html" | "image" | "code" | "text" | string;
   size: number;
@@ -200,13 +223,13 @@ export interface ArtifactContent {
 }
 
 export async function getArtifacts(sessionId: string): Promise<ArtifactInfo[]> {
-  const res = await fetch(`${httpBase()}/v1/sessions/${encodeURIComponent(sessionId)}/artifacts`);
+  const res = await apiFetch(`${httpBase()}/v1/sessions/${encodeURIComponent(sessionId)}/artifacts`);
   return (await res.json()).artifacts ?? [];
 }
 
 export async function readArtifact(sessionId: string, path: string): Promise<ArtifactContent> {
   const q = new URLSearchParams({ path });
-  const res = await fetch(`${httpBase()}/v1/sessions/${encodeURIComponent(sessionId)}/artifacts/read?${q.toString()}`);
+  const res = await apiFetch(`${httpBase()}/v1/sessions/${encodeURIComponent(sessionId)}/artifacts/read?${q.toString()}`);
   return res.json();
 }
 
@@ -216,7 +239,7 @@ export async function revealArtifact(
   path: string,
   mode: "reveal" | "open" = "reveal",
 ): Promise<{ ok: boolean; error?: string }> {
-  const res = await fetch(`${httpBase()}/v1/sessions/${encodeURIComponent(sessionId)}/artifacts/reveal`, {
+  const res = await apiFetch(`${httpBase()}/v1/sessions/${encodeURIComponent(sessionId)}/artifacts/reveal`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ path, mode }),
@@ -234,7 +257,7 @@ export interface RootInfo {
 }
 
 export async function getRoots(sessionId: string): Promise<RootInfo[]> {
-  const res = await fetch(`${httpBase()}/v1/sessions/${encodeURIComponent(sessionId)}/roots`);
+  const res = await apiFetch(`${httpBase()}/v1/sessions/${encodeURIComponent(sessionId)}/roots`);
   return (await res.json()).roots ?? [];
 }
 
@@ -243,7 +266,7 @@ export async function addRoot(
   path: string,
   writable: boolean,
 ): Promise<{ ok: boolean; error?: string; roots?: RootInfo[] }> {
-  const res = await fetch(`${httpBase()}/v1/sessions/${encodeURIComponent(sessionId)}/roots`, {
+  const res = await apiFetch(`${httpBase()}/v1/sessions/${encodeURIComponent(sessionId)}/roots`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ path, writable }),
@@ -279,12 +302,12 @@ export interface McpServer {
 }
 
 export async function getMcpServers(): Promise<McpServer[]> {
-  const res = await fetch(`${httpBase()}/v1/mcp`);
+  const res = await apiFetch(`${httpBase()}/v1/mcp`);
   return (await res.json()).servers ?? [];
 }
 
 export async function addMcpServer(name: string, config: Record<string, any>) {
-  const res = await fetch(`${httpBase()}/v1/mcp`, {
+  const res = await apiFetch(`${httpBase()}/v1/mcp`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ name, config }),
@@ -293,7 +316,7 @@ export async function addMcpServer(name: string, config: Record<string, any>) {
 }
 
 export async function patchMcpServer(name: string, changes: Record<string, any>) {
-  const res = await fetch(`${httpBase()}/v1/mcp/${encodeURIComponent(name)}`, {
+  const res = await apiFetch(`${httpBase()}/v1/mcp/${encodeURIComponent(name)}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(changes),
@@ -302,26 +325,26 @@ export async function patchMcpServer(name: string, changes: Record<string, any>)
 }
 
 export async function deleteMcpServer(name: string) {
-  const res = await fetch(`${httpBase()}/v1/mcp/${encodeURIComponent(name)}`, { method: "DELETE" });
+  const res = await apiFetch(`${httpBase()}/v1/mcp/${encodeURIComponent(name)}`, { method: "DELETE" });
   return res.json();
 }
 
 export async function getMcpTools(
   name: string,
 ): Promise<{ ok: boolean; error?: string; tools: { name: string; description: string }[] }> {
-  const res = await fetch(`${httpBase()}/v1/mcp/${encodeURIComponent(name)}/tools`);
+  const res = await apiFetch(`${httpBase()}/v1/mcp/${encodeURIComponent(name)}/tools`);
   return res.json();
 }
 
 export async function reloadMcp() {
-  const res = await fetch(`${httpBase()}/v1/mcp/reload`, { method: "POST" });
+  const res = await apiFetch(`${httpBase()}/v1/mcp/reload`, { method: "POST" });
   return res.json();
 }
 
 /** Connect one MCP server now. For OAuth servers this opens the system browser;
- * poll getMcpServers() for the status flip (authorizing → connected / needs_auth). */
+ * poll getMcpServers() for the status flip (authorizing 鈫?connected / needs_auth). */
 export async function connectMcp(name: string): Promise<{ ok: boolean; started?: boolean }> {
-  const res = await fetch(`${httpBase()}/v1/mcp/${encodeURIComponent(name)}/connect`, {
+  const res = await apiFetch(`${httpBase()}/v1/mcp/${encodeURIComponent(name)}/connect`, {
     method: "POST",
   });
   return res.json();
@@ -329,7 +352,7 @@ export async function connectMcp(name: string): Promise<{ ok: boolean; started?:
 
 /** Drop the connection and forget the stored OAuth tokens. */
 export async function signoutMcp(name: string): Promise<{ ok: boolean }> {
-  const res = await fetch(`${httpBase()}/v1/mcp/${encodeURIComponent(name)}/signout`, {
+  const res = await apiFetch(`${httpBase()}/v1/mcp/${encodeURIComponent(name)}/signout`, {
     method: "POST",
   });
   return res.json();
@@ -345,7 +368,7 @@ export interface ConnectorField {
   placeholder: string;
 }
 
-// A message from a sender not (yet) on the allow-list — parked instead of dropped (§19).
+// A message from a sender not (yet) on the allow-list 鈥?parked instead of dropped (搂19).
 export interface ParkedMessage {
   id: string;
   platform: string;
@@ -364,11 +387,11 @@ export interface ParkedMessage {
 export interface SlackWorkspace {
   team_id: string;
   account: string;
-  domain?: string; // slack.com subdomain — unique even when display names collide
+  domain?: string; // slack.com subdomain 鈥?unique even when display names collide
   allowed_users: string[];
   allow_all: boolean;
   allowed_user_names?: Record<string, string | null>;
-  // Who installed this workspace (authed_user) — pre-added to the allow-list on
+  // Who installed this workspace (authed_user) 鈥?pre-added to the allow-list on
   // connect (UX-027); the GUI marks their chip "you" and keys the setup card copy.
   installer_user_id?: string;
   installer_name?: string;
@@ -397,7 +420,7 @@ export interface HubSpotPortal {
 }
 
 // One connected Google account (multi-account: `gmail:account:<email>` /
-// `google_calendar:account:<email>` profiles — same shape for both).
+// `google_calendar:account:<email>` profiles 鈥?same shape for both).
 export interface GmailAccount {
   email: string;
   default: boolean;
@@ -406,7 +429,7 @@ export interface GmailAccount {
   needs_reauth: boolean;
 }
 
-// "Never show agents" — enforced locally in the tool layer; agents see silent
+// "Never show agents" 鈥?enforced locally in the tool layer; agents see silent
 // omissions, the user sees counts on tool cards + Activity rows.
 export interface GmailFilters {
   senders: string[];
@@ -414,11 +437,11 @@ export interface GmailFilters {
 }
 
 // One account of a generic multi-account connector (`<name>:account:<id>`
-// profiles — Notion workspaces, PostHog projects, …). Gmail/Calendar predate
+// profiles 鈥?Notion workspaces, PostHog projects, 鈥?. Gmail/Calendar predate
 // the generic layer and keep their email-keyed shape above.
 export interface AccountRow {
   account_id: string;
-  name: string; // display identity captured at connect (workspace name, email, …)
+  name: string; // display identity captured at connect (workspace name, email, 鈥?
   default: boolean;
   managed: boolean;
 }
@@ -428,8 +451,8 @@ export interface Connector {
   title: string;
   icon: string;
   blurb: string;
-  // Pre-connect detail page copy (UX-DECISIONS §38): optional About paragraph
-  // (empty → group omitted) + honest Access bullets.
+  // Pre-connect detail page copy (UX-DECISIONS 搂38): optional About paragraph
+  // (empty 鈫?group omitted) + honest Access bullets.
   about?: string;
   access?: string[];
   auth: string;
@@ -443,21 +466,21 @@ export interface Connector {
   account: string | null;
   enabled: boolean;
   brand_color: string; // hex brand color, e.g. "#611f69" (fallback gray "#6b7280")
-  logo: string; // stable logo id keyed into the frontend registry (empty → fallback glyph)
+  logo: string; // stable logo id keyed into the frontend registry (empty 鈫?fallback glyph)
   aliases?: string[]; // extra typeahead terms ("calendar" surfaces Outlook)
-  mcp?: boolean; // MCP-backed one-click (vendor-hosted MCP + local OAuth — no cloud sign-in)
+  mcp?: boolean; // MCP-backed one-click (vendor-hosted MCP + local OAuth 鈥?no cloud sign-in)
   allowed_users: string[]; // the allow-list (managed inline in the Connectors tab)
-  allowed_user_names?: Record<string, string | null>; // id → display name (people directory)
+  allowed_user_names?: Record<string, string | null>; // id 鈫?display name (people directory)
   recent?: RecentSender[]; // recently-seen senders on a connected two-way connector
-  unauthorized?: ParkedMessage[]; // parked messages from unallowed senders (§19)
+  unauthorized?: ParkedMessage[]; // parked messages from unallowed senders (搂19)
   tools: ConnectorTool[];
   managed: boolean; // one-click managed OAuth available (needs cloud sign-in)
-  managed_paused?: boolean; // one-click temporarily off (e.g. Google CASA pending) — badge "Coming soon"
+  managed_paused?: boolean; // one-click temporarily off (e.g. Google CASA pending) 鈥?badge "Coming soon"
   managed_profile: boolean; // current profile came from managed OAuth (vs manual paste)
   mode?: string; // "relay" for the managed cloud path; "" for manual/token connect
   workspaces?: SlackWorkspace[]; // Slack only: connected workspaces (managed relay)
   // Gmail/Calendar: email-keyed rows; generic account connectors (notion,
-  // attio, posthog, …): AccountRow. The detail pages narrow by connector.
+  // attio, posthog, 鈥?: AccountRow. The detail pages narrow by connector.
   accounts?: GmailAccount[] | AccountRow[];
   filters?: GmailFilters; // Gmail only: "Never show agents" senders/labels
   portals?: HubSpotPortal[]; // HubSpot only: connected portals (multi-portal)
@@ -478,7 +501,7 @@ export interface CloudStatus {
 export async function setCloudTelemetry(
   enabled: boolean,
 ): Promise<{ ok: boolean; telemetry_enabled?: boolean }> {
-  const res = await fetch(`${httpBase()}/v1/cloud/telemetry`, {
+  const res = await apiFetch(`${httpBase()}/v1/cloud/telemetry`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ enabled }),
@@ -487,21 +510,21 @@ export async function setCloudTelemetry(
 }
 
 export async function getCloudStatus(): Promise<CloudStatus> {
-  const res = await fetch(`${httpBase()}/v1/cloud/status`);
+  const res = await apiFetch(`${httpBase()}/v1/cloud/status`);
   return res.json();
 }
 
 export async function cloudLogin(): Promise<{ ok: boolean }> {
   // The sidecar opens the system browser; the GUI just polls status after.
-  const res = await fetch(`${httpBase()}/v1/cloud/login`, { method: "POST" });
+  const res = await apiFetch(`${httpBase()}/v1/cloud/login`, { method: "POST" });
   return res.json();
 }
 
 /** Poll cloud status until the browser sign-in lands (or the bound runs out).
  *
- * Fast 500ms polls for the first 20s — the moment the user finishes in the
+ * Fast 500ms polls for the first 20s 鈥?the moment the user finishes in the
  * browser they're staring at the app waiting for it to flip, and a 2s interval
- * reads as "sign-in is slow" (owner complaint, 2026-07-16) — then relaxes to 2s
+ * reads as "sign-in is slow" (owner complaint, 2026-07-16) 鈥?then relaxes to 2s
  * for the long tail (~2min total). Calls `onDone` with the signed-in status, or
  * null when it timed out. Returns a cancel function (call on unmount). */
 export function waitForCloudSignIn(
@@ -515,7 +538,7 @@ export function waitForCloudSignIn(
     const s = await getCloudStatus().catch(() => null);
     if (cancelled) return;
     if (s?.signed_in) return onDone(s);
-    if (polls >= 90) return onDone(null); // 40×500ms + 50×2s ≈ 2min
+    if (polls >= 90) return onDone(null); // 40脳500ms + 50脳2s 鈮?2min
     timer = setTimeout(tick, polls < 40 ? 500 : 2000);
   };
   timer = setTimeout(tick, 500);
@@ -526,7 +549,7 @@ export function waitForCloudSignIn(
 }
 
 export async function cloudLogout(): Promise<{ ok: boolean }> {
-  const res = await fetch(`${httpBase()}/v1/cloud/logout`, { method: "POST" });
+  const res = await apiFetch(`${httpBase()}/v1/cloud/logout`, { method: "POST" });
   return res.json();
 }
 
@@ -540,7 +563,7 @@ export async function connectManaged(
       method: "POST",
       headers: { "Content-Type": "application/json" },
       // `access` names a broker-defined consent tier (hubspot read | write).
-      // GitHub needs no flow choice: the broker is authorize-first — one connect
+      // GitHub needs no flow choice: the broker is authorize-first 鈥?one connect
       // links an existing App installation or redirects on to the install page.
       body: JSON.stringify({
         ...(options?.access ? { access: options.access } : {}),
@@ -571,7 +594,7 @@ export interface ConnectorTool {
 }
 
 export async function getConnectors(): Promise<Connector[]> {
-  const res = await fetch(`${httpBase()}/v1/connectors`);
+  const res = await apiFetch(`${httpBase()}/v1/connectors`);
   return (await res.json()).connectors ?? [];
 }
 
@@ -611,7 +634,7 @@ export async function orchestrate(
     templateId?: number;
   },
 ): Promise<OrchestrationResponse> {
-  const res = await fetch(`${httpBase()}/v1/orchestrate`, {
+  const res = await apiFetch(`${httpBase()}/v1/orchestrate`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -641,23 +664,23 @@ export interface SkillInfo {
   install_count: number;
   rating: number | null;
   rating_count: number;
-  // 信任基础元数据
+  // 淇′换鍩虹鍏冩暟鎹?
   security_score?: number | null;
   security_level?: "low" | "medium" | "high" | "critical";
   lock_exists?: boolean;
   lock_generated_at?: number | null;
   compatible?: boolean;
   compat_severity?: "none" | "low" | "medium" | "high";
-  // P1-6: 是否为草稿 (来自 HORNET 涌现自动生成, 待审核)
+  // P1-6: 鏄惁涓鸿崏绋?(鏉ヨ嚜 HORNET 娑岀幇鑷姩鐢熸垚, 寰呭鏍?
   draft?: boolean;
-  // P1-8: 来源 ("manual" / "hornet_emergence")
+  // P1-8: 鏉ユ簮 ("manual" / "hornet_emergence")
   source?: string;
-  // 可用版本列表 (来自后端 aggregate_stats / versions)
+  // 鍙敤鐗堟湰鍒楄〃 (鏉ヨ嚜鍚庣 aggregate_stats / versions)
   available_versions?: string[];
 }
 
 export async function getSkillsPath(): Promise<{ ok: boolean; path?: string; exists?: boolean; skill_count?: number }> {
-  const res = await fetch(`${httpBase()}/v1/skills/path`);
+  const res = await apiFetch(`${httpBase()}/v1/skills/path`);
   return res.json();
 }
 
@@ -665,7 +688,7 @@ export async function setSkillsPath(
   path: string,
   migrate: boolean = false,
 ): Promise<{ ok: boolean; error?: string; path?: string }> {
-  const res = await fetch(`${httpBase()}/v1/skills/path`, {
+  const res = await apiFetch(`${httpBase()}/v1/skills/path`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ path, migrate }),
@@ -674,7 +697,7 @@ export async function setSkillsPath(
 }
 
 export async function listSkills(): Promise<{ skills: SkillInfo[] }> {
-  const res = await fetch(`${httpBase()}/v1/skills`);
+  const res = await apiFetch(`${httpBase()}/v1/skills`);
   return await res.json();
 }
 
@@ -682,7 +705,7 @@ export async function rateSkill(
   name: string,
   score: number,
 ): Promise<{ ok: boolean; rating?: number; rating_count?: number; error?: string }> {
-  const res = await fetch(`${httpBase()}/v1/skills/${encodeURIComponent(name)}/rate`, {
+  const res = await apiFetch(`${httpBase()}/v1/skills/${encodeURIComponent(name)}/rate`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ score }),
@@ -691,7 +714,7 @@ export async function rateSkill(
 }
 
 export async function exportSkill(name: string): Promise<{ ok: boolean; zip_base64?: string; error?: string }> {
-  const res = await fetch(`${httpBase()}/v1/skills/export`, {
+  const res = await apiFetch(`${httpBase()}/v1/skills/export`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ name }),
@@ -702,7 +725,7 @@ export async function exportSkill(name: string): Promise<{ ok: boolean; zip_base
 export async function importSkill(
   zipBase64: string,
 ): Promise<{ ok: boolean; name?: string; error?: string }> {
-  const res = await fetch(`${httpBase()}/v1/skills/import`, {
+  const res = await apiFetch(`${httpBase()}/v1/skills/import`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ zip_base64: zipBase64 }),
@@ -711,13 +734,13 @@ export async function importSkill(
 }
 
 export async function deleteSkill(name: string): Promise<{ ok: boolean; error?: string }> {
-  const res = await fetch(`${httpBase()}/v1/skills/${encodeURIComponent(name)}`, {
+  const res = await apiFetch(`${httpBase()}/v1/skills/${encodeURIComponent(name)}`, {
     method: "DELETE",
   });
   return await res.json();
 }
 
-// -- Skill 信任基础 (版本市场 + lock + 安全 + 兼容 + 自动修复) ---------------
+// -- Skill 淇′换鍩虹 (鐗堟湰甯傚満 + lock + 瀹夊叏 + 鍏煎 + 鑷姩淇) ---------------
 
 export interface SkillLockTool {
   name: string;
@@ -766,14 +789,14 @@ export interface SkillVersions {
 }
 
 export async function getSkillVersions(name: string): Promise<SkillVersions> {
-  const res = await fetch(`${httpBase()}/v1/skills/${encodeURIComponent(name)}/versions`);
+  const res = await apiFetch(`${httpBase()}/v1/skills/${encodeURIComponent(name)}/versions`);
   return await res.json();
 }
 
 export async function generateSkillLock(
   name: string,
 ): Promise<{ ok: boolean; lock?: SkillLock; lock_path?: string; error?: string }> {
-  const res = await fetch(`${httpBase()}/v1/skills/${encodeURIComponent(name)}/lock`, {
+  const res = await apiFetch(`${httpBase()}/v1/skills/${encodeURIComponent(name)}/lock`, {
     method: "POST",
   });
   return await res.json();
@@ -791,7 +814,7 @@ export interface SkillLockInfo {
 }
 
 export async function getSkillLock(name: string): Promise<SkillLockInfo> {
-  const res = await fetch(`${httpBase()}/v1/skills/${encodeURIComponent(name)}/lock`);
+  const res = await apiFetch(`${httpBase()}/v1/skills/${encodeURIComponent(name)}/lock`);
   return await res.json();
 }
 
@@ -820,12 +843,12 @@ export interface SkillSecurityReport {
 
 export async function getSkillSecurity(name: string, rescan = false): Promise<SkillSecurityReport> {
   const q = rescan ? "?rescan=1" : "";
-  const res = await fetch(`${httpBase()}/v1/skills/${encodeURIComponent(name)}/security${q}`);
+  const res = await apiFetch(`${httpBase()}/v1/skills/${encodeURIComponent(name)}/security${q}`);
   return await res.json();
 }
 
 export async function rescanSkillSecurity(name: string): Promise<SkillSecurityReport> {
-  const res = await fetch(`${httpBase()}/v1/skills/${encodeURIComponent(name)}/security/rescan`, {
+  const res = await apiFetch(`${httpBase()}/v1/skills/${encodeURIComponent(name)}/security/rescan`, {
     method: "POST",
   });
   return await res.json();
@@ -860,7 +883,7 @@ export interface SkillCompatibilityReport {
 }
 
 export async function checkSkillCompatibility(name: string): Promise<SkillCompatibilityReport> {
-  const res = await fetch(`${httpBase()}/v1/skills/${encodeURIComponent(name)}/compatibility`);
+  const res = await apiFetch(`${httpBase()}/v1/skills/${encodeURIComponent(name)}/compatibility`);
   return await res.json();
 }
 
@@ -868,7 +891,7 @@ export async function checkAllSkillsCompatibility(): Promise<{
   ok: boolean;
   reports: SkillCompatibilityReport[];
 }> {
-  const res = await fetch(`${httpBase()}/v1/skills/compatibility/all`);
+  const res = await apiFetch(`${httpBase()}/v1/skills/compatibility/all`);
   return await res.json();
 }
 
@@ -880,7 +903,7 @@ export async function buildSkillAutofix(skillNames?: string[]): Promise<{
   step_plan?: Array<{ skill_name: string; action: string; note?: string }>;
   affected_skills?: string[];
 }> {
-  const res = await fetch(`${httpBase()}/v1/skills/autofix`, {
+  const res = await apiFetch(`${httpBase()}/v1/skills/autofix`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ skill_names: skillNames ?? null }),
@@ -910,7 +933,7 @@ export interface KnowledgeHit {
 }
 
 export async function getKnowledgePath(): Promise<{ ok: boolean; db_path?: string; exists?: boolean; size_bytes?: number }> {
-  const res = await fetch(`${httpBase()}/v1/knowledge/path`);
+  const res = await apiFetch(`${httpBase()}/v1/knowledge/path`);
   return res.json();
 }
 
@@ -918,7 +941,7 @@ export async function setKnowledgePath(
   path: string,
   migrate: boolean = false,
 ): Promise<{ ok: boolean; error?: string; db_path?: string }> {
-  const res = await fetch(`${httpBase()}/v1/knowledge/path`, {
+  const res = await apiFetch(`${httpBase()}/v1/knowledge/path`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ path, migrate }),
@@ -930,7 +953,7 @@ export async function listKnowledge(
   limit = 100,
   offset = 0,
 ): Promise<{ items: KnowledgeItem[]; total?: number }> {
-  const res = await fetch(`${httpBase()}/v1/knowledge?limit=${limit}&offset=${offset}`);
+  const res = await apiFetch(`${httpBase()}/v1/knowledge?limit=${limit}&offset=${offset}`);
   return await res.json();
 }
 
@@ -943,7 +966,7 @@ export async function scanKnowledge(): Promise<{
   workspaces_scanned?: number;
   failures?: { path?: string; reason?: string }[];
 }> {
-  const res = await fetch(`${httpBase()}/v1/knowledge/scan`, { method: "POST" });
+  const res = await apiFetch(`${httpBase()}/v1/knowledge/scan`, { method: "POST" });
   return await res.json();
 }
 
@@ -958,7 +981,7 @@ export async function importKnowledgeFolder(
   folder?: string;
   error?: string;
 }> {
-  const res = await fetch(`${httpBase()}/v1/knowledge/import-folder`, {
+  const res = await apiFetch(`${httpBase()}/v1/knowledge/import-folder`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ path }),
@@ -970,7 +993,7 @@ export async function addKnowledge(
   title: string,
   content: string,
 ): Promise<{ ok: boolean; id?: number; error?: string }> {
-  const res = await fetch(`${httpBase()}/v1/knowledge`, {
+  const res = await apiFetch(`${httpBase()}/v1/knowledge`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ title, content }),
@@ -979,7 +1002,7 @@ export async function addKnowledge(
 }
 
 export async function deleteKnowledge(id: number): Promise<{ ok: boolean }> {
-  const res = await fetch(`${httpBase()}/v1/knowledge/${id}`, { method: "DELETE" });
+  const res = await apiFetch(`${httpBase()}/v1/knowledge/${id}`, { method: "DELETE" });
   return await res.json();
 }
 
@@ -987,7 +1010,7 @@ export async function localSearch(
   query: string,
   maxResults = 10,
 ): Promise<{ ok: boolean; results?: Array<{ title: string; url: string; snippet: string; source: string; score: number }>; total?: number; cached?: boolean; error?: string }> {
-  const res = await fetch(`${httpBase()}/v1/local-search`, {
+  const res = await apiFetch(`${httpBase()}/v1/local-search`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ query, max_results: maxResults }),
@@ -998,7 +1021,7 @@ export async function localSearch(
 export async function searchKnowledge(
   query: string,
 ): Promise<{ ok: boolean; results: KnowledgeHit[]; error?: string }> {
-  const res = await fetch(`${httpBase()}/v1/knowledge/search?q=${encodeURIComponent(query)}`);
+  const res = await apiFetch(`${httpBase()}/v1/knowledge/search?q=${encodeURIComponent(query)}`);
   return await res.json();
 }
 
@@ -1027,7 +1050,7 @@ export interface VoiceEvent {
 
 export async function getVoiceStatus(): Promise<VoiceStatus | null> {
   try {
-    const res = await fetch(`${httpBase()}/v1/voice/status`);
+    const res = await apiFetch(`${httpBase()}/v1/voice/status`);
     return await res.json();
   } catch {
     return null;
@@ -1035,22 +1058,22 @@ export async function getVoiceStatus(): Promise<VoiceStatus | null> {
 }
 
 export async function installVoiceModels(): Promise<{ ok: boolean; started?: boolean; reason?: string }> {
-  const res = await fetch(`${httpBase()}/v1/voice/install`, { method: "POST" });
+  const res = await apiFetch(`${httpBase()}/v1/voice/install`, { method: "POST" });
   return await res.json();
 }
 
 export async function startVoiceChat(): Promise<{ ok: boolean; error?: string }> {
-  const res = await fetch(`${httpBase()}/v1/voice/start`, { method: "POST" });
+  const res = await apiFetch(`${httpBase()}/v1/voice/start`, { method: "POST" });
   return await res.json();
 }
 
 export async function stopVoiceChat(): Promise<{ ok: boolean }> {
-  const res = await fetch(`${httpBase()}/v1/voice/stop`, { method: "POST" });
+  const res = await apiFetch(`${httpBase()}/v1/voice/stop`, { method: "POST" });
   return await res.json();
 }
 
 export async function getVoiceEvents(after = 0): Promise<{ events: VoiceEvent[]; next: number }> {
-  const res = await fetch(`${httpBase()}/v1/voice/events?after=${after}`);
+  const res = await apiFetch(`${httpBase()}/v1/voice/events?after=${after}`);
   return await res.json();
 }
 
@@ -1062,7 +1085,7 @@ export interface TaskTemplate {
 }
 
 export async function listTaskTemplates(): Promise<{ templates: TaskTemplate[] }> {
-  const res = await fetch(`${httpBase()}/v1/task-templates`);
+  const res = await apiFetch(`${httpBase()}/v1/task-templates`);
   return await res.json();
 }
 
@@ -1070,7 +1093,7 @@ export async function addTaskTemplate(
   title: string,
   prompt: string,
 ): Promise<{ ok: boolean; template?: TaskTemplate; error?: string }> {
-  const res = await fetch(`${httpBase()}/v1/task-templates`, {
+  const res = await apiFetch(`${httpBase()}/v1/task-templates`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ title, prompt }),
@@ -1079,7 +1102,7 @@ export async function addTaskTemplate(
 }
 
 export async function deleteTaskTemplate(id: number): Promise<{ ok: boolean }> {
-  const res = await fetch(`${httpBase()}/v1/task-templates/${id}`, { method: "DELETE" });
+  const res = await apiFetch(`${httpBase()}/v1/task-templates/${id}`, { method: "DELETE" });
   return await res.json();
 }
 
@@ -1094,7 +1117,7 @@ export interface SwarmTemplate {
 }
 
 export async function listSwarmTemplates(): Promise<{ templates: SwarmTemplate[] }> {
-  const res = await fetch(`${httpBase()}/v1/swarm-templates`);
+  const res = await apiFetch(`${httpBase()}/v1/swarm-templates`);
   return await res.json();
 }
 
@@ -1103,7 +1126,7 @@ export async function addSwarmTemplate(
   intent: string,
   plan?: unknown,
 ): Promise<{ ok: boolean; template?: SwarmTemplate; error?: string }> {
-  const res = await fetch(`${httpBase()}/v1/swarm-templates`, {
+  const res = await apiFetch(`${httpBase()}/v1/swarm-templates`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ title, intent, plan }),
@@ -1112,7 +1135,7 @@ export async function addSwarmTemplate(
 }
 
 export async function deleteSwarmTemplate(id: number): Promise<{ ok: boolean }> {
-  const res = await fetch(`${httpBase()}/v1/swarm-templates/${id}`, { method: "DELETE" });
+  const res = await apiFetch(`${httpBase()}/v1/swarm-templates/${id}`, { method: "DELETE" });
   return await res.json();
 }
 
@@ -1120,7 +1143,7 @@ export async function recordSwarmTemplateRun(
   id: number,
   success: boolean,
 ): Promise<{ ok: boolean }> {
-  const res = await fetch(`${httpBase()}/v1/swarm-templates/${id}/record`, {
+  const res = await apiFetch(`${httpBase()}/v1/swarm-templates/${id}/record`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ success }),
@@ -1128,7 +1151,7 @@ export async function recordSwarmTemplateRun(
   return await res.json();
 }
 
-// -- swarm lessons (Refine 机制: 蜂群经验进化闭环) ----------------------------
+// -- swarm lessons (Refine 鏈哄埗: 铚傜兢缁忛獙杩涘寲闂幆) ----------------------------
 export interface SwarmLesson {
   id: number;
   kind: "lesson" | "skill_hint" | "task_template";
@@ -1152,7 +1175,7 @@ export async function listSwarmLessons(
   if (kind) q.set("kind", kind);
   q.set("limit", String(limit));
   if (workspace) q.set("workspace", workspace);
-  const res = await fetch(`${httpBase()}/v1/swarm-lessons?${q.toString()}`);
+  const res = await apiFetch(`${httpBase()}/v1/swarm-lessons?${q.toString()}`);
   return await res.json();
 }
 
@@ -1161,14 +1184,14 @@ export async function deleteSwarmLesson(
   workspace?: string,
 ): Promise<{ ok: boolean }> {
   const q = workspace ? `?workspace=${encodeURIComponent(workspace)}` : "";
-  const res = await fetch(`${httpBase()}/v1/swarm-lessons/${id}${q}`, {
+  const res = await apiFetch(`${httpBase()}/v1/swarm-lessons/${id}${q}`, {
     method: "DELETE",
   });
   return await res.json();
 }
 
 // G2 command deck: live control over a running swarm run.
-// P0 建议3 adds task_inject (fork a sub-task) + retarget (reassign agent).
+// P0 寤鸿3 adds task_inject (fork a sub-task) + retarget (reassign agent).
 export type OrchestrateControlAction =
   | "pause"
   | "resume"
@@ -1188,7 +1211,7 @@ export interface OrchestrateControlStatus {
 export async function orchestrateControlStatus(
   runId: string,
 ): Promise<OrchestrateControlStatus> {
-  const res = await fetch(`${httpBase()}/v1/orchestrate/${runId}/control`);
+  const res = await apiFetch(`${httpBase()}/v1/orchestrate/${runId}/control`);
   return await res.json();
 }
 
@@ -1203,7 +1226,7 @@ export async function orchestrateControl(
     agent?: string;
   } = {},
 ): Promise<{ ok: boolean; error?: string; paused?: boolean }> {
-  const res = await fetch(`${httpBase()}/v1/orchestrate/${runId}/control`, {
+  const res = await apiFetch(`${httpBase()}/v1/orchestrate/${runId}/control`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ action, ...body }),
@@ -1224,20 +1247,20 @@ export interface CoordinationReport {
 }
 
 export async function getCoordinationReport(runId: string): Promise<CoordinationReport> {
-  const res = await fetch(`${httpBase()}/v1/orchestrate/${runId}/report`);
+  const res = await apiFetch(`${httpBase()}/v1/orchestrate/${runId}/report`);
   return await res.json();
 }
 
 // Team workspace (P2): export/import a team package (templates + knowledge + skills).
 export async function exportTeamPackage(): Promise<{ ok: boolean; path?: string; error?: string }> {
-  const res = await fetch(`${httpBase()}/v1/team/export`);
+  const res = await apiFetch(`${httpBase()}/v1/team/export`);
   return await res.json();
 }
 
 export async function importTeamPackage(
   path: string,
 ): Promise<{ ok: boolean; imported?: Record<string, number>; error?: string }> {
-  const res = await fetch(`${httpBase()}/v1/team/import`, {
+  const res = await apiFetch(`${httpBase()}/v1/team/import`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ path }),
@@ -1274,12 +1297,12 @@ export interface OrchestrationRunSnapshot {
   created_at?: number;
   updated_at?: number;
   events: { kind: string; payload: Record<string, unknown> }[];
-  // 7x24 长程任务: 降级轨迹 (突破五) + 收敛报告 (突破二)。
+  // 7x24 闀跨▼浠诲姟: 闄嶇骇杞ㄨ抗 (绐佺牬浜? + 鏀舵暃鎶ュ憡 (绐佺牬浜?銆?
   degradations?: OrchestrationDegradation[];
 }
 
 export async function getOrchestrateRun(runId: string): Promise<OrchestrationRunSnapshot> {
-  const res = await fetch(`${httpBase()}/v1/orchestrate/${runId}`);
+  const res = await apiFetch(`${httpBase()}/v1/orchestrate/${runId}`);
   return await res.json();
 }
 
@@ -1289,16 +1312,16 @@ export interface OrchestrationHistoryItem {
   status: string;
   created_at: number;
   updated_at: number;
-  // P0 建议3 保留分支 A/B: non-null when this run is a fork of another run.
+  // P0 寤鸿3 淇濈暀鍒嗘敮 A/B: non-null when this run is a fork of another run.
   parent_run_id?: string | null;
 }
 
 export async function getOrchestrateHistory(): Promise<{ runs: OrchestrationHistoryItem[] }> {
-  const res = await fetch(`${httpBase()}/v1/orchestrate/history`);
+  const res = await apiFetch(`${httpBase()}/v1/orchestrate/history`);
   return await res.json();
 }
 
-// ── 7x24 长程任务管理 (健康控制台 / 遥测 / 检查点 / 存储) ────────────────────
+// 鈹€鈹€ 7x24 闀跨▼浠诲姟绠＄悊 (鍋ュ悍鎺у埗鍙?/ 閬ユ祴 / 妫€鏌ョ偣 / 瀛樺偍) 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 export interface LongrunHealth {
   heartbeat: {
@@ -1367,7 +1390,7 @@ export interface LongrunCheckpointRestore {
   };
 }
 
-/** ③ 告警聚合条目 (同任务连续卡死合并)。 */
+/** 鈶?鍛婅鑱氬悎鏉＄洰 (鍚屼换鍔¤繛缁崱姝诲悎骞?銆?*/
 export interface LongrunAlertAggregation {
   id: number;
   task_id: string;
@@ -1380,7 +1403,7 @@ export interface LongrunAlertAggregation {
   silenced_until?: number | null;
 }
 
-/** ② 聚合历史统计: 每日趋势。 */
+/** 鈶?鑱氬悎鍘嗗彶缁熻: 姣忔棩瓒嬪娍銆?*/
 export interface AggregationStats {
   ok: boolean;
   error?: string;
@@ -1388,7 +1411,7 @@ export interface AggregationStats {
   top_tasks: [string, number][];
 }
 
-/** ③ 操作审计条目。 */
+/** 鈶?鎿嶄綔瀹¤鏉＄洰銆?*/
 export interface LongrunAuditEntry {
   id: number;
   kind: string;
@@ -1398,7 +1421,7 @@ export interface LongrunAuditEntry {
   payload?: Record<string, unknown>;
 }
 
-/** ① 告警渠道配置 (脱敏)。 */
+/** 鈶?鍛婅娓犻亾閰嶇疆 (鑴辨晱)銆?*/
 export interface AlertChannelConfig {
   enabled: boolean;
   levels?: string[];
@@ -1415,7 +1438,7 @@ export interface AlertChannelConfig {
   secret?: string;
 }
 
-/** ① 告警历史条目。 */
+/** 鈶?鍛婅鍘嗗彶鏉＄洰銆?*/
 export interface LongrunAlert {
   id: number;
   kind: string;
@@ -1425,7 +1448,7 @@ export interface LongrunAlert {
   payload?: Record<string, unknown>;
 }
 
-/** /ws/events 推送的 7x24 告警事件。 */
+/** /ws/events 鎺ㄩ€佺殑 7x24 鍛婅浜嬩欢銆?*/
 export interface LongrunAlertEvent {
   type: "7x24_alert";
   payload: {
@@ -1448,24 +1471,24 @@ export interface LongrunStorage {
 }
 
 export async function getLongrunHealth(): Promise<LongrunHealth> {
-  const res = await fetch(`${httpBase()}/v1/7x24/health`);
+  const res = await apiFetch(`${httpBase()}/v1/7x24/health`);
   return await res.json();
 }
 
 export async function getLongrunTelemetry(limit = 20): Promise<LongrunTelemetry> {
-  const res = await fetch(`${httpBase()}/v1/7x24/telemetry?limit=${limit}`);
+  const res = await apiFetch(`${httpBase()}/v1/7x24/telemetry?limit=${limit}`);
   return await res.json();
 }
 
 export async function getLongrunCheckpoints(): Promise<{ sessions: LongrunCheckpointSession[] }> {
-  const res = await fetch(`${httpBase()}/v1/7x24/checkpoints`);
+  const res = await apiFetch(`${httpBase()}/v1/7x24/checkpoints`);
   return await res.json();
 }
 
 export async function getLongrunCheckpointDetail(
   sessionId: string,
 ): Promise<LongrunCheckpointDetail> {
-  const res = await fetch(`${httpBase()}/v1/7x24/checkpoints/${encodeURIComponent(sessionId)}`);
+  const res = await apiFetch(`${httpBase()}/v1/7x24/checkpoints/${encodeURIComponent(sessionId)}`);
   return await res.json();
 }
 
@@ -1493,43 +1516,43 @@ export async function rollbackLongrunCheckpoint(
 export async function getLongrunAlertAggregations(
   limit = 50,
 ): Promise<{ ok: boolean; aggregations: LongrunAlertAggregation[]; count: number; error?: string }> {
-  const res = await fetch(`${httpBase()}/v1/7x24/alerts/aggregations?limit=${limit}`);
+  const res = await apiFetch(`${httpBase()}/v1/7x24/alerts/aggregations?limit=${limit}`);
   return await res.json();
 }
 
 export async function getLongrunAggregationStats(
   days = 14,
 ): Promise<AggregationStats> {
-  const res = await fetch(`${httpBase()}/v1/7x24/alerts/aggregations/stats?days=${days}`);
+  const res = await apiFetch(`${httpBase()}/v1/7x24/alerts/aggregations/stats?days=${days}`);
   return await res.json();
 }
 
 export async function getLongrunAudit(
   limit = 50,
 ): Promise<{ ok: boolean; audit: LongrunAuditEntry[]; count: number; error?: string }> {
-  const res = await fetch(`${httpBase()}/v1/7x24/audit?limit=${limit}`);
+  const res = await apiFetch(`${httpBase()}/v1/7x24/audit?limit=${limit}`);
   return await res.json();
 }
 
-/** ① 审计导出 (CSV/JSON)。返回 {ok, content, format} 或直接文本。 */
+/** 鈶?瀹¤瀵煎嚭 (CSV/JSON)銆傝繑鍥?{ok, content, format} 鎴栫洿鎺ユ枃鏈€?*/
 export async function exportLongrunAudit(
   format: "csv" | "json" = "json",
   limit = 500,
 ): Promise<string> {
-  const res = await fetch(`${httpBase()}/v1/7x24/audit/export?format=${format}&limit=${limit}`);
+  const res = await apiFetch(`${httpBase()}/v1/7x24/audit/export?format=${format}&limit=${limit}`);
   return await res.text();
 }
 
-/** ② 告警设置 (静默阈值/时长 + 归档保留天数 + 健康分阈值 + 探针历史保留窗口)。 */
+/** 鈶?鍛婅璁剧疆 (闈欓粯闃堝€?鏃堕暱 + 褰掓。淇濈暀澶╂暟 + 鍋ュ悍鍒嗛槇鍊?+ 鎺㈤拡鍘嗗彶淇濈暀绐楀彛)銆?*/
 export interface AlertSettings {
   silence_after: number;
   silence_seconds: number;
   archive_keep_days?: number;
-  /** 渠道健康分阈值 (good/warn 边界, 0-100, warn <= good)。 */
+  /** 娓犻亾鍋ュ悍鍒嗛槇鍊?(good/warn 杈圭晫, 0-100, warn <= good)銆?*/
   health_thresholds?: { good: number; warn: number };
-  /** 探针历史保留窗口: 超过 keep_days 天的记录清理。 */
+  /** 鎺㈤拡鍘嗗彶淇濈暀绐楀彛: 瓒呰繃 keep_days 澶╃殑璁板綍娓呯悊銆?*/
   probe_history_keep_days?: number;
-  /** 探针历史保留窗口: 最多保留 keep_count 条。 */
+  /** 鎺㈤拡鍘嗗彶淇濈暀绐楀彛: 鏈€澶氫繚鐣?keep_count 鏉°€?*/
   probe_history_keep_count?: number;
 }
 
@@ -1542,21 +1565,21 @@ export interface ProbeHistoryPruneResult {
   error?: string;
 }
 
-/** ③ 手动触发探针历史清理 (按配置保留窗口)。 */
+/** 鈶?鎵嬪姩瑙﹀彂鎺㈤拡鍘嗗彶娓呯悊 (鎸夐厤缃繚鐣欑獥鍙?銆?*/
 export async function pruneProbeHistory(): Promise<ProbeHistoryPruneResult> {
-  const res = await fetch(`${httpBase()}/v1/7x24/probe-history/prune`, { method: "POST" });
+  const res = await apiFetch(`${httpBase()}/v1/7x24/probe-history/prune`, { method: "POST" });
   return await res.json();
 }
 
 export async function getLongrunAlertSettings(): Promise<{ ok: boolean; settings: AlertSettings; error?: string }> {
-  const res = await fetch(`${httpBase()}/v1/7x24/alert-settings`);
+  const res = await apiFetch(`${httpBase()}/v1/7x24/alert-settings`);
   return await res.json();
 }
 
 export async function setLongrunAlertSettings(
   settings: Partial<AlertSettings>,
 ): Promise<{ ok: boolean; settings: AlertSettings; error?: string }> {
-  const res = await fetch(`${httpBase()}/v1/7x24/alert-settings`, {
+  const res = await apiFetch(`${httpBase()}/v1/7x24/alert-settings`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ settings }),
@@ -1564,7 +1587,7 @@ export async function setLongrunAlertSettings(
   return await res.json();
 }
 
-/** ③ 跨周对比: 本周 vs 上周每日告警数。 */
+/** 鈶?璺ㄥ懆瀵规瘮: 鏈懆 vs 涓婂懆姣忔棩鍛婅鏁般€?*/
 export interface WeekCompare {
   ok: boolean;
   error?: string;
@@ -1577,7 +1600,7 @@ export interface WeekCompare {
 }
 
 export async function getLongrunWeekCompare(): Promise<WeekCompare> {
-  const res = await fetch(`${httpBase()}/v1/7x24/alerts/aggregations/week-compare`);
+  const res = await apiFetch(`${httpBase()}/v1/7x24/alerts/aggregations/week-compare`);
   return await res.json();
 }
 
@@ -1591,7 +1614,7 @@ export async function getLongrunAlerts(
   if (taskId) params.set("task_id", taskId);
   if (since != null) params.set("since", String(since));
   if (until != null) params.set("until", String(until));
-  const res = await fetch(`${httpBase()}/v1/7x24/alerts?${params.toString()}`);
+  const res = await apiFetch(`${httpBase()}/v1/7x24/alerts?${params.toString()}`);
   return await res.json();
 }
 
@@ -1601,14 +1624,14 @@ export async function getLongrunAlertChannels(): Promise<{
   enabled: string[];
   error?: string;
 }> {
-  const res = await fetch(`${httpBase()}/v1/7x24/alert-channels`);
+  const res = await apiFetch(`${httpBase()}/v1/7x24/alert-channels`);
   return await res.json();
 }
 
 export async function setLongrunAlertChannels(
   channels: Record<string, Partial<AlertChannelConfig>>,
 ): Promise<{ ok: boolean; channels: Record<string, AlertChannelConfig>; enabled: string[]; error?: string }> {
-  const res = await fetch(`${httpBase()}/v1/7x24/alert-channels`, {
+  const res = await apiFetch(`${httpBase()}/v1/7x24/alert-channels`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ channels }),
@@ -1621,7 +1644,7 @@ export async function testLongrunAlertChannels(): Promise<{
   results: Record<string, { ok: boolean; error?: string }>;
   error?: string;
 }> {
-  const res = await fetch(`${httpBase()}/v1/7x24/alert-channels/test`, {
+  const res = await apiFetch(`${httpBase()}/v1/7x24/alert-channels/test`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: "{}",
@@ -1629,14 +1652,14 @@ export async function testLongrunAlertChannels(): Promise<{
   return await res.json();
 }
 
-/** ① 渠道健康探针: 各启用渠道连通性 + 延迟。 */
+/** 鈶?娓犻亾鍋ュ悍鎺㈤拡: 鍚勫惎鐢ㄦ笭閬撹繛閫氭€?+ 寤惰繜銆?*/
 export async function probeLongrunAlertChannels(): Promise<{
   ok: boolean;
   results: Record<string, { ok: boolean; ms?: number; error?: string }>;
   healthy: string[];
   error?: string;
 }> {
-  const res = await fetch(`${httpBase()}/v1/7x24/alert-channels/probe`, {
+  const res = await apiFetch(`${httpBase()}/v1/7x24/alert-channels/probe`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: "{}",
@@ -1644,7 +1667,7 @@ export async function probeLongrunAlertChannels(): Promise<{
   return await res.json();
 }
 
-/** ② 告警/审计自动归档: 超过 keep_days 天的记录归档。 */
+/** 鈶?鍛婅/瀹¤鑷姩褰掓。: 瓒呰繃 keep_days 澶╃殑璁板綍褰掓。銆?*/
 export async function archiveLongrunAlerts(keepDays = 30): Promise<{
   ok: boolean;
   archived: number;
@@ -1652,7 +1675,7 @@ export async function archiveLongrunAlerts(keepDays = 30): Promise<{
   archived_total?: number;
   error?: string;
 }> {
-  const res = await fetch(`${httpBase()}/v1/7x24/alerts/archive`, {
+  const res = await apiFetch(`${httpBase()}/v1/7x24/alerts/archive`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ keep_days: keepDays }),
@@ -1660,7 +1683,7 @@ export async function archiveLongrunAlerts(keepDays = 30): Promise<{
   return await res.json();
 }
 
-/** ① 渠道健康分/历史趋势。 */
+/** 鈶?娓犻亾鍋ュ悍鍒?鍘嗗彶瓒嬪娍銆?*/
 export interface ChannelHealth {
   ok_count: number;
   total: number;
@@ -1678,20 +1701,20 @@ export async function getLongrunChannelHealth(): Promise<{
   thresholds?: { good: number; warn: number };
   error?: string;
 }> {
-  const res = await fetch(`${httpBase()}/v1/7x24/channel-health`);
+  const res = await apiFetch(`${httpBase()}/v1/7x24/channel-health`);
   return await res.json();
 }
 
-/** ② 导出探针历史 (CSV/JSON)。 */
+/** 鈶?瀵煎嚭鎺㈤拡鍘嗗彶 (CSV/JSON)銆?*/
 export async function exportLongrunChannelHealth(
   format: "csv" | "json" = "json",
   limit = 500,
 ): Promise<string> {
-  const res = await fetch(`${httpBase()}/v1/7x24/channel-health/export?format=${format}&limit=${limit}`);
+  const res = await apiFetch(`${httpBase()}/v1/7x24/channel-health/export?format=${format}&limit=${limit}`);
   return await res.text();
 }
 
-/** ② 归档 keep_days 分渠道配置。 */
+/** 鈶?褰掓。 keep_days 鍒嗘笭閬撻厤缃€?*/
 export async function getLongrunArchivedAlerts(
   limit = 50,
   taskId?: string,
@@ -1703,15 +1726,15 @@ export async function getLongrunArchivedAlerts(
   error?: string;
 }> {
   const q = taskId ? `?limit=${limit}&task_id=${encodeURIComponent(taskId)}` : `?limit=${limit}`;
-  const res = await fetch(`${httpBase()}/v1/7x24/alerts/archived${q}`);
+  const res = await apiFetch(`${httpBase()}/v1/7x24/alerts/archived${q}`);
   return await res.json();
 }
 
-/** ③ 归档数据恢复: 把一条归档记录恢复到活跃表 (撤销归档)。 */
+/** 鈶?褰掓。鏁版嵁鎭㈠: 鎶婁竴鏉″綊妗ｈ褰曟仮澶嶅埌娲昏穬琛?(鎾ら攢褰掓。)銆?*/
 export async function restoreLongrunArchivedAlert(
   archiveId: number,
 ): Promise<{ ok: boolean; restored?: LongrunAlert; error?: string }> {
-  const res = await fetch(`${httpBase()}/v1/7x24/alerts/archived/${archiveId}/restore`, {
+  const res = await apiFetch(`${httpBase()}/v1/7x24/alerts/archived/${archiveId}/restore`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: "{}",
@@ -1719,7 +1742,7 @@ export async function restoreLongrunArchivedAlert(
   return await res.json();
 }
 
-/** ② 探针定时化调度设置。 */
+/** 鈶?鎺㈤拡瀹氭椂鍖栬皟搴﹁缃€?*/
 export interface ProbeSchedule {
   enabled: boolean;
   interval_minutes: number;
@@ -1727,14 +1750,14 @@ export interface ProbeSchedule {
 }
 
 export async function getLongrunProbeSchedule(): Promise<{ ok: boolean; schedule: ProbeSchedule; error?: string }> {
-  const res = await fetch(`${httpBase()}/v1/7x24/probe-schedule`);
+  const res = await apiFetch(`${httpBase()}/v1/7x24/probe-schedule`);
   return await res.json();
 }
 
 export async function setLongrunProbeSchedule(
   schedule: Partial<ProbeSchedule>,
 ): Promise<{ ok: boolean; schedule: ProbeSchedule; error?: string }> {
-  const res = await fetch(`${httpBase()}/v1/7x24/probe-schedule`, {
+  const res = await apiFetch(`${httpBase()}/v1/7x24/probe-schedule`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ schedule }),
@@ -1743,16 +1766,16 @@ export async function setLongrunProbeSchedule(
 }
 
 export async function getLongrunStorage(): Promise<LongrunStorage> {
-  const res = await fetch(`${httpBase()}/v1/7x24/storage`);
+  const res = await apiFetch(`${httpBase()}/v1/7x24/storage`);
   return await res.json();
 }
 
-// QunMesh M1/M2: 信息素总线四信道总览 (/v1/pheromone, manager.pheromone_status)。
+// QunMesh M1/M2: 淇℃伅绱犳€荤嚎鍥涗俊閬撴€昏 (/v1/pheromone, manager.pheromone_status)銆?
 export interface PheromoneChannels {
   [channel: string]: { signals: number; intensity: number };
 }
 
-// QunMesh M4: 网格拓扑健康 (λ₂ 代数连通度 + 热点迁徙建议)。
+// QunMesh M4: 缃戞牸鎷撴墤鍋ュ悍 (位鈧?浠ｆ暟杩為€氬害 + 鐑偣杩佸緳寤鸿)銆?
 export interface MeshTopology {
   agents?: string[];
   edges?: number;
@@ -1770,20 +1793,20 @@ export interface PheromoneStatus {
 }
 
 export async function getPheromoneStatus(): Promise<PheromoneStatus> {
-  const res = await fetch(`${httpBase()}/v1/pheromone`);
+  const res = await apiFetch(`${httpBase()}/v1/pheromone`);
   return await res.json();
 }
 
-// QunMesh M4 后续项: mesh_mode 运行时档位 (GET 读默认, PUT 持久化+审计)。
+// QunMesh M4 鍚庣画椤? mesh_mode 杩愯鏃舵。浣?(GET 璇婚粯璁? PUT 鎸佷箙鍖?瀹¤)銆?
 export async function getMeshMode(): Promise<{ ok: boolean; mesh_mode: string }> {
-  const res = await fetch(`${httpBase()}/v1/mesh/mode`);
+  const res = await apiFetch(`${httpBase()}/v1/mesh/mode`);
   return await res.json();
 }
 
 export async function setMeshMode(
   mesh_mode: string,
 ): Promise<{ ok: boolean; mesh_mode?: string; error?: string }> {
-  const res = await fetch(`${httpBase()}/v1/mesh/mode`, {
+  const res = await apiFetch(`${httpBase()}/v1/mesh/mode`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ mesh_mode }),
@@ -1794,7 +1817,7 @@ export async function setMeshMode(
 export async function runLongrunMaintenance(
   dryRun = false,
 ): Promise<Record<string, unknown>> {
-  const res = await fetch(`${httpBase()}/v1/7x24/maintenance`, {
+  const res = await apiFetch(`${httpBase()}/v1/7x24/maintenance`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ dry_run: dryRun }),
@@ -1802,11 +1825,11 @@ export async function runLongrunMaintenance(
   return await res.json();
 }
 
-// P0 增量2 (任务组生命周期): dissolve a finished run (解散蜂群,回收资源).
+// P0 澧為噺2 (浠诲姟缁勭敓鍛藉懆鏈?: dissolve a finished run (瑙ｆ暎铚傜兢,鍥炴敹璧勬簮).
 export async function dissolveRun(
   runId: string,
 ): Promise<{ ok: boolean; error?: string; already?: boolean }> {
-  const res = await fetch(`${httpBase()}/v1/orchestrate/${encodeURIComponent(runId)}/dissolve`, {
+  const res = await apiFetch(`${httpBase()}/v1/orchestrate/${encodeURIComponent(runId)}/dissolve`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: "{}",
@@ -1818,7 +1841,7 @@ export async function connectConnector(
   name: string,
   fields: Record<string, string>,
 ): Promise<{ ok: boolean; account?: string; error?: string }> {
-  const res = await fetch(`${httpBase()}/v1/connectors/${encodeURIComponent(name)}/connect`, {
+  const res = await apiFetch(`${httpBase()}/v1/connectors/${encodeURIComponent(name)}/connect`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ fields }),
@@ -1827,7 +1850,7 @@ export async function connectConnector(
 }
 
 export async function disconnectConnector(name: string): Promise<{ ok: boolean }> {
-  const res = await fetch(`${httpBase()}/v1/connectors/${encodeURIComponent(name)}/disconnect`, {
+  const res = await apiFetch(`${httpBase()}/v1/connectors/${encodeURIComponent(name)}/disconnect`, {
     method: "POST",
   });
   return res.json();
@@ -1837,7 +1860,7 @@ export async function updateConnectorTools(
   name: string,
   enabled: Record<string, boolean>,
 ): Promise<{ ok: boolean; error?: string; tools?: Record<string, boolean> }> {
-  const res = await fetch(`${httpBase()}/v1/connectors/${encodeURIComponent(name)}/tools`, {
+  const res = await apiFetch(`${httpBase()}/v1/connectors/${encodeURIComponent(name)}/tools`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ enabled }),
@@ -1873,7 +1896,7 @@ export async function getAudit(params: {
   if (params.session_id) q.set("session_id", params.session_id);
   if (params.connector) q.set("connector", params.connector);
   if (params.tool) q.set("tool", params.tool);
-  const res = await fetch(`${httpBase()}/v1/audit${q.toString() ? "?" + q.toString() : ""}`);
+  const res = await apiFetch(`${httpBase()}/v1/audit${q.toString() ? "?" + q.toString() : ""}`);
   return (await res.json()).events ?? [];
 }
 
@@ -1891,17 +1914,17 @@ export interface BrowserState {
 }
 
 export async function getBrowserState(): Promise<BrowserState> {
-  const res = await fetch(`${httpBase()}/v1/browser/state`);
+  const res = await apiFetch(`${httpBase()}/v1/browser/state`);
   return res.json();
 }
 
 export async function takeBrowserScreenshot(): Promise<BrowserState & { ok?: boolean; error?: string }> {
-  const res = await fetch(`${httpBase()}/v1/browser/screenshot`, { method: "POST" });
+  const res = await apiFetch(`${httpBase()}/v1/browser/screenshot`, { method: "POST" });
   return res.json();
 }
 
 export async function closeBrowser(): Promise<{ ok?: boolean; error?: string }> {
-  const res = await fetch(`${httpBase()}/v1/browser/close`, { method: "POST" });
+  const res = await apiFetch(`${httpBase()}/v1/browser/close`, { method: "POST" });
   return res.json();
 }
 
@@ -1923,19 +1946,19 @@ export interface ModelSettings {
   surfaces: SurfaceVisibility;
   scratch_base: string;
   secrets_path: string;  // OS-native on-disk location the server reports (not hardcoded)
-  // Sidebar layout preference (§7): "flat" = the persona accordions / today's list; "grouped" =
-  // bounded per-persona cards. Defaults to "flat" (absent → flat) so the GUI is robust to an older
+  // Sidebar layout preference (搂7): "flat" = the persona accordions / today's list; "grouped" =
+  // bounded per-persona cards. Defaults to "flat" (absent 鈫?flat) so the GUI is robust to an older
   // backend that hasn't shipped the field yet.
   nav_layout?: "flat" | "grouped";
-  // Sidebar: sessions shown per group before "Show more" (default 5, 1–50).
+  // Sidebar: sessions shown per group before "Show more" (default 5, 1鈥?0).
   sessions_peek?: number;
-  // Curated-matrix display names ({full id → "GLM-5.2 · via Together"}); custom models absent.
+  // Curated-matrix display names ({full id 鈫?"GLM-5.2 路 via Together"}); custom models absent.
   model_labels?: Record<string, string>;
   // Token savings (PDF attachments): fallback for models without native PDF support,
   // and attach-time thresholds. Optional so the GUI is robust to an older backend.
   pdf_fallback?: "text" | "images";
-  pdf_max_pages?: number; // default 20, 1–100
-  pdf_max_mb?: number; // default 10, 1–10
+  pdf_max_pages?: number; // default 20, 1鈥?00
+  pdf_max_mb?: number; // default 10, 1鈥?0
 }
 
 export interface PdfSettings {
@@ -1948,7 +1971,7 @@ export interface PdfSettings {
 export async function setPdfSettings(
   patch: Partial<PdfSettings>,
 ): Promise<{ ok: boolean; error?: string } & Partial<PdfSettings>> {
-  const res = await fetch(`${httpBase()}/v1/settings/pdf`, {
+  const res = await apiFetch(`${httpBase()}/v1/settings/pdf`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(patch),
@@ -1956,11 +1979,11 @@ export async function setPdfSettings(
   return res.json();
 }
 
-/** Local page/size probe for a PDF data URL — the composer's attach-time threshold check. */
+/** Local page/size probe for a PDF data URL 鈥?the composer's attach-time threshold check. */
 export async function inspectPdf(
   dataUrl: string,
 ): Promise<{ ok: boolean; pages?: number; bytes?: number; error?: string }> {
-  const res = await fetch(`${httpBase()}/v1/attachments/inspect-pdf`, {
+  const res = await apiFetch(`${httpBase()}/v1/attachments/inspect-pdf`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ data_url: dataUrl }),
@@ -1972,7 +1995,7 @@ export async function inspectPdf(
 export async function setSessionsPeek(
   n: number,
 ): Promise<{ ok: boolean; sessions_peek?: number; error?: string }> {
-  const res = await fetch(`${httpBase()}/v1/settings/sessions-peek`, {
+  const res = await apiFetch(`${httpBase()}/v1/settings/sessions-peek`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ sessions_peek: n }),
@@ -1983,7 +2006,7 @@ export async function setSessionsPeek(
 export async function setScratchBase(
   path: string,
 ): Promise<{ ok: boolean; error?: string; scratch_base?: string }> {
-  const res = await fetch(`${httpBase()}/v1/settings/scratch-base`, {
+  const res = await apiFetch(`${httpBase()}/v1/settings/scratch-base`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ path }),
@@ -1994,7 +2017,7 @@ export async function setScratchBase(
 export async function setSurfaces(
   flags: { chat?: boolean; code?: boolean },
 ): Promise<{ ok: boolean; surfaces: SurfaceVisibility }> {
-  const res = await fetch(`${httpBase()}/v1/settings/surfaces`, {
+  const res = await apiFetch(`${httpBase()}/v1/settings/surfaces`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(flags),
@@ -2002,11 +2025,11 @@ export async function setSurfaces(
   return res.json();
 }
 
-/** Persist the sidebar layout preference (flat ↔ grouped-by-persona); read back from getSettings. */
+/** Persist the sidebar layout preference (flat 鈫?grouped-by-persona); read back from getSettings. */
 export async function setNavLayout(
   layout: "flat" | "grouped",
 ): Promise<{ ok: boolean; nav_layout?: "flat" | "grouped"; error?: string }> {
-  const res = await fetch(`${httpBase()}/v1/settings/nav-layout`, {
+  const res = await apiFetch(`${httpBase()}/v1/settings/nav-layout`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ nav_layout: layout }),
@@ -2014,7 +2037,7 @@ export async function setNavLayout(
   return res.json();
 }
 
-// Fired after a cloud sign-in/out completes so the account row (§26) refreshes without
+// Fired after a cloud sign-in/out completes so the account row (搂26) refreshes without
 // waiting for the next window focus.
 export const CLOUD_CHANGED = "coworker:cloud-changed";
 export function announceCloudChanged() {
@@ -2022,7 +2045,7 @@ export function announceCloudChanged() {
 }
 
 // Fired the first time Inbox machinery is engaged (an item parks, or a session goes
-// Unattended) — the account row's inbox chip unlocks stickily on it (§26).
+// Unattended) 鈥?the account row's inbox chip unlocks stickily on it (搂26).
 export const INBOX_UNLOCK = "coworker:inbox-unlock";
 export function announceInboxUnlock() {
   window.dispatchEvent(new CustomEvent(INBOX_UNLOCK));
@@ -2045,7 +2068,7 @@ export interface Persona {
   needs_workspace: boolean;
   builtin: boolean;
   family: string;
-  workspace: string; // "git" | "project" | "deliverable" | "none" — drives project-scoping
+  workspace: string; // "git" | "project" | "deliverable" | "none" 鈥?drives project-scoping
   tools: string[];
   enabled: boolean;
   surfaced: boolean;
@@ -2068,7 +2091,7 @@ export interface PersonaConsent {
 }
 
 export async function getPersonas(): Promise<Persona[]> {
-  const res = await fetch(`${httpBase()}/v1/personas`);
+  const res = await apiFetch(`${httpBase()}/v1/personas`);
   return (await res.json()).personas;
 }
 
@@ -2076,7 +2099,7 @@ export async function updatePersona(
   id: string,
   body: { enabled?: boolean; surfaced?: boolean; default?: boolean },
 ): Promise<{ ok: boolean; personas?: Persona[]; error?: string }> {
-  const res = await fetch(`${httpBase()}/v1/personas/${encodeURIComponent(id)}`, {
+  const res = await apiFetch(`${httpBase()}/v1/personas/${encodeURIComponent(id)}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
@@ -2090,7 +2113,7 @@ export async function updatePersona(
 export async function deletePersona(
   id: string,
 ): Promise<{ ok: boolean; personas?: Persona[]; error?: string }> {
-  const res = await fetch(`${httpBase()}/v1/personas/${encodeURIComponent(id)}`, {
+  const res = await apiFetch(`${httpBase()}/v1/personas/${encodeURIComponent(id)}`, {
     method: "DELETE",
   });
   const out = await res.json();
@@ -2098,7 +2121,7 @@ export async function deletePersona(
   return out;
 }
 
-// A curated persona card from the cloud gallery (metadata only — the manifest
+// A curated persona card from the cloud gallery (metadata only 鈥?the manifest
 // is fetched server-side at install and runs through the normal consent flow).
 export interface GalleryPersona {
   slug: string;
@@ -2120,7 +2143,7 @@ export async function getCloudGallery(): Promise<{
   personas: GalleryPersona[];
   error?: string;
 }> {
-  const res = await fetch(`${httpBase()}/v1/cloud/gallery`);
+  const res = await apiFetch(`${httpBase()}/v1/cloud/gallery`);
   return res.json();
 }
 
@@ -2144,14 +2167,14 @@ export interface GalleryDetail {
 }
 
 export async function getCloudGalleryDetail(slug: string): Promise<GalleryDetail> {
-  const res = await fetch(`${httpBase()}/v1/cloud/gallery/${encodeURIComponent(slug)}`);
+  const res = await apiFetch(`${httpBase()}/v1/cloud/gallery/${encodeURIComponent(slug)}`);
   return res.json();
 }
 
 export async function installPersona(
   body: { dir?: string; git_url?: string; gallery_slug?: string },
 ): Promise<{ ok: boolean; consent?: PersonaConsent[]; personas?: Persona[]; error?: string }> {
-  const res = await fetch(`${httpBase()}/v1/personas/install`, {
+  const res = await apiFetch(`${httpBase()}/v1/personas/install`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
@@ -2161,19 +2184,19 @@ export async function installPersona(
   return out;
 }
 
-// -- Persona detail + connection defaults (§5) --------------------------------
+// -- Persona detail + connection defaults (搂5) --------------------------------
 // A persona's declared recommendation (manifest `recommends`): a connector or MCP server it works
 // best with, with a reason + tier (core/optional). `connected` is annotated server-side from the
 // connector list so the detail page can show connect state without a second round-trip.
 export interface PersonaRecommendation {
-  kind: string; // "connector" | "mcp" | …
+  kind: string; // "connector" | "mcp" | 鈥?
   ref: string; // connector id (e.g. "github") or mcp/server name
   reason: string;
   tier: string; // "core" | "optional"
   connected: boolean;
 }
 
-// A persona-default connection (the middle of the §4 hierarchy): for a connected connector, whether
+// A persona-default connection (the middle of the 搂4 hierarchy): for a connected connector, whether
 // new sessions of this persona get it enabled by default.
 export interface PersonaDefaultConnection {
   connector: string; // connector id
@@ -2197,7 +2220,7 @@ export interface PersonaDetail {
 }
 
 export async function getPersonaDetail(id: string): Promise<PersonaDetail> {
-  const res = await fetch(`${httpBase()}/v1/personas/${encodeURIComponent(id)}`);
+  const res = await apiFetch(`${httpBase()}/v1/personas/${encodeURIComponent(id)}`);
   return res.json();
 }
 
@@ -2207,7 +2230,7 @@ export async function setPersonaConnection(
   connector: string,
   enabled: boolean,
 ): Promise<{ ok: boolean; default_connections?: PersonaDefaultConnection[]; error?: string }> {
-  const res = await fetch(`${httpBase()}/v1/personas/${encodeURIComponent(id)}/connections`, {
+  const res = await apiFetch(`${httpBase()}/v1/personas/${encodeURIComponent(id)}/connections`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ connector, enabled }),
@@ -2220,7 +2243,7 @@ export async function setPersonaEnabled(
   id: string,
   enabled: boolean,
 ): Promise<{ ok: boolean; personas?: Persona[]; error?: string }> {
-  const res = await fetch(`${httpBase()}/v1/personas/${encodeURIComponent(id)}/enable`, {
+  const res = await apiFetch(`${httpBase()}/v1/personas/${encodeURIComponent(id)}/enable`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ enabled }),
@@ -2230,8 +2253,8 @@ export async function setPersonaEnabled(
   return out;
 }
 
-// -- Per-session connections (Sources bar + drawer, §6) -----------------------
-// An effective-enabled connector for a session, with a short human detail (e.g. "#ocw-test · DMs").
+// -- Per-session connections (Sources bar + drawer, 搂6) -----------------------
+// An effective-enabled connector for a session, with a short human detail (e.g. "#ocw-test 路 DMs").
 // `enabled` reflects the session override/persona default so the drawer toggle shows correct state.
 export interface SessionConnectedConnector {
   connector: string;
@@ -2239,7 +2262,7 @@ export interface SessionConnectedConnector {
   detail: string;
 }
 
-// A persona-recommended connector not yet connected (drives the `⚠ N` attention count).
+// A persona-recommended connector not yet connected (drives the `鈿?N` attention count).
 export interface SessionRecommendedConnector {
   connector: string;
   reason: string;
@@ -2250,10 +2273,10 @@ export interface SessionRecommendedConnector {
 export interface SessionConnections {
   connected: SessionConnectedConnector[];
   recommended: SessionRecommendedConnector[];
-  attention: number; // ⚠ count = recommended connectors not yet connected
+  attention: number; // 鈿?count = recommended connectors not yet connected
 }
 
-/** `persona` = the active persona hint — required for brand-new sessions (no server-side
+/** `persona` = the active persona hint 鈥?required for brand-new sessions (no server-side
  * record yet), otherwise the view resolves to the default persona's defaults/recommends. */
 export async function getSessionConnections(
   sessionId: string,
@@ -2276,7 +2299,7 @@ export async function setSessionConnection(
   enabled: boolean,
   clear = false,
 ): Promise<{ ok: boolean; error?: string }> {
-  const res = await fetch(`${httpBase()}/v1/sessions/${encodeURIComponent(sessionId)}/connections`, {
+  const res = await apiFetch(`${httpBase()}/v1/sessions/${encodeURIComponent(sessionId)}/connections`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ connector, enabled, ...(clear ? { clear: true } : {}) }),
@@ -2301,7 +2324,7 @@ export interface InboxItem {
   options?: string[];
   allow_text?: boolean;
   multi?: boolean;
-  // Kind-specific payload (directory: {path, writable}; …).
+  // Kind-specific payload (directory: {path, writable}; 鈥?.
   data?: Record<string, any>;
   // Originating-session context (server-joined) so the Inbox is self-contained.
   session_title?: string;
@@ -2314,7 +2337,7 @@ export async function getInbox(sessionId?: string, state?: string): Promise<Inbo
   const q = new URLSearchParams();
   if (sessionId) q.set("session_id", sessionId);
   if (state) q.set("state", state);
-  const res = await fetch(`${httpBase()}/v1/inbox?${q.toString()}`);
+  const res = await apiFetch(`${httpBase()}/v1/inbox?${q.toString()}`);
   return (await res.json()).items;
 }
 
@@ -2322,7 +2345,7 @@ export async function resolveInboxItem(
   id: string,
   resolution: string,
 ): Promise<{ ok: boolean }> {
-  const res = await fetch(`${httpBase()}/v1/inbox/${encodeURIComponent(id)}/resolve`, {
+  const res = await apiFetch(`${httpBase()}/v1/inbox/${encodeURIComponent(id)}/resolve`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ resolution }),
@@ -2330,7 +2353,7 @@ export async function resolveInboxItem(
   return res.json();
 }
 
-// -- P2: Inbox compliance annotation (权限矩阵合规标注) ------------------------
+// -- P2: Inbox compliance annotation (鏉冮檺鐭╅樀鍚堣鏍囨敞) ------------------------
 export interface ComplianceInfo {
   tool_name: string;
   capability: string | null;
@@ -2362,7 +2385,7 @@ export interface InboxComplianceView {
 }
 
 export async function getInboxCompliance(): Promise<InboxComplianceView> {
-  const res = await fetch(`${httpBase()}/v1/inbox/compliance`);
+  const res = await apiFetch(`${httpBase()}/v1/inbox/compliance`);
   return res.json();
 }
 
@@ -2385,7 +2408,7 @@ export interface RecentChannel {
 }
 
 export async function getSubscriptions(): Promise<Subscription[]> {
-  const res = await fetch(`${httpBase()}/v1/subscriptions`);
+  const res = await apiFetch(`${httpBase()}/v1/subscriptions`);
   return (await res.json()).subscriptions ?? [];
 }
 
@@ -2397,7 +2420,7 @@ export interface InboxBinding {
 }
 
 export async function getInboxRouting(): Promise<InboxBinding[]> {
-  const res = await fetch(`${httpBase()}/v1/inbox/routing`);
+  const res = await apiFetch(`${httpBase()}/v1/inbox/routing`);
   return (await res.json()).bindings ?? [];
 }
 
@@ -2406,7 +2429,7 @@ export async function setInboxBinding(
   channel: string | null,
   target: string,
 ): Promise<{ ok: boolean; bindings?: InboxBinding[]; error?: string }> {
-  const res = await fetch(`${httpBase()}/v1/inbox/routing/binding`, {
+  const res = await apiFetch(`${httpBase()}/v1/inbox/routing/binding`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ name, channel, target }),
@@ -2423,12 +2446,12 @@ export interface UnroutedItem {
 }
 
 export async function getUnrouted(): Promise<UnroutedItem[]> {
-  const res = await fetch(`${httpBase()}/v1/unrouted`);
+  const res = await apiFetch(`${httpBase()}/v1/unrouted`);
   return (await res.json()).items ?? [];
 }
 
 export async function getRecentChannels(): Promise<RecentChannel[]> {
-  const res = await fetch(`${httpBase()}/v1/channels/recent`);
+  const res = await apiFetch(`${httpBase()}/v1/channels/recent`);
   return (await res.json()).channels ?? [];
 }
 
@@ -2436,7 +2459,7 @@ export async function subscribeChannel(
   sessionId: string,
   channel: string,
 ): Promise<{ ok: boolean; channel?: string; error?: string }> {
-  const res = await fetch(`${httpBase()}/v1/subscriptions`, {
+  const res = await apiFetch(`${httpBase()}/v1/subscriptions`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ session_id: sessionId, channel }),
@@ -2448,7 +2471,7 @@ export async function unsubscribeChannel(
   sessionId: string,
   channel: string,
 ): Promise<{ ok: boolean; removed?: boolean }> {
-  const res = await fetch(`${httpBase()}/v1/subscriptions/remove`, {
+  const res = await apiFetch(`${httpBase()}/v1/subscriptions/remove`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ session_id: sessionId, channel }),
@@ -2479,14 +2502,14 @@ export async function setUnattended(
 }
 
 export async function getSettings(): Promise<ModelSettings> {
-  const res = await fetch(`${httpBase()}/v1/settings`);
+  const res = await apiFetch(`${httpBase()}/v1/settings`);
   return res.json();
 }
 
 export async function setModelKey(
   apiKey: string,
 ): Promise<{ ok: boolean; error?: string; has_key?: boolean; source?: string }> {
-  const res = await fetch(`${httpBase()}/v1/settings/model-key`, {
+  const res = await apiFetch(`${httpBase()}/v1/settings/model-key`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ api_key: apiKey }),
@@ -2497,7 +2520,7 @@ export async function setModelKey(
 export async function setDefaultModel(
   model: string,
 ): Promise<{ ok: boolean; error?: string; model?: string }> {
-  const res = await fetch(`${httpBase()}/v1/settings/default-model`, {
+  const res = await apiFetch(`${httpBase()}/v1/settings/default-model`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ model }),
@@ -2506,7 +2529,7 @@ export async function setDefaultModel(
 }
 
 export async function addModel(model: string): Promise<ModelSettings & { ok: boolean; error?: string }> {
-  const res = await fetch(`${httpBase()}/v1/settings/models/add`, {
+  const res = await apiFetch(`${httpBase()}/v1/settings/models/add`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ model }),
@@ -2515,7 +2538,7 @@ export async function addModel(model: string): Promise<ModelSettings & { ok: boo
 }
 
 export async function removeModel(model: string): Promise<ModelSettings & { ok: boolean }> {
-  const res = await fetch(`${httpBase()}/v1/settings/models/remove`, {
+  const res = await apiFetch(`${httpBase()}/v1/settings/models/remove`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ model }),
@@ -2524,7 +2547,7 @@ export async function removeModel(model: string): Promise<ModelSettings & { ok: 
 }
 
 export async function setOnboarded(value: boolean): Promise<{ ok: boolean; onboarded: boolean }> {
-  const res = await fetch(`${httpBase()}/v1/settings/onboarded`, {
+  const res = await apiFetch(`${httpBase()}/v1/settings/onboarded`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ value }),
@@ -2532,7 +2555,7 @@ export async function setOnboarded(value: boolean): Promise<{ ok: boolean; onboa
   return res.json();
 }
 
-// -- model providers (OpenAI, Ollama, …) --------------------------------------
+// -- model providers (OpenAI, Ollama, 鈥? --------------------------------------
 export interface ProviderField {
   key: string;
   label: string;
@@ -2552,13 +2575,13 @@ export interface ProviderInfo {
   values: Record<string, string>; // non-secret stored values (e.g. base_url), for prefilling
   suggested_models: string[]; // bare model-name suggestions for the "add model" datalist
   recommended_model: string | null; // pre-filled default for this provider (e.g. qwen3-coder:30b)
-  blurb?: string; // one-line note under the title ("Uses X's OpenAI-compatible API…")
-  key_set_at?: string | null; // ISO date the key was last (re)saved — absent for env-only config
+  blurb?: string; // one-line note under the title ("Uses X's OpenAI-compatible API鈥?)
+  key_set_at?: string | null; // ISO date the key was last (re)saved 鈥?absent for env-only config
   last_used_at?: number | null; // epoch secs the provider last served a completion
 }
 
 export async function getProviders(): Promise<ProviderInfo[]> {
-  const res = await fetch(`${httpBase()}/v1/providers`);
+  const res = await apiFetch(`${httpBase()}/v1/providers`);
   return res.json();
 }
 
@@ -2566,7 +2589,7 @@ export async function setProvider(
   name: string,
   fields: Record<string, string>,
 ): Promise<{ ok: boolean; error?: string; provider?: string; recommended_model?: string | null }> {
-  const res = await fetch(`${httpBase()}/v1/providers`, {
+  const res = await apiFetch(`${httpBase()}/v1/providers`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ name, fields }),
@@ -2574,9 +2597,9 @@ export async function setProvider(
   return res.json();
 }
 
-/** Forget a provider's stored config (Settings ▸ Models "Remove key…"). */
+/** Forget a provider's stored config (Settings 鈻?Models "Remove key鈥?). */
 export async function removeProvider(name: string): Promise<{ ok: boolean; error?: string }> {
-  const res = await fetch(`${httpBase()}/v1/providers/${encodeURIComponent(name)}`, {
+  const res = await apiFetch(`${httpBase()}/v1/providers/${encodeURIComponent(name)}`, {
     method: "DELETE",
   });
   return res.json();
@@ -2587,7 +2610,7 @@ export async function verifyProvider(
   name: string,
   fields: Record<string, string>,
 ): Promise<{ ok: boolean; error?: string }> {
-  const res = await fetch(`${httpBase()}/v1/providers/verify`, {
+  const res = await apiFetch(`${httpBase()}/v1/providers/verify`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ name, fields }),
@@ -2618,12 +2641,12 @@ export interface RecentSender {
 
 // -- direct-message routing ---------------------------------------------------
 export async function getDmRoute(): Promise<string | null> {
-  const res = await fetch(`${httpBase()}/v1/messaging/dm-route`);
+  const res = await apiFetch(`${httpBase()}/v1/messaging/dm-route`);
   return (await res.json()).dm_session ?? null;
 }
 
 export async function setDmRoute(sessionId: string): Promise<{ ok: boolean; dm_session: string | null }> {
-  const res = await fetch(`${httpBase()}/v1/messaging/dm-route`, {
+  const res = await apiFetch(`${httpBase()}/v1/messaging/dm-route`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ session_id: sessionId }),
@@ -2652,8 +2675,8 @@ export interface Automation {
   unseen_runs?: number;
   unseen_failed?: boolean;
   seen_runs_at?: number;
-  // Standing scoped approvals (§25): target-bound rules this automation may exercise
-  // without asking. `entry` is the raw record entry — the revoke handle; `target` is
+  // Standing scoped approvals (搂25): target-bound rules this automation may exercise
+  // without asking. `entry` is the raw record entry 鈥?the revoke handle; `target` is
   // null for legacy name-only entries.
   always_allowed: { entry: string; tool: string; target: string | null }[];
 }
@@ -2672,18 +2695,18 @@ export interface AutomationRun {
 }
 
 export async function getAutomations(): Promise<Automation[]> {
-  const res = await fetch(`${httpBase()}/v1/automations`);
+  const res = await apiFetch(`${httpBase()}/v1/automations`);
   return (await res.json()).tasks ?? [];
 }
 
 // Fired after any automation mutation the sidebar should reflect immediately
-// (mark-seen, create, delete) — its poll covers the rest.
+// (mark-seen, create, delete) 鈥?its poll covers the rest.
 export const AUTOMATIONS_CHANGED = "coworker:automations-changed";
 export function announceAutomationsChanged() {
   window.dispatchEvent(new CustomEvent(AUTOMATIONS_CHANGED));
 }
 
-/** App-wide event stream (/ws/events): session-independent server pushes — today
+/** App-wide event stream (/ws/events): session-independent server pushes 鈥?today
  * automation_run_started (the UX-026 toast). Quietly reconnects while the app is
  * open; the returned cleanup stops it for good. */
 export function connectEvents(
@@ -2699,7 +2722,7 @@ export function connectEvents(
       try {
         onEvent(JSON.parse(e.data));
       } catch {
-        /* malformed frame — ignore */
+        /* malformed frame 鈥?ignore */
       }
     };
     ws.onclose = () => {
@@ -2714,9 +2737,9 @@ export function connectEvents(
   };
 }
 
-/** Advance the automation's seen mark — clears its unseen-runs badge (UX-023). */
+/** Advance the automation's seen mark 鈥?clears its unseen-runs badge (UX-023). */
 export async function markAutomationSeen(id: string): Promise<{ ok: boolean }> {
-  const res = await fetch(`${httpBase()}/v1/automations/${id}/seen`, { method: "POST" });
+  const res = await apiFetch(`${httpBase()}/v1/automations/${id}/seen`, { method: "POST" });
   return res.json();
 }
 
@@ -2727,11 +2750,11 @@ export async function createAutomation(payload: {
   fire_at?: string;
   timezone?: string;
   priority?: "low" | "normal" | "high";
-  // §25 standing grants (the creating surface rendered them; submit IS the consent).
+  // 搂25 standing grants (the creating surface rendered them; submit IS the consent).
   // Only target-bound write entries survive server-side validation.
   permissions?: { tool: string; target: string; access: "read" | "write" }[];
 }): Promise<{ ok: boolean; error?: string; task?: Automation }> {
-  const res = await fetch(`${httpBase()}/v1/automations`, {
+  const res = await apiFetch(`${httpBase()}/v1/automations`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
@@ -2740,12 +2763,12 @@ export async function createAutomation(payload: {
 }
 
 export async function getAutomation(id: string): Promise<{ task: Automation; runs: AutomationRun[] }> {
-  const res = await fetch(`${httpBase()}/v1/automations/${encodeURIComponent(id)}`);
+  const res = await apiFetch(`${httpBase()}/v1/automations/${encodeURIComponent(id)}`);
   return res.json();
 }
 
 export async function updateAutomation(id: string, changes: Record<string, any>) {
-  const res = await fetch(`${httpBase()}/v1/automations/${encodeURIComponent(id)}`, {
+  const res = await apiFetch(`${httpBase()}/v1/automations/${encodeURIComponent(id)}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(changes),
@@ -2754,7 +2777,7 @@ export async function updateAutomation(id: string, changes: Record<string, any>)
 }
 
 export async function deleteAutomation(id: string) {
-  const res = await fetch(`${httpBase()}/v1/automations/${encodeURIComponent(id)}`, { method: "DELETE" });
+  const res = await apiFetch(`${httpBase()}/v1/automations/${encodeURIComponent(id)}`, { method: "DELETE" });
   return res.json();
 }
 
@@ -2770,7 +2793,7 @@ export interface PreparedRun {
 
 /** Prepare a live manual run: returns the session to open + the opening prompt to send. */
 export async function runAutomation(id: string): Promise<PreparedRun> {
-  const res = await fetch(`${httpBase()}/v1/automations/${encodeURIComponent(id)}/run`, { method: "POST" });
+  const res = await apiFetch(`${httpBase()}/v1/automations/${encodeURIComponent(id)}/run`, { method: "POST" });
   return res.json();
 }
 
@@ -2789,7 +2812,7 @@ export async function allowUser(
   teamId?: string | null,
   displayName?: string,
 ) {
-  const res = await fetch(`${httpBase()}/v1/connectors/${encodeURIComponent(name)}/allow`, {
+  const res = await apiFetch(`${httpBase()}/v1/connectors/${encodeURIComponent(name)}/allow`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -2811,7 +2834,7 @@ export interface SlackMember {
 }
 
 // One channel from the workspace roster. Private channels appear only where the
-// bot is a member (Slack API constraint); is_member=false → "invite @QunWork" hint.
+// bot is a member (Slack API constraint); is_member=false 鈫?"invite @QunWork" hint.
 export interface SlackChannelEntry {
   id: string;
   name: string;
@@ -2830,7 +2853,7 @@ export async function getSlackDirectory(
   return res.json();
 }
 
-/** Channel roster for the channel typeahead (name → id resolution). */
+/** Channel roster for the channel typeahead (name 鈫?id resolution). */
 export async function getSlackChannels(
   teamId: string,
   q = "",
@@ -2841,7 +2864,7 @@ export async function getSlackChannels(
   return res.json();
 }
 
-/** Resolve a parked unauthorized message (§19): dismiss / allow / allow_deliver. */
+/** Resolve a parked unauthorized message (搂19): dismiss / allow / allow_deliver. */
 export async function resolveUnauthorized(
   name: string,
   itemId: string,
@@ -2859,7 +2882,7 @@ export async function resolveUnauthorized(
 }
 
 export async function disallowUser(name: string, userId: string, teamId?: string | null) {
-  const res = await fetch(`${httpBase()}/v1/connectors/${encodeURIComponent(name)}/disallow`, {
+  const res = await apiFetch(`${httpBase()}/v1/connectors/${encodeURIComponent(name)}/disallow`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(teamId ? { user_id: userId, team_id: teamId } : { user_id: userId }),
@@ -2911,7 +2934,7 @@ export async function setGcalDefaultAccount(email: string): Promise<{ ok: boolea
 }
 
 /** Drop ONE account of a generic multi-account connector (notion, attio,
- * posthog, …); the default pointer moves to the next account. */
+ * posthog, 鈥?; the default pointer moves to the next account. */
 export async function disconnectAccount(connector: string, accountId: string): Promise<{ ok: boolean; error?: string; remaining_accounts?: number }> {
   const res = await fetch(
     `${httpBase()}/v1/connectors/${encodeURIComponent(connector)}/accounts/${encodeURIComponent(accountId)}/disconnect`,
@@ -2930,7 +2953,7 @@ export async function setDefaultAccount(connector: string, accountId: string): P
 
 /** Replace the "Never show agents" lists (senders and/or labels; omit to keep). */
 export async function setGmailFilters(filters: { senders?: string[]; labels?: string[] }): Promise<{ ok: boolean; filters?: GmailFilters; error?: string }> {
-  const res = await fetch(`${httpBase()}/v1/connectors/gmail/filters`, {
+  const res = await apiFetch(`${httpBase()}/v1/connectors/gmail/filters`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(filters),
@@ -2950,7 +2973,7 @@ export interface GithubStatus {
 }
 
 export async function getGithubStatus(): Promise<GithubStatus> {
-  const res = await fetch(`${httpBase()}/v1/connectors/github/status`);
+  const res = await apiFetch(`${httpBase()}/v1/connectors/github/status`);
   return res.json();
 }
 
@@ -2982,7 +3005,7 @@ export async function setHubSpotDefaultPortal(hubId: string): Promise<{ ok: bool
 
 /** Replace the hidden-fields denylist (properties stripped from agent reads). */
 export async function setHubSpotHiddenFields(fields: string[]): Promise<{ ok: boolean; hidden_fields?: string[]; error?: string }> {
-  const res = await fetch(`${httpBase()}/v1/connectors/hubspot/hidden-fields`, {
+  const res = await apiFetch(`${httpBase()}/v1/connectors/hubspot/hidden-fields`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ hidden_fields: fields }),
@@ -3004,7 +3027,7 @@ export interface SlackStatus {
 }
 
 export async function getSlackStatus(): Promise<SlackStatus> {
-  const res = await fetch(`${httpBase()}/v1/connectors/slack/status`);
+  const res = await apiFetch(`${httpBase()}/v1/connectors/slack/status`);
   return res.json();
 }
 
@@ -3021,11 +3044,11 @@ export class Session {
   private readonly handlers: Handlers;
   // Payloads sent before the socket finished opening (or while disconnected), replayed on
   // `onopen`. Belt-and-suspenders against the first message being dropped if the user sends
-  // in the connect window — and against a dropped socket silently eating later sends.
+  // in the connect window 鈥?and against a dropped socket silently eating later sends.
   private outbox: object[] = [];
   private reconnectTimer: number | undefined;
   private reconnectDelay = 2000; // 2s, doubling to 30s (owner bug 2026-08-18: a dropped
-  // socket left the session permanently mute — every later message was silently discarded).
+  // socket left the session permanently mute 鈥?every later message was silently discarded).
   private closed = false;
 
   constructor(sessionId: string, workspace: string, agent: string, handlers: Handlers) {
@@ -3046,7 +3069,7 @@ export class Session {
     this.ws.onclose = () => {
       this.handlers.onClose?.();
       if (this.closed) return;
-      // Auto-reconnect with backoff, preserving the outbox — otherwise a single oversized
+      // Auto-reconnect with backoff, preserving the outbox 鈥?otherwise a single oversized
       // frame / server blip leaves the session permanently mute (owner bug 2026-08-18).
       const d = this.reconnectDelay;
       this.reconnectDelay = Math.min(d * 2, 30_000);
@@ -3066,13 +3089,13 @@ export class Session {
       this.ws.send(JSON.stringify(payload));
       return;
     }
-    // Connecting or temporarily disconnected: queue (bounded) and flush on (re)connect —
+    // Connecting or temporarily disconnected: queue (bounded) and flush on (re)connect 鈥?
     // never silently drop the user's message.
     if (this.outbox.length < 50) this.outbox.push(payload);
   }
 
   /** `model` = the composer's CURRENT selection, carried on every message so the turn uses
-   * exactly what the user sees — immune to set_model races across reconnects (a new cowork
+   * exactly what the user sees 鈥?immune to set_model races across reconnects (a new cowork
    * session always reconnects once to adopt its scratch dir, which could drop a queued
    * set_model and leave the engine on a stale/resumed model; found 2026-07-04). */
   userMessage(text: string, attachments?: unknown[], model?: string) {
@@ -3112,7 +3135,7 @@ export class Session {
     this.send({ type: "interrupt" });
   }
 
-  // Re-run a turn that ended in a provider error — no new user message; the server
+  // Re-run a turn that ended in a provider error 鈥?no new user message; the server
   // guards on the history tail so a stray frame is a no-op.
   retry() {
     this.send({ type: "retry" });
@@ -3150,7 +3173,7 @@ export interface MemoryItem {
 }
 
 export async function listMemories(): Promise<{ memory: MemoryItem[] }> {
-  const res = await fetch(`${httpBase()}/v1/memory`);
+  const res = await apiFetch(`${httpBase()}/v1/memory`);
   return await res.json();
 }
 
@@ -3158,7 +3181,7 @@ export async function searchMemories(
   query: string,
   k = 10,
 ): Promise<{ query: string; results: MemoryItem[] }> {
-  const res = await fetch(`${httpBase()}/v1/memory/search`, {
+  const res = await apiFetch(`${httpBase()}/v1/memory/search`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ query, k }),
@@ -3170,7 +3193,7 @@ export async function addMemory(
   content: string,
   scope = "workspace",
 ): Promise<MemoryItem> {
-  const res = await fetch(`${httpBase()}/v1/memory`, {
+  const res = await apiFetch(`${httpBase()}/v1/memory`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ content, scope }),
@@ -3182,7 +3205,7 @@ export async function updateMemory(
   id: number,
   content: string,
 ): Promise<{ ok: boolean; item?: MemoryItem; error?: string }> {
-  const res = await fetch(`${httpBase()}/v1/memory/${id}`, {
+  const res = await apiFetch(`${httpBase()}/v1/memory/${id}`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ content }),
@@ -3191,7 +3214,7 @@ export async function updateMemory(
 }
 
 export async function deleteMemory(id: number): Promise<{ ok: boolean }> {
-  const res = await fetch(`${httpBase()}/v1/memory/${id}`, { method: "DELETE" });
+  const res = await apiFetch(`${httpBase()}/v1/memory/${id}`, { method: "DELETE" });
   return await res.json();
 }
 
@@ -3205,7 +3228,7 @@ export interface AssetResults {
 }
 
 export async function searchAssets(query: string, k = 8): Promise<{ query: string } & AssetResults> {
-  const res = await fetch(`${httpBase()}/v1/assets/search`, {
+  const res = await apiFetch(`${httpBase()}/v1/assets/search`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ query, k }),
@@ -3222,7 +3245,7 @@ export interface RhythmForecast {
 }
 
 export async function rhythmForecast(): Promise<RhythmForecast> {
-  const res = await fetch(`${httpBase()}/v1/rhythm/forecast`);
+  const res = await apiFetch(`${httpBase()}/v1/rhythm/forecast`);
   return await res.json();
 }
 
@@ -3245,7 +3268,7 @@ export interface RhythmRecommendations {
 }
 
 export async function rhythmRecommendations(): Promise<RhythmRecommendations> {
-  const res = await fetch(`${httpBase()}/v1/rhythm/recommendations`);
+  const res = await apiFetch(`${httpBase()}/v1/rhythm/recommendations`);
   return await res.json();
 }
 
@@ -3253,7 +3276,7 @@ export async function setKnowledgeRetired(
   id: number,
   retired: boolean,
 ): Promise<{ ok: boolean; id?: number; retired?: boolean }> {
-  const res = await fetch(`${httpBase()}/v1/knowledge/${id}/retire`, {
+  const res = await apiFetch(`${httpBase()}/v1/knowledge/${id}/retire`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ retired }),
@@ -3261,7 +3284,7 @@ export async function setKnowledgeRetired(
   return await res.json();
 }
 
-// -- HORNET (蜂巢共振神经拓扑) 2D layer --------------------------------------
+// -- HORNET (铚傚发鍏辨尟绁炵粡鎷撴墤) 2D layer --------------------------------------
 
 export interface HornetNode {
   id: number;
@@ -3284,21 +3307,21 @@ export interface HornetEdge {
 
 export interface HornetHit {
   node_id: number;
-  kb_item_id?: number | null; // 问题3: 关联的原文知识条目
+  kb_item_id?: number | null; // 闂3: 鍏宠仈鐨勫師鏂囩煡璇嗘潯鐩?
   title: string;
   amplitude: number;
   path: string[];
   x: number;
   y: number;
   similarity: number;
-  // manager 层附加的原文元数据 (问题3: 查看详情/打开原文)
+  // manager 灞傞檮鍔犵殑鍘熸枃鍏冩暟鎹?(闂3: 鏌ョ湅璇︽儏/鎵撳紑鍘熸枃)
   source_path?: string | null;
   source_kind?: string | null;
   kb_title?: string | null;
 }
 
 export async function hornetBuild(rebuild = true, topo = false): Promise<{ nodes: number; edges: number; topo?: boolean }> {
-  const res = await fetch(`${httpBase()}/v1/hornet/build`, {
+  const res = await apiFetch(`${httpBase()}/v1/hornet/build`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ rebuild, topo }),
@@ -3310,7 +3333,7 @@ export async function hornetResonate(
   query: string,
   k = 10,
 ): Promise<{ run_id?: number; hits: HornetHit[]; query_phase?: number[]; warnings?: string[] }> {
-  const res = await fetch(`${httpBase()}/v1/hornet/resonate`, {
+  const res = await apiFetch(`${httpBase()}/v1/hornet/resonate`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ query, k }),
@@ -3319,7 +3342,7 @@ export async function hornetResonate(
 }
 
 export async function hornetEvolve(limit = 20): Promise<{ emerged: number; counts: Record<string, number>; items: unknown[] }> {
-  const res = await fetch(`${httpBase()}/v1/hornet/evolve`, {
+  const res = await apiFetch(`${httpBase()}/v1/hornet/evolve`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ limit }),
@@ -3328,7 +3351,7 @@ export async function hornetEvolve(limit = 20): Promise<{ emerged: number; count
 }
 
 export async function hornetGraph(): Promise<{ nodes: HornetNode[]; edges: HornetEdge[] }> {
-  const res = await fetch(`${httpBase()}/v1/hornet/graph`);
+  const res = await apiFetch(`${httpBase()}/v1/hornet/graph`);
   return await res.json();
 }
 
@@ -3339,7 +3362,7 @@ export async function hornetStats(): Promise<{
   emergent: number;
   emergent_items: { id: number; kind: string; title: string; detail: unknown }[];
 }> {
-  const res = await fetch(`${httpBase()}/v1/hornet/stats`);
+  const res = await apiFetch(`${httpBase()}/v1/hornet/stats`);
   return await res.json();
 }
 
@@ -3347,7 +3370,7 @@ export async function hornetEmergence(limit = 20): Promise<{
   unread: number;
   items: { id: number; kind: string; title: string; detail: unknown; status: string }[];
 }> {
-  const res = await fetch(`${httpBase()}/v1/hornet/emergence?limit=${limit}`);
+  const res = await apiFetch(`${httpBase()}/v1/hornet/emergence?limit=${limit}`);
   return await res.json();
 }
 
@@ -3355,7 +3378,7 @@ export async function hornetMarkEmergence(
   id: number,
   status: "accepted" | "dismissed" = "accepted",
 ): Promise<{ ok: boolean; unread: number }> {
-  const res = await fetch(`${httpBase()}/v1/hornet/emergence/${id}/mark`, {
+  const res = await apiFetch(`${httpBase()}/v1/hornet/emergence/${id}/mark`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ status }),
@@ -3369,16 +3392,16 @@ export async function hornetHealth(): Promise<{
   dimensions: { structure: number; dynamics: number; evolution: number };
   metrics: Record<string, unknown>;
 }> {
-  const res = await fetch(`${httpBase()}/v1/hornet/health`);
+  const res = await apiFetch(`${httpBase()}/v1/hornet/health`);
   return await res.json();
 }
 
 export async function hornetHealthReport(): Promise<{ ok: boolean; path?: string; score?: number }> {
-  const res = await fetch(`${httpBase()}/v1/hornet/health-report`, { method: "POST" });
+  const res = await apiFetch(`${httpBase()}/v1/hornet/health-report`, { method: "POST" });
   return await res.json();
 }
 
-// -- P1-8: HORNET 涌现 → 自动生成 Draft Skill --------------------------------
+// -- P1-8: HORNET 娑岀幇 鈫?鑷姩鐢熸垚 Draft Skill --------------------------------
 
 export async function hornetEmergenceToSkill(
   emergenceIndex = -1,
@@ -3388,7 +3411,7 @@ export async function hornetEmergenceToSkill(
   emergence?: { id: number; kind: string; title: string; detail: unknown };
   error?: string;
 }> {
-  const res = await fetch(`${httpBase()}/v1/hornet/emergence-to-skill`, {
+  const res = await apiFetch(`${httpBase()}/v1/hornet/emergence-to-skill`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ emergence_index: emergenceIndex }),
@@ -3396,13 +3419,13 @@ export async function hornetEmergenceToSkill(
   return await res.json();
 }
 
-// -- P1-5: 零信任能力袋 (scope 配置 + 权限审计热力图) ------------------------
+// -- P1-5: 闆朵俊浠昏兘鍔涜 (scope 閰嶇疆 + 鏉冮檺瀹¤鐑姏鍥? ------------------------
 
-/** 全量连接器 scope 声明表: { connector: { tool: [scope, ...] } } */
+/** 鍏ㄩ噺杩炴帴鍣?scope 澹版槑琛? { connector: { tool: [scope, ...] } } */
 export type ConnectorScopeMatrix = Record<string, Record<string, string[]>>;
 
 export async function getConnectorScopes(): Promise<{ connectors: ConnectorScopeMatrix }> {
-  const res = await fetch(`${httpBase()}/v1/permissions/scopes`);
+  const res = await apiFetch(`${httpBase()}/v1/permissions/scopes`);
   return await res.json();
 }
 
@@ -3420,7 +3443,7 @@ export async function setPersonaScopes(
   connector: string,
   scopes: string[],
 ): Promise<{ ok: boolean; persona_id: string; connector: string; scopes: string[] }> {
-  const res = await fetch(`${httpBase()}/v1/permissions/persona-scopes`, {
+  const res = await apiFetch(`${httpBase()}/v1/permissions/persona-scopes`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ persona_id: personaId, connector, scopes }),
@@ -3442,13 +3465,13 @@ export async function getPermissionsHeatmap(): Promise<{
   matrix: PermissionHeatmapCell[];
   total_tools_tracked: number;
 }> {
-  const res = await fetch(`${httpBase()}/v1/permissions/heatmap`);
+  const res = await apiFetch(`${httpBase()}/v1/permissions/heatmap`);
   return await res.json();
 }
 
-// -- 13 Agent 影子模式: 决策回放轨迹 ----------------------------------------
+// -- 13 Agent 褰卞瓙妯″紡: 鍐崇瓥鍥炴斁杞ㄨ抗 ----------------------------------------
 
-/** 单条决策轨迹 entry — 由 engine._record_decision 写入。 */
+/** 鍗曟潯鍐崇瓥杞ㄨ抗 entry 鈥?鐢?engine._record_decision 鍐欏叆銆?*/
 export interface DecisionTraceEntry {
   ts: number;
   iteration: number;
@@ -3480,7 +3503,7 @@ export interface DecisionTraceEntry {
   granted_scopes?: string[];
 }
 
-/** SwarmView 通过 orchestration 事件流收到的 decision_trace 包装。 */
+/** SwarmView 閫氳繃 orchestration 浜嬩欢娴佹敹鍒扮殑 decision_trace 鍖呰銆?*/
 export interface SwarmDecisionEvent {
   worker: string;
   task_id: string;
@@ -3504,12 +3527,12 @@ export async function getDecisionTrace(
 export async function knowledgeResumeContext(
   id: number,
 ): Promise<{ ok: boolean; related: { title: string; snippet: string; amplitude: number }[] }> {
-  const res = await fetch(`${httpBase()}/v1/knowledge/${id}/resume-context`);
+  const res = await apiFetch(`${httpBase()}/v1/knowledge/${id}/resume-context`);
   return await res.json();
 }
 
 export async function revealKnowledgeSource(path: string): Promise<{ ok: boolean; error?: string }> {
-  const res = await fetch(`${httpBase()}/v1/knowledge/reveal-source`, {
+  const res = await apiFetch(`${httpBase()}/v1/knowledge/reveal-source`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ path }),
@@ -3520,14 +3543,14 @@ export async function revealKnowledgeSource(path: string): Promise<{ ok: boolean
 export async function knowledgeResumePack(
   id: number,
 ): Promise<{ ok: boolean; pack?: { title: string; content: string; source?: string | null; related: { title: string; snippet: string; amplitude: number }[] } }> {
-  const res = await fetch(`${httpBase()}/v1/knowledge/${id}/resume-pack`);
+  const res = await apiFetch(`${httpBase()}/v1/knowledge/${id}/resume-pack`);
   return await res.json();
 }
 
 export async function knowledgeResumeByTitle(
   title: string,
 ): Promise<{ ok: boolean; pack?: { title: string; content: string; source?: string | null; related: { title: string; snippet: string; amplitude: number }[] } }> {
-  const res = await fetch(`${httpBase()}/v1/knowledge/resume-by-title`, {
+  const res = await apiFetch(`${httpBase()}/v1/knowledge/resume-by-title`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ title }),
@@ -3571,12 +3594,12 @@ export async function getUsage(days = 14): Promise<{
     cache_hit_rate: number;
   }>;
 }> {
-  const res = await fetch(`${httpBase()}/v1/usage?days=${days}`);
+  const res = await apiFetch(`${httpBase()}/v1/usage?days=${days}`);
   if (!res.ok) throw new Error(`usage ${res.status}`);
   return await res.json();
 }
 
-// -- cache warm-up (P0 建议1) ------------------------------------------------
+// -- cache warm-up (P0 寤鸿1) ------------------------------------------------
 export interface CacheWarmStatus {
   enabled: boolean;
   min_hit_rate: number;
@@ -3588,12 +3611,12 @@ export interface CacheWarmStatus {
 }
 
 export async function getCacheWarmStatus(): Promise<CacheWarmStatus> {
-  const res = await fetch(`${httpBase()}/v1/cache/warm`);
+  const res = await apiFetch(`${httpBase()}/v1/cache/warm`);
   return await res.json();
 }
 
 export async function setCacheWarmEnabled(enabled: boolean): Promise<{ ok: boolean; enabled: boolean }> {
-  const res = await fetch(`${httpBase()}/v1/cache/warm/toggle`, {
+  const res = await apiFetch(`${httpBase()}/v1/cache/warm/toggle`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ enabled }),
@@ -3602,7 +3625,7 @@ export async function setCacheWarmEnabled(enabled: boolean): Promise<{ ok: boole
 }
 
 export async function triggerCacheWarm(maxItems?: number): Promise<{ ok: boolean; warmed: number; prompt_tokens?: number; status?: CacheWarmStatus }> {
-  const res = await fetch(`${httpBase()}/v1/cache/warm`, {
+  const res = await apiFetch(`${httpBase()}/v1/cache/warm`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(maxItems ? { max_items: maxItems } : {}),
@@ -3610,7 +3633,7 @@ export async function triggerCacheWarm(maxItems?: number): Promise<{ ok: boolean
   return await res.json();
 }
 
-// ── Team / Organization API (Phase 0: types + graceful fallback) ─────────────
+// 鈹€鈹€ Team / Organization API (Phase 0: types + graceful fallback) 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 export interface TeamInfo {
   id: string;
@@ -3678,10 +3701,10 @@ export interface SyncStatus {
   peers_online: number;
 }
 
-// P2P 团队同步 (设计方案第六章): 顶栏同步状态指示器数据源。
+// P2P 鍥㈤槦鍚屾 (璁捐鏂规绗叚绔?: 椤舵爮鍚屾鐘舵€佹寚绀哄櫒鏁版嵁婧愩€?
 export async function getSyncStatus(): Promise<SyncStatus> {
   try {
-    const res = await fetch(`${httpBase()}/v1/team/sync/status`);
+    const res = await apiFetch(`${httpBase()}/v1/team/sync/status`);
     if (!res.ok) return { status: "single", last_sync: null, pending_changes: 0, peers_online: 0 };
     const d = await res.json();
     return {
@@ -3697,7 +3720,7 @@ export async function getSyncStatus(): Promise<SyncStatus> {
 
 export async function runTeamSync(): Promise<{ ok: boolean; error?: string }> {
   try {
-    const res = await fetch(`${httpBase()}/v1/team/sync/run`, {
+    const res = await apiFetch(`${httpBase()}/v1/team/sync/run`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: "{}",
@@ -3713,7 +3736,7 @@ export async function runTeamSync(): Promise<{ ok: boolean; error?: string }> {
 
 export async function getTeam(): Promise<TeamInfo | null> {
   try {
-    const res = await fetch(`${httpBase()}/v1/team`);
+    const res = await apiFetch(`${httpBase()}/v1/team`);
     if (!res.ok) return null;
     return await res.json();
   } catch {
@@ -3723,7 +3746,7 @@ export async function getTeam(): Promise<TeamInfo | null> {
 
 export async function listMembers(): Promise<Member[]> {
   try {
-    const res = await fetch(`${httpBase()}/v1/team/members`);
+    const res = await apiFetch(`${httpBase()}/v1/team/members`);
     if (!res.ok) return [];
     return await res.json();
   } catch {
@@ -3735,7 +3758,7 @@ export async function addMember(
   name: string,
   role: Member["role"] = "worker",
 ): Promise<Member> {
-  const res = await fetch(`${httpBase()}/v1/team/members`, {
+  const res = await apiFetch(`${httpBase()}/v1/team/members`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ name, role }),
@@ -3747,7 +3770,7 @@ export async function updateMember(
   id: string,
   fields: Partial<{ role: Member["role"]; status: string; current_task_group: string }>,
 ): Promise<{ ok: boolean }> {
-  const res = await fetch(`${httpBase()}/v1/team/members/${encodeURIComponent(id)}`, {
+  const res = await apiFetch(`${httpBase()}/v1/team/members/${encodeURIComponent(id)}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(fields),
@@ -3756,7 +3779,7 @@ export async function updateMember(
 }
 
 export async function removeMember(id: string): Promise<{ ok: boolean }> {
-  const res = await fetch(`${httpBase()}/v1/team/members/${encodeURIComponent(id)}`, {
+  const res = await apiFetch(`${httpBase()}/v1/team/members/${encodeURIComponent(id)}`, {
     method: "DELETE",
   });
   return await res.json();
@@ -3764,7 +3787,7 @@ export async function removeMember(id: string): Promise<{ ok: boolean }> {
 
 export async function listAgents(): Promise<AgentInstance[]> {
   try {
-    const res = await fetch(`${httpBase()}/v1/team/agents`);
+    const res = await apiFetch(`${httpBase()}/v1/team/agents`);
     if (!res.ok) return [];
     return await res.json();
   } catch {
@@ -3776,7 +3799,7 @@ export async function addAgent(
   role: AgentInstance["role"] = "worker",
   persona_id?: string,
 ): Promise<AgentInstance> {
-  const res = await fetch(`${httpBase()}/v1/team/agents`, {
+  const res = await apiFetch(`${httpBase()}/v1/team/agents`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ role, persona_id: persona_id ?? role }),
@@ -3785,14 +3808,14 @@ export async function addAgent(
 }
 
 export async function removeAgent(id: string): Promise<{ ok: boolean; id: string }> {
-  const res = await fetch(`${httpBase()}/v1/team/agents/${encodeURIComponent(id)}`, {
+  const res = await apiFetch(`${httpBase()}/v1/team/agents/${encodeURIComponent(id)}`, {
     method: "DELETE",
   });
   return await res.json();
 }
 
 export async function getAgentLoad(): Promise<Record<string, number>> {
-  const res = await fetch(`${httpBase()}/v1/team/agents/load`);
+  const res = await apiFetch(`${httpBase()}/v1/team/agents/load`);
   return await res.json();
 }
 
@@ -3815,7 +3838,7 @@ export async function createTaskGroup(params: {
   agent_ids?: string[];
   group_id?: string;
 }): Promise<TaskGroup> {
-  const res = await fetch(`${httpBase()}/v1/team/task-groups`, {
+  const res = await apiFetch(`${httpBase()}/v1/team/task-groups`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(params),
@@ -3839,7 +3862,7 @@ export async function transitionTaskGroup(
 }
 
 export async function dissolveTaskGroup(id: string): Promise<{ ok: boolean }> {
-  const res = await fetch(`${httpBase()}/v1/team/task-groups/${encodeURIComponent(id)}/dissolve`, {
+  const res = await apiFetch(`${httpBase()}/v1/team/task-groups/${encodeURIComponent(id)}/dissolve`, {
     method: "POST",
   });
   return await res.json();
@@ -3847,7 +3870,7 @@ export async function dissolveTaskGroup(id: string): Promise<{ ok: boolean }> {
 
 export async function getPermissions(): Promise<PermissionMatrix | null> {
   try {
-    const res = await fetch(`${httpBase()}/v1/team/permissions`);
+    const res = await apiFetch(`${httpBase()}/v1/team/permissions`);
     if (!res.ok) return null;
     return await res.json();
   } catch {
@@ -3855,7 +3878,7 @@ export async function getPermissions(): Promise<PermissionMatrix | null> {
   }
 }
 
-// ── ROI 价值归因 (建议10: AI 团队账本) ──────────────────────────────────────
+// 鈹€鈹€ ROI 浠峰€煎綊鍥?(寤鸿10: AI 鍥㈤槦璐︽湰) 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 export interface RoiConfig {
   rates: Record<string, { prompt_ppm: number; completion_ppm: number }>;
   hourly_rate: number;
@@ -3879,12 +3902,12 @@ export interface RoiReport {
 }
 
 export async function getRoiConfig(): Promise<RoiConfig> {
-  const res = await fetch(`${httpBase()}/v1/roi/config`);
+  const res = await apiFetch(`${httpBase()}/v1/roi/config`);
   return await res.json();
 }
 
 export async function setRoiConfig(rates: RoiConfig["rates"], hourlyRate: number): Promise<{ ok: boolean }> {
-  const res = await fetch(`${httpBase()}/v1/roi/config`, {
+  const res = await apiFetch(`${httpBase()}/v1/roi/config`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ rates, hourly_rate: hourlyRate }),
@@ -3893,12 +3916,12 @@ export async function setRoiConfig(rates: RoiConfig["rates"], hourlyRate: number
 }
 
 export async function getRoiReport(month: string): Promise<RoiReport> {
-  const res = await fetch(`${httpBase()}/v1/roi/report?month=${encodeURIComponent(month)}`);
+  const res = await apiFetch(`${httpBase()}/v1/roi/report?month=${encodeURIComponent(month)}`);
   return await res.json();
 }
 
 export async function generateRoiReport(month: string): Promise<{ ok: boolean; path?: string }> {
-  const res = await fetch(`${httpBase()}/v1/roi/report/html`, {
+  const res = await apiFetch(`${httpBase()}/v1/roi/report/html`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ month }),
@@ -3907,7 +3930,7 @@ export async function generateRoiReport(month: string): Promise<{ ok: boolean; p
 }
 
 export async function tagOrchestrateRun(runId: string, valueTag: string): Promise<{ ok: boolean; error?: string }> {
-  const res = await fetch(`${httpBase()}/v1/orchestrate/${encodeURIComponent(runId)}/tag`, {
+  const res = await apiFetch(`${httpBase()}/v1/orchestrate/${encodeURIComponent(runId)}/tag`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ value_tag: valueTag }),

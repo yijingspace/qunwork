@@ -9,7 +9,8 @@ it("authenticates REST and session WebSocket calls with the launch token", async
   vi.stubGlobal("__COWORKER_API_TOKEN__", "launch-token");
   const request = vi.fn(async (_url: string, init?: RequestInit) => {
     expect(new Headers(init?.headers).get("X-QunWork-Token")).toBe("launch-token");
-    return { json: async () => ({ status: "ok" }) } as Response;
+    // apiFetch 传输层拦截非 2xx (ApiError) — stub 必须带 ok/status 字段
+    return { ok: true, status: 200, json: async () => ({ status: "ok" }) } as Response;
   });
   vi.stubGlobal("fetch", request);
 

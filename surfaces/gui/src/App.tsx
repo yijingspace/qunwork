@@ -452,7 +452,10 @@ export function App() {
       getHealth()
         .then(async (h) => {
           if (cancelled) return;
-          setModel(h.model);
+          // 401/异常响应的错误体 ({"error":...}) 没有 model 字段 — 直接
+          // setModel(undefined) 会让 modelDisplay 的 .includes 崩掉整个
+          // 首屏 (error boundary 白屏, 「无法连接本地引擎」场景的遗留渲染报错)。
+          if (h?.model) setModel(h.model);
           // First-run setup wizard (desktop): show until the user completes/dismisses it.
           if (isTauri()) {
             getSettings()
@@ -1196,9 +1199,12 @@ export function App() {
   const hasHistory = items.length > 0;
   // Curated labels read "Claude Opus 4.8 · Anthropic" — the provider suffix is dropdown context,
   // noise in a facts line. Fall back to the raw id without its provider prefix.
+  // model 可能在连接失败 (401 → 错误体无 model) 时仍为空 — 兜底空串, 不让
+  // facts 行崩掉整个 App (渲染报错的遗留根因, 2026-09-02)。
   const modelDisplay =
-    modelLabels[model]?.split(" · ")[0] ||
-    (model.includes(":") ? model.split(":").slice(1).join(":") : model);
+    (model && modelLabels[model]?.split(" · ")[0]) ||
+    (model && model.includes(":") ? model.split(":").slice(1).join(":") : model) ||
+    "";
   // Persona name dropped for this release (owner ask 2026-07-22): personas are hidden,
   // so "Coworker" read as noise. The model (+ project folder) are the real fixed facts.
   const subtitleParts = [modelDisplay];
@@ -1332,7 +1338,7 @@ export function App() {
         <Onboarding
           onDone={(next) => {
             setOnboarding(false);
-            getHealth().then((h) => setModel(h.model)).catch(() => {});
+            getHealth().then((h) => { if (h?.model) setModel(h.model); }).catch(() => {});
             loadSettings(); // pick up a model connected during setup (clears the composer chip)
             if (next === "gallery") {
               // The specialists tip: land on Settings ▸ Personas, where the Gallery link lives.
