@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import pytest
@@ -219,6 +220,120 @@ def test_short_query_fallback_not_used_with_real_embedder(tmp_path: Path):
     assert calls == ["宇"]  # 查询走了 embedder, 未被子串回退劫持
     assert hits and hits[0]["title"] == "条目A"
     assert hits[0]["score"] == pytest.approx(1.0)
+
+
+# -- 存量污染防御 (2026-09-06: items 2.2k→21.9k 爆炸治理) ----------------------
+
+
+def test_derived_artifacts_never_indexed(store: KnowledgeStore, tmp_path: Path):
+    """OIR 交付物副本 (概念索引_*/术语表_*) 是产出不是源文档 — 不回灌。"""
+    d = tmp_path / "docs"
+    d.mkdir()
+    (d / "真实研究.md").write_text("这是一篇真正的研究文档, 内容足够长不会被质量门槛拦下。" * 5, encoding="utf-8")
+    (d / "概念索引_真实研究_20260906_010101.md").write_text("术语 | 频次\n守恒 | 31", encoding="utf-8")
+    (d / "术语表_全景_20260906_010101.md").write_text("# 跨文档术语表\n守恒 310", encoding="utf-8")
+
+    s = KnowledgeStore(tmp_path / "kb.db", workspace=str(d))
+    s.scan_workspace()
+    titles = {r["title"] for r in s.list_items(limit=50)}
+    assert "真实研究" in titles
+    assert not any(t.startswith(("概念索引_", "术语表_")) for t in titles)
+
+
+def test_content_hash_dedup_same_doc_two_paths(store: KnowledgeStore, tmp_path: Path):
+    """同内容不同路径 (副本/junction 双路径) 只建一个条目 — 自动去重。"""
+    d1 = tmp_path / "a"
+    d2 = tmp_path / "b"
+    d1.mkdir()
+    d2.mkdir()
+    body = "同一份研究文档的内容, 足够长以通过质量门槛检查。" * 10
+    (d1 / "doc.md").write_text(body, encoding="utf-8")
+    (d2 / "doc副本.md").write_text(body, encoding="utf-8")
+
+    s = KnowledgeStore(tmp_path / "kb.db", workspace=str(tmp_path))
+    id1 = s.index_file(d1 / "doc.md", workspace=str(tmp_path))
+    id2 = s.index_file(d2 / "doc副本.md", workspace=str(tmp_path))
+    assert id1 == id2, "同内容第二条必须指回既有条目"
+    rows = s._con.execute("SELECT COUNT(*) FROM knowledge_items").fetchone()[0]
+    assert rows == 1
+
+
+def test_scan_targets_do_not_adopt_polluted_roots(tmp_path: Path):
+    """已索引父目录只有在合法根之下才成为扫描目标 — 防扩散收敛。
+    旧版: bin 下一个 .txt 入库 → bin 目录成为永久扫描根 → 指数扩散。"""
+    legit = tmp_path / "workspace"
+    legit.mkdir()
+    polluted = tmp_path / "Program Files" / "SomeVendor"
+    polluted.mkdir(parents=True)
+    s = KnowledgeStore(tmp_path / "kb.db", workspace=str(legit))
+
+    # 模拟历史污染: Program Files 下有条目 (不经扫描, 直接入库)
+    with s._lock:
+        s._con.execute(
+            "INSERT INTO knowledge_items (workspace, kind, source_path, title, created_at, updated_at) "
+            "VALUES (?, 'file', ?, '污染条目', 0, 0)",
+            (str(polluted), str(polluted / "junk.txt")),
+        )
+        s._con.commit()
+
+    targets = s._scan_targets()
+    target_labels = {t["ws"] for t in targets}
+    assert str(legit) in target_labels
+    assert not any("Program Files" in lbl for lbl in target_labels), targets
+
+
+def test_low_quality_content_skipped(store: KnowledgeStore, tmp_path: Path):
+    """二进制伪文本 (U+FFFD 占比 >20%) 与空壳 (<30 字符) 不建条目。"""
+    garbage = tmp_path / "garbage.md"
+    garbage.write_bytes(b"\x00" * 100)  # 二进制伪文本 (NUL 占比 100%)
+    empty = tmp_path / "empty.md"
+    empty.write_text("", encoding="utf-8")
+    good = tmp_path / "good.md"
+    good.write_text("这是一篇内容充实的研究文档。" * 20, encoding="utf-8")
+
+    assert store.index_file(garbage, workspace=str(tmp_path)) is None
+    assert store.index_file(empty, workspace=str(tmp_path)) is None
+    rid = store.index_file(good, workspace=str(tmp_path))
+    assert rid is not None
+
+
+def test_purge_cli_dryrun_and_apply(tmp_path: Path):
+    """治理 CLI: 默认 dry-run 只报告; --apply retire (审计保留); 修复后 search 不可见。"""
+    from coworker.knowledge.purge import main as purge_main
+
+    s = KnowledgeStore(tmp_path / "kb.db", workspace="ws")
+    s.add_text("正常研究", "一篇正常的知识条目内容。" * 5, kind="manual", workspace="ws")
+    with s._lock:
+        s._con.execute(
+            "INSERT INTO knowledge_items (workspace, kind, source_path, title, created_at, updated_at) "
+            "VALUES ('ws', 'file', 'C:\\Program Files\\Vendor\\readme.md', '误扫系统文件', 0, 0)"
+        )
+        s._con.execute(
+            "INSERT INTO knowledge_items (workspace, kind, source_path, title, created_at, updated_at) "
+            "VALUES ('ws', 'file', 'E:\\QunWork\\OIR握手交付\\概念索引_x.md', '概念索引_x', 0, 0)"
+        )
+        s._con.commit()
+
+    # dry-run: 不改状态
+    import coworker.knowledge.purge as pg
+
+    sys_argv = sys.argv
+    try:
+        sys.argv = ["purge", "--db", str(tmp_path / "kb.db")]
+        assert pg.main() == 0
+        active_dry = s._con.execute("SELECT COUNT(*) FROM knowledge_items WHERE retired=0").fetchone()[0]
+        assert active_dry == 3
+
+        sys.argv = ["purge", "--db", str(tmp_path / "kb.db"), "--apply"]
+        assert pg.main() == 0
+    finally:
+        sys.argv = sys_argv
+
+    active = s._con.execute("SELECT COUNT(*) FROM knowledge_items WHERE retired=0").fetchone()[0]
+    retired = s._con.execute("SELECT COUNT(*) FROM knowledge_items WHERE retired=1").fetchone()[0]
+    assert active == 1 and retired == 2
+    hits = s.search("知识条目", k=5, workspace="ws")
+    assert len(hits) == 1 and hits[0]["title"] == "正常研究"
 
 
 def test_add_text_rejects_empty(store: KnowledgeStore):

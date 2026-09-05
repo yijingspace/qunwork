@@ -9,6 +9,8 @@ so Chinese text works out of the box without any external model.
 
 from __future__ import annotations
 
+import fnmatch
+import hashlib
 import json
 import math
 import re
@@ -46,7 +48,40 @@ _SKIP_DIRS = {
     # knowledge library with config files that have no semantic content (they
     # show up as weird orphan nodes like title="graph").
     ".obsidian",
+    # 2026-09-06 存量污染治理 (主会话实证: 8-30 一天 +19384 条, items 2.2k→21.9k):
+    # 构建产物 / 系统目录 / 二进制伴生文本没有知识价值, 却被「已索引父目录
+    # 自我扩散」机制反复扫入 — bin 下一个 .txt 入库后 bin 目录成为永久扫描根,
+    # 连锁吞进 PyInstaller _internal / node_modules / 盘根。
+    "bin",
+    "__pycache__",
+    ".cargo",
+    "Program Files",
+    "Program Files (x86)",
+    "ProgramData",
+    "Windows",
+    "$RECYCLE.BIN",
+    "System Volume Information",
+    ".graphflow-cache",
+    "graphflow-out",
 }
+# 派生产物文件名模式: OIR 交付物 / 审计报告回灌知识库 = 用产出污染源
+# (主会话实证: 概念索引副本被当源文档二次索引)。fnmatch 语义。
+_SKIP_FILE_PATTERNS = (
+    "概念索引_*",
+    "术语表_*",
+    "hornet_bridge_manifest_*",
+    "~$*",       # Office 锁文件
+    "*.crdownload",
+)
+# 目录名模式 (fnmatch): 精确 _SKIP_DIRS 覆盖不到的动态生成目录。
+_SKIP_DIR_PATTERNS = (
+    ".audit-*",   # 测试审计临时目录 (每用例随机后缀)
+    "*.egg-info",
+)
+
+
+def _skip_dir_pattern(part: str) -> bool:
+    return any(fnmatch.fnmatch(part, pat) for pat in _SKIP_DIR_PATTERNS)
 # Obsidian (and other tools') per-folder UI-config JSON that a scan could still
 # reach even with `.obsidian` skipped (a stray config copied next to docs, or a
 # vault layout where .obsidian lives elsewhere). These carry zero knowledge.
@@ -135,11 +170,15 @@ class KnowledgeStore:
         embedder: Optional[Embedder] = None,
         workspace: Optional[str] = None,
         access_log: bool = True,
+        scan_roots: Optional[list[str]] = None,
     ) -> None:
         self._path = Path(db_path)
         self._path.parent.mkdir(parents=True, exist_ok=True)
         self._embedder = embedder
         self._default_workspace = str(workspace) if workspace else None
+        # 扫描根白名单 (2026-09-06 防扩散治理): 无参扫描时, 已索引文件的父
+        # 目录只有落在这些根之下才成为扫描目标。空 = 仅 default_workspace。
+        self._scan_roots = [str(r) for r in (scan_roots or [])]
         # 黄金衡分形存储 M0 (P1 前置): 访问频率时间序列埋点。use_count 只有
         # 累计值, 七衡分层验证需要 f_i (次/小时) — access_log 提供时间维度。
         self._access_log = access_log
@@ -173,6 +212,13 @@ class KnowledgeStore:
             pass
         try:
             self._con.execute("ALTER TABLE knowledge_items ADD COLUMN retired INTEGER NOT NULL DEFAULT 0")
+            self._con.commit()
+        except sqlite3.OperationalError:
+            pass
+        try:
+            # 内容指纹去重 (2026-09-06): 同 workspace 下同内容的副本文件
+            # (junction 双路径 / (1).md 复制) 只建一个条目。
+            self._con.execute("ALTER TABLE knowledge_items ADD COLUMN content_hash TEXT")
             self._con.commit()
         except sqlite3.OperationalError:
             pass
@@ -257,11 +303,12 @@ class KnowledgeStore:
         if not title or not content:
             raise ValueError("title and content are required")
         ws = str(workspace) if workspace else (self._default_workspace or "")
+        chash = self._content_hash(content)
         with self._lock:
             cur = self._con.execute(
-                "INSERT INTO knowledge_items (workspace, kind, source_run_id, parent_id, title, created_at, updated_at) "
-                "VALUES (?,?,?,?,?,?,?)",
-                (ws, kind, source_run_id, parent_id, title, time.time(), time.time()),
+                "INSERT INTO knowledge_items (workspace, kind, source_run_id, parent_id, title, content_hash, created_at, updated_at) "
+                "VALUES (?,?,?,?,?,?,?,?)",
+                (ws, kind, source_run_id, parent_id, title, chash, time.time(), time.time()),
             )
             item_id = cur.lastrowid
             self._index_chunks(item_id, title, content)
@@ -274,6 +321,10 @@ class KnowledgeStore:
         skipped (unknown format, unreadable, or extraction failure)."""
         p = Path(path)
         if not p.is_file() or p.suffix.lower() not in _INDEX_EXTS:
+            return None
+        # 派生产物排除 (2026-09-06 防污染): OIR 交付物 / Office 锁文件回灌
+        # 知识库 = 用产出污染源 (概念索引副本曾被当源文档二次索引)。
+        if any(fnmatch.fnmatch(p.name, pat) for pat in _SKIP_FILE_PATTERNS):
             return None
         ws = (
             str(workspace)
@@ -291,7 +342,16 @@ class KnowledgeStore:
             # as failed so the caller can surface the reason (e.g. a scanned PDF
             # with no text layer, an encrypted file, a corrupt document).
             raise
+        # 内容质量门槛 (2026-09-06 防污染): 只拦垃圾不拦短知识 — 空/纯空白,
+        # 二进制伪文本 (NUL 字节 / U+FFFD 替换符占比高)。2 字符的合法短笔记
+        # ("内容") 必须通过 — 历史测试语料就是这样。
+        n = len(content)
+        if not content.strip():
+            return None
+        if content.count("\x00") / n > 0.1 or content.count("\ufffd") / n > 0.2:
+            return None
         fp = f"{p.stat().st_mtime_ns}:{p.stat().st_size}"
+        chash = self._content_hash(content)
         with self._lock:
             row = self._con.execute(
                 "SELECT id, fingerprint, COALESCE(version, 1) FROM knowledge_items "
@@ -313,19 +373,24 @@ class KnowledgeStore:
                 self._con.execute("DELETE FROM knowledge_chunks WHERE item_id=?", (row[0],))
                 item_id = row[0]
                 self._con.execute(
-                    "UPDATE knowledge_items SET title=?, fingerprint=?, updated_at=?, version=version+1 WHERE id=?",
-                    (p.stem, fp, time.time(), item_id),
+                    "UPDATE knowledge_items SET title=?, fingerprint=?, content_hash=?, updated_at=?, version=version+1 WHERE id=?",
+                    (p.stem, fp, chash, time.time(), item_id),
                 )
                 self._index_chunks(item_id, p.stem, content)
                 self._con.commit()
             else:
+                # 内容指纹去重 (2026-09-06): 同 workspace 下已有同内容条目
+                # (副本/(1)复制/junction 双路径) → 指回既有条目, 不建新行。
+                dupe = self._find_dupe_by_hash(ws, chash, str(p))
+                if dupe is not None:
+                    return dupe
                 cur = self._con.execute(
-                    "INSERT INTO knowledge_items (workspace, kind, source_path, title, fingerprint, created_at, updated_at) VALUES (?,?,?,?,?,?,?)",
-                    (ws, "file", str(p), p.stem, fp, time.time(), time.time()),
+                    "INSERT INTO knowledge_items (workspace, kind, source_path, title, fingerprint, content_hash, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?)",
+                    (ws, "file", str(p), p.stem, fp, chash, time.time(), time.time()),
                 )
                 item_id = cur.lastrowid
-            self._index_chunks(item_id, p.stem, content)
-            self._con.commit()
+                self._index_chunks(item_id, p.stem, content)
+                self._con.commit()
         return item_id
 
     def scan_workspace(self, workspace: Optional[str] = None) -> dict:
@@ -341,11 +406,11 @@ class KnowledgeStore:
             return self._scan_tree(Path(ws), ws)
         targets = self._scan_targets()
         if not targets:
-            return {"added": 0, "updated": 0, "skipped": 0, "failed": 0}
-        total = {"added": 0, "updated": 0, "skipped": 0, "failed": 0, "failures": []}
+            return {"added": 0, "updated": 0, "deduped": 0, "skipped": 0, "failed": 0}
+        total = {"added": 0, "updated": 0, "deduped": 0, "skipped": 0, "failed": 0, "failures": []}
         for target in targets:
             part = self._scan_tree(target["path"], target["ws"])
-            for k in ("added", "updated", "skipped", "failed"):
+            for k in ("added", "updated", "deduped", "skipped", "failed"):
                 total[k] += part.get(k, 0)
             total["failures"].extend(part.get("failures", []) or [])
         total["workspaces_scanned"] = len(targets)
@@ -353,11 +418,22 @@ class KnowledgeStore:
 
     def _scan_targets(self) -> list[dict]:
         """Directories to scan when no explicit workspace is given: the default
-        workspace (if set) plus every parent directory of an already-indexed
-        file item. Deduped by resolved path, skipping _SKIP_DIRS members."""
+        workspace, the configured scan roots, plus parent directories of
+        already-indexed file items (multi-workspace aggregation — S3: the
+        library is multi-workspace, so the scan must be too).
+
+        2026-09-06 防扩散加固 (items 2.2k→21.9k 事故): 已索引父目录必须通过
+        _SKIP_DIRS 部件 + _SKIP_DIR_PATTERNS 模式双重过滤 — bin/Program
+        Files/.audit-* 等污染根不再被接纳为扫描目标; 连锁扩散由这些排除
+        规则 + content_hash 去重 + 质量门槛共同阻断。"""
         seen: dict[str, str] = {}  # resolved path -> workspace label
         if self._default_workspace:
             seen[str(Path(self._default_workspace).resolve())] = self._default_workspace
+        for r in self._scan_roots:
+            try:
+                seen.setdefault(str(Path(r).resolve()), r)
+            except (OSError, ValueError):
+                continue
         try:
             rows = self._con.execute(
                 "SELECT DISTINCT source_path FROM knowledge_items WHERE kind='file'"
@@ -368,7 +444,10 @@ class KnowledgeStore:
         for (sp,) in rows:
             try:
                 d = Path(sp).parent
-                if any(part in _SKIP_DIRS for part in d.parts):
+                parts = d.parts
+                if any(
+                    part in _SKIP_DIRS or _skip_dir_pattern(part) for part in parts
+                ):
                     continue
                 key = str(d.resolve())
                 if key not in seen:
@@ -421,7 +500,7 @@ class KnowledgeStore:
                     (ws,),
                 ).fetchall()
             }
-        added = skipped = failed = updated = 0
+        added = skipped = failed = updated = deduped = 0
         processed = total_bytes = 0
         truncated = False
         failures: list[dict[str, str]] = []
@@ -434,8 +513,13 @@ class KnowledgeStore:
                     skip_reasons[key] = skip_reasons.get(key, 0) + 1
                 continue
             rel = p.relative_to(root)
-            if any(part in _SKIP_DIRS for part in rel.parts):
+            if any(
+                part in _SKIP_DIRS or _skip_dir_pattern(part) for part in rel.parts
+            ):
                 skip_reasons["excluded directory"] = skip_reasons.get("excluded directory", 0) + 1
+                continue
+            if any(fnmatch.fnmatch(p.name, pat) for pat in _SKIP_FILE_PATTERNS):
+                skip_reasons["derived artifact"] = skip_reasons.get("derived artifact", 0) + 1
                 continue
             # Obsidian UI-config JSON (graph.json & co.) carries no knowledge even
             # when it sits outside a skipped `.obsidian` dir — never index it.
@@ -466,18 +550,29 @@ class KnowledgeStore:
                 continue
             is_update = str(p) in snapshot
             try:
-                self.index_file(p, workspace=ws, force=True)
-                if is_update:
-                    updated += 1
-                else:
-                    added += 1
+                rid = self.index_file(p, workspace=ws, force=True)
             except Exception as exc:
                 failed += 1
                 if len(failures) < 50:
                     failures.append({"path": str(p), "reason": str(exc)[:200]})
+                continue
+            if rid is None:
+                # 低质量内容 / 派生产物 / 提取失败 — index_file 拒收
+                skipped += 1
+                continue
+            if is_update:
+                updated += 1
+            else:
+                meta = self.get_item_meta(rid)
+                if meta and meta.get("source_path") and Path(meta["source_path"]) != p:
+                    # 内容指纹去重: 指回既有条目 (副本/junction 双路径)
+                    deduped += 1
+                else:
+                    added += 1
         return {
             "added": added,
             "updated": updated,
+            "deduped": deduped,
             "skipped": skipped,
             "failed": failed,
             "truncated": truncated,
@@ -762,6 +857,21 @@ class KnowledgeStore:
         return {int(r[0]): float(r[1]) / hours for r in rows}
 
     # -- internals -------------------------------------------------------------
+    @staticmethod
+    def _content_hash(content: str) -> str:
+        """内容指纹 (sha256) — 副本/junction 双路径的同一份文档只建一个条目。"""
+        return hashlib.sha256(content.encode("utf-8", errors="replace")).hexdigest()
+
+    def _find_dupe_by_hash(self, ws: str, content_hash: str, exclude_path: str) -> Optional[int]:
+        """同 workspace 下与给定内容指纹相同、且路径不同的既有未退役条目。
+        注意: 调用方必须已持有 self._lock (threading.Lock 不可重入)。"""
+        row = self._con.execute(
+            "SELECT id FROM knowledge_items WHERE workspace=? AND content_hash=? "
+            "AND retired=0 AND (source_path IS NULL OR source_path<>?) ORDER BY id LIMIT 1",
+            (ws, content_hash, exclude_path),
+        ).fetchone()
+        return row[0] if row else None
+
     def _index_chunks(self, item_id: int, title: str, content: str) -> None:
         chunks = _chunk_text(content)
         if not chunks:
