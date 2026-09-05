@@ -129,17 +129,18 @@ def main() -> int:
         con.commit()
         report["retired"] = len(uniq)
         print(f"\n✅ retire {len(uniq)} 条 (审计保留, search 不再返回)")
-        if args.purge_chunks:
-            cur = c.execute(
-                "DELETE FROM knowledge_chunks WHERE item_id IN (SELECT id FROM knowledge_items WHERE retired=1)"
-            )
-            con.commit()
-            report["chunks_deleted"] = cur.rowcount
-            print(f"✅ 删除 chunks {cur.rowcount} 行 (不可逆; 条目行保留审计)")
-            if args.vacuum:
-                print("VACUUM 中 (GB 级库需数分钟)…")
-                c.execute("VACUUM")
-                print("✅ VACUUM 完成")
+    if args.apply and args.purge_chunks:
+        # 独立于本轮 retire: 对存量 retired 条目 (含此前批次的) 删 chunks 回收空间。
+        cur = c.execute(
+            "DELETE FROM knowledge_chunks WHERE item_id IN (SELECT id FROM knowledge_items WHERE retired=1)"
+        )
+        con.commit()
+        report["chunks_deleted"] = cur.rowcount
+        print(f"✅ 删除 retired 条目 chunks {cur.rowcount} 行 (不可逆; 条目行保留审计)")
+        if args.vacuum:
+            print("VACUUM 中 (GB 级库需数分钟)…", flush=True)
+            c.execute("VACUUM")
+            print("✅ VACUUM 完成")
     elif not args.apply:
         print(f"\n(dry-run) 加 --apply 执行 retire; 现役 {before} 条")
 
