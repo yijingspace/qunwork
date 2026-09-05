@@ -156,6 +156,71 @@ def test_search_dedups_by_item_and_min_score(store: KnowledgeStore):
     assert none == []
 
 
+# -- 短查询子串回退 (2026-09-06 主会话实证修复) --------------------------------
+
+
+def test_short_query_substring_fallback(store: KnowledgeStore):
+    """2 字中文查询在 trigram 模型下结构性返回空 (查询向量 key 是整串,
+    块向量 key 是三元组, 交集恒空) — 主会话实证: 含"宇宙"222 次的循环宇宙
+    报告搜不到。修复后子串命中 = 真命中。"""
+    store.add_text(
+        "循环宇宙模型综合研究报告",
+        "宇宙暴涨与收缩循环。" + "宇宙背景辐射的各向异性。" * 20 + "宇宙学常数问题。",
+        workspace="ws",
+    )
+    store.add_text("无关条目", "股票量化监测系统的开发进度评估。", workspace="ws")
+
+    hits = store.search("宇宙", k=5, workspace="ws")
+    assert hits, "2 字查询必须命中含'宇宙'的条目 (修复前恒空)"
+    assert hits[0]["title"] == "循环宇宙模型综合研究报告"
+    # 出现次数封顶的分数: 20+ 次出现 → 1.0 满分
+    assert hits[0]["score"] == 1.0
+
+    # 单字查询同款回退
+    hits1 = store.search("熵", k=5, workspace="ws")
+    assert hits1 == []  # 无关条目里没有"熵"
+
+    store.add_text("熵增笔记", "孤立系统的熵永不减少。", workspace="ws")
+    hits2 = store.search("熵", k=5, workspace="ws")
+    assert hits2 and hits2[0]["title"] == "熵增笔记"
+
+
+def test_short_query_score_scales_with_occurrences(store: KnowledgeStore):
+    """子串分数按出现次数分档 (1 次=0.34 < 2 次=0.67 < ≥3 次=1.0),
+    与 query-coverage 量纲兼容, min_score 过滤语义不变。"""
+    store.add_text("低频", "宇宙一词只出现一次。", workspace="ws")
+    store.add_text("高频", "宇宙。宇宙。宇宙。宇宙。", workspace="ws")
+    store.add_text("无宇宙", "完全无关的内容。", workspace="ws")
+
+    hits = store.search("宇宙", k=5, workspace="ws")
+    assert [h["title"] for h in hits] == ["高频", "低频"]  # 按分数降序
+    assert hits[0]["score"] == 1.0
+    assert abs(hits[1]["score"] - 0.3333) < 0.001
+    # min_score 边界: 1 次出现 (0.34) 仍高于默认阈值 0.1
+    assert store.search("宇宙", k=5, workspace="ws", min_score=0.5)[0]["title"] == "高频"
+    assert store.search("宇宙", k=5, workspace="ws", min_score=0.99)[0]["title"] == "高频"
+
+
+def test_short_query_fallback_not_used_with_real_embedder(tmp_path: Path):
+    """注入真实 embedder 时稠密向量路径不受回退影响 — 短查询走 embedder 本身。"""
+    calls: list[str] = []
+
+    def fake_embedder(text: str) -> list[float]:
+        calls.append(text)
+        # 固定 2 维: 与查询"宇"相同的方向 → 高余弦
+        return [1.0, 0.0] if "宇" in text else [0.0, 1.0]
+
+    s = KnowledgeStore(tmp_path / "kb.db", embedder=fake_embedder, workspace="ws")
+    s.add_text("条目A", "含宇宙的文档。", workspace="ws")
+    assert calls  # 索引时用了 embedder
+
+    calls.clear()
+    hits = s.search("宇", k=3, workspace="ws")
+    assert calls == ["宇"]  # 查询走了 embedder, 未被子串回退劫持
+    assert hits and hits[0]["title"] == "条目A"
+    assert hits[0]["score"] == pytest.approx(1.0)
+
+
 def test_add_text_rejects_empty(store: KnowledgeStore):
     with pytest.raises(ValueError):
         store.add_text("", "内容", workspace="ws")

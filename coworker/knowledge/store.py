@@ -68,6 +68,7 @@ _OBSIDIAN_CONFIG_JSON = {
 }
 _CHUNK_SIZE = 600  # chars per chunk
 _CHUNK_OVERLAP = 120
+_NGRAM_N = 3  # char n-gram width for the fallback (no-embedder) vector model
 
 
 def _ngram_vector(text: str, n: int = 3) -> dict[str, float]:
@@ -601,44 +602,87 @@ class KnowledgeStore:
         """
         qv = self._embed(query)
         ws = str(workspace) if workspace else self._default_workspace
-        with self._lock:
-            if ws:
-                rows = self._con.execute(
-                    """SELECT c.item_id, c.chunk_index, c.content, c.vector, i.kind, i.title, i.source_path, i.source_run_id, i.use_count
-                       FROM knowledge_chunks c JOIN knowledge_items i ON i.id = c.item_id
-                       WHERE i.workspace=? AND i.retired=0 ORDER BY c.id""",
-                    (ws,),
-                ).fetchall()
-            else:
-                rows = self._con.execute(
-                    """SELECT c.item_id, c.chunk_index, c.content, c.vector, i.kind, i.title, i.source_path, i.source_run_id, i.use_count
-                       FROM knowledge_chunks c JOIN knowledge_items i ON i.id = c.item_id
-                       WHERE i.retired=0 ORDER BY c.id"""
-                ).fetchall()
         scored: list[tuple[float, dict]] = []
+        # 短查询子串回退 (2026-09-06 主会话实证): trigram 模型对 <3 字符查询
+        # 结构性失效 — 查询向量 key 是整串 ("宇宙"), 块向量 key 是三元组
+        # ("的宇宙"), 交集恒空、余弦恒 0; 中文核心术语以 2 字为主 (宇宙/量子/
+        # 分形/守恒), 连含"宇宙"222 次的文档都搜不到。回退直接做子串扫描:
+        # 子串命中 = 真命中; 分数按出现次数封顶 (1次=0.34, 2次=0.67, ≥3次=1.0),
+        # 与 query-coverage 量纲兼容, min_score 过滤语义不变。
+        # 仅在 n-gram 回退路径生效 (真实 embedder 的稠密向量无此问题)。
+        cleaned_q = re.sub(r"\s+", "", query.lower())
+        short_query = (
+            self._embedder is None
+            and isinstance(qv, dict)
+            and bool(cleaned_q)
+            and len(cleaned_q) < _NGRAM_N
+        )
+        if short_query:
+            # 子串过滤下推到 SQL (LIKE): GB 级库全表拉取到 Python 再逐块
+            # re.sub 实测 88s/查询; LIKE 让 SQLite 在 C 层过滤, 只拉命中块。
+            like = (
+                "%" + cleaned_q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+            )
+            with self._lock:
+                if ws:
+                    rows = self._con.execute(
+                        """SELECT c.item_id, c.chunk_index, c.content, c.vector, i.kind, i.title, i.source_path, i.source_run_id, i.use_count
+                           FROM knowledge_chunks c JOIN knowledge_items i ON i.id = c.item_id
+                           WHERE i.workspace=? AND i.retired=0 AND c.content LIKE ? ESCAPE '\\' ORDER BY c.id""",
+                        (ws, like),
+                    ).fetchall()
+                else:
+                    rows = self._con.execute(
+                        """SELECT c.item_id, c.chunk_index, c.content, c.vector, i.kind, i.title, i.source_path, i.source_run_id, i.use_count
+                           FROM knowledge_chunks c JOIN knowledge_items i ON i.id = c.item_id
+                           WHERE i.retired=0 AND c.content LIKE ? ESCAPE '\\' ORDER BY c.id""",
+                        (like,),
+                    ).fetchall()
+        else:
+            with self._lock:
+                if ws:
+                    rows = self._con.execute(
+                        """SELECT c.item_id, c.chunk_index, c.content, c.vector, i.kind, i.title, i.source_path, i.source_run_id, i.use_count
+                           FROM knowledge_chunks c JOIN knowledge_items i ON i.id = c.item_id
+                           WHERE i.workspace=? AND i.retired=0 ORDER BY c.id""",
+                        (ws,),
+                    ).fetchall()
+                else:
+                    rows = self._con.execute(
+                        """SELECT c.item_id, c.chunk_index, c.content, c.vector, i.kind, i.title, i.source_path, i.source_run_id, i.use_count
+                           FROM knowledge_chunks c JOIN knowledge_items i ON i.id = c.item_id
+                           WHERE i.retired=0 ORDER BY c.id"""
+                    ).fetchall()
         for item_id, ci, content, vec_json, kind, title, src, src_run, use_count in rows:
-            try:
-                vec = json.loads(vec_json)
-            except Exception:
-                continue
-            score = _cosine(qv, vec)
-            if score > 0:
-                scored.append(
-                    (
-                        score,
-                        {
-                            "item_id": item_id,
-                            "chunk_index": ci,
-                            "content": content,
-                            "score": round(score, 4),
-                            "kind": kind,
-                            "title": title,
-                            "source_path": src,
-                            "source_run_id": src_run,
-                            "use_count": use_count,
-                        },
-                    )
+            if short_query:
+                occ = content.lower().count(cleaned_q)
+                if not occ:
+                    continue  # LIKE 命中但含空白断开的查询串 (罕见), 跳过
+                score = min(1.0, occ / 3.0)
+            else:
+                try:
+                    vec = json.loads(vec_json)
+                except Exception:
+                    continue
+                score = _cosine(qv, vec)
+                if score <= 0:
+                    continue
+            scored.append(
+                (
+                    score,
+                    {
+                        "item_id": item_id,
+                        "chunk_index": ci,
+                        "content": content,
+                        "score": round(score, 4),
+                        "kind": kind,
+                        "title": title,
+                        "source_path": src,
+                        "source_run_id": src_run,
+                        "use_count": use_count,
+                    },
                 )
+            )
         scored.sort(key=lambda t: -t[0])
         seen: set[int] = set()
         results: list[dict] = []
