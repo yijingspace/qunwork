@@ -1319,7 +1319,7 @@ class TurnEngine:
         # S3 实证修复: 对"显式内容请求"类工具 (read_file 等) 豁免 head/tail
         # 裁剪 — 蜂群 worker 曾因 read_file 内容被裁而自造 read_file_plain。
         if self.trim_tool_outputs:
-            from .trim import TRIM_EXEMPT_TOOLS, trim_tool_content
+            from .trim import trim_tool_content
 
             # 反查 tool_call_id -> 工具名 (assistant 消息声明 tool_calls)。
             tool_name_by_id: dict[str, str] = {}

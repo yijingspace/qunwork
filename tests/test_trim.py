@@ -173,3 +173,54 @@ def test_exempt_list_contains_content_tools():
     assert "read_file" in TRIM_EXEMPT_TOOLS
     assert "knowledge_search" in TRIM_EXEMPT_TOOLS
     assert "web_fetch" in TRIM_EXEMPT_TOOLS
+
+
+# -- 2026-09-06: load_skill 豁免 (oir-delegate 会话实证) -----------------------
+
+
+def test_load_skill_full_body_preserved():
+    """load_skill 的 SKILL.md 全文是模型显式请求的完整内容 — 中文正文
+    (如 oir-delegate 5.6KB) 被裁到 head+tail 后 agent 读不到铁律/使用步骤,
+    只能写辅助脚本绕道 run_shell 折腾十几轮 (2026-09-06 主会话实证)。
+    豁免后必须原文送达。"""
+    skill_body = (
+        "---\nname: oir-delegate\n---\n# OIR 委托\n\n## 铁律\n"
+        + "1. 先握手再委托：网关不可达时报告原因，不要重试轰炸。" * 60
+        + "\n## 使用步骤\n"
+        + "python oir_delegate.py <文档路径> --max-terms 40\n" * 30
+        + "\n## 已知边界\n网关是试点进程, 重启后需手动重启。"
+    )
+    assert len(skill_body) > TOOL_TRIM_MIN_LEN * 2  # 确实是会触发裁剪的长度
+    out = trim_tool_content(skill_body, tool_name="load_skill")
+    assert out == skill_body  # 全文原样
+    assert "trimmed" not in out
+
+
+def test_load_skill_still_collapses_base64_and_meta():
+    """豁免的降级语义: load_skill 输出里的 base64/超大元数据仍折叠。"""
+    text = (
+        "body text\n"
+        + "data:image/png;base64," + "Z" * 3000 + "\n"
+        + '"meta": "' + "m" * 2000 + '"'
+    )
+    out = trim_tool_content(text, tool_name="load_skill")
+    assert "collapsed" in out
+    assert "elided metadata block" in out
+    assert "body text" in out
+
+
+def test_read_file_lines_exempt_via_prefix():
+    """注释声称的前缀匹配真正落地: read_file_lines (read_ 前缀) 豁免 —
+    scan_result.json 这类多行内容分段读取时同样不该被裁。"""
+    text = "\n".join(f'{{"row": {i}, "title": "中文条目{i}"}}' for i in range(200))
+    assert len(text) > TOOL_TRIM_MIN_LEN
+    out = trim_tool_content(text, tool_name="read_file_lines")
+    assert out == text
+
+
+def test_search_tool_prefix_exempt_but_shell_not():
+    """前缀语义边界: search_* 豁免; run_shell 不因任何前缀误豁免。"""
+    text = _big_text()
+    assert trim_tool_content(text, tool_name="search_knowledge") == text
+    out = trim_tool_content(text, tool_name="run_shell")
+    assert "trimmed" in out
