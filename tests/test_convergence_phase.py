@@ -154,6 +154,11 @@ def test_soft_budget_runs_final_ready_batch(tmp_path):
     orch._emit = lambda *a, **k: None
     orch._persist_report = lambda r: None
     orch._worker_feed = lambda *a, **k: None
+    # M4+ 枢纽分域开关 (orchestrator.py __init__ 设置) — __new__ 裸实例需手动补,
+    # False = 跳过 hub 域标注块 (本测试只关注收敛节奏)。
+    orch._mesh_topology_enabled = False
+    # M5 取消登记表 (process 在 _process_impl 里 self._inflight[task.id] 登记运行器)。
+    orch._inflight = {}
 
     ran: list[str] = []
 
@@ -217,6 +222,8 @@ def test_skip_requeue_accepts_result_and_unblocks_dependents(tmp_path):
     orch._emit = lambda *a, **k: None
     orch._persist_report = lambda r: None
     orch._worker_feed = lambda *a, **k: None
+    orch._mesh_topology_enabled = False  # M4+ 开关, __new__ 裸实例手动补 (见上)
+    orch._inflight = {}  # M5 取消登记表 (见上)
 
     # Reviewer rejects t0 once; the operator SKIPS (reject) instead of approving.
     class Deck:

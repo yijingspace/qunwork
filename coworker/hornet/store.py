@@ -587,7 +587,9 @@ class HornetStore:
         """
         remote_nodes = payload.get("nodes", [])
         remote_edges = payload.get("edges", [])
-        local_nodes = self.list_nodes(fields=("id", "title"))
+        # fields 必须带 phase: 下面 _phase_distance(local["phase"], ...) 要用本地
+        # 相位对冲 (缺了就 KeyError, 崩在 "malformed skip" 注释保护的块里)。
+        local_nodes = self.list_nodes(fields=("id", "title", "phase"))
         local_by_title = {n["title"]: n for n in local_nodes}
         id_map: dict[int, int] = {}
         imported = conflicts = 0

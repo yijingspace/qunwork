@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 import time
 from dataclasses import dataclass
 from enum import Enum
@@ -135,6 +136,14 @@ class TurnEngine:
         ):
             self.messages.insert(0, {"role": "system", "content": instructions})
         self._cancel = asyncio.Event()
+        # 线程安全的停止快照: _cancel 是 loop 绑定的 asyncio.Event, 从工作线程
+        # (to_thread 里的工具) 调 request_interrupt 只能经 call_soon_threadsafe
+        # 排队 set — 高负载下排队延迟会让工具间检查点 (如 _handle_tool_calls
+        # 的 _cancel.is_set()) 读到 False, 下一个本应跳过的工具真执行了
+        # (test_stop_skips_remaining_tool_calls 全量负载下的 flake)。快照在
+        # request_interrupt 里同步置位 (threading.Event, GIL 原子), 检查点统一
+        # 读 _stop_requested()。
+        self._cancel_seen = threading.Event()
         # Each pending steering message: (text, optional MessageSource sidecar dict).
         self._steering: list[tuple[Any, Optional[dict[str, Any]]]] = []
         # tool_call.id → the standing rule that auto-allowed it ("tool → target"), so the
@@ -148,6 +157,15 @@ class TurnEngine:
         self._iterations = 0
 
     # -- external controls ------------------------------------------------------
+    def _stop_requested(self) -> bool:
+        """True once a stop has been requested, visible from ANY thread immediately.
+
+        Reads the thread-safe snapshot (`_cancel_seen`) OR the loop-bound event —
+        the snapshot is set synchronously inside request_interrupt, so tool-loop
+        checkpoints never miss a stop that was made from a worker thread while
+        the loop-bound `.set()` is still queued via call_soon_threadsafe."""
+        return self._cancel.is_set() or self._cancel_seen.is_set()
+
     def request_interrupt(self) -> None:
         """Stop the turn as soon as possible, from ANY state: mid-stream (the producer
         thread drops the stream between chunks), mid-tool (interrupt hooks kill the
@@ -157,7 +175,10 @@ class TurnEngine:
         (hosted templates reject them, and durable-resume would re-prompt them)."""
         # C6: `_cancel` is a loop-bound asyncio.Event — `.set()` from a foreign
         # thread (FastAPI sync endpoints run in a threadpool) is undefined
-        # behavior. Route through the bound loop when we're off it.
+        # behavior. Route through the bound loop when we're off it. `_cancel_seen`
+        # (threading.Event) is set synchronously on BOTH paths so stop checks
+        # never miss the request while the loop-bound set is still queued.
+        self._cancel_seen.set()
         loop = getattr(self, "_event_loop", None)
         if loop is not None and loop.is_running():
             try:
@@ -320,7 +341,7 @@ class TurnEngine:
             yield event
         yield Event(EventType.ITERATION_END, {"iteration": 0})
         self._persist()
-        if not self._cancel.is_set():
+        if not self._stop_requested():
             async for event in self._loop():
                 yield event
 
@@ -403,7 +424,7 @@ class TurnEngine:
                 self._append_notice("error", friendly or str(exc))
                 yield Event(EventType.ERROR, payload)
                 return
-            if self._cancel.is_set() and turn is None:
+            if self._stop_requested() and turn is None:
                 # Stopped mid-stream: persist exactly what the user watched arrive.
                 if streamed or streamed_reasoning:
                     self.messages.append(_assistant_message(_partial_turn()))
@@ -443,7 +464,7 @@ class TurnEngine:
             # cache stays warm — no 100% miss round after a WS reconnect/restart).
             self._persist()
 
-            if self._cancel.is_set():
+            if self._stop_requested():
                 self._append_notice("interrupted")
                 yield Event(EventType.INTERRUPTED, {"iterations": iterations})
                 return
@@ -478,7 +499,7 @@ class TurnEngine:
                 ):
                     # User pressed Stop: drop the stream between chunks (reading the
                     # asyncio.Event's flag from a thread is safe; we only read).
-                    if self._cancel.is_set():
+                    if self._stop_requested():
                         break
                     loop.call_soon_threadsafe(queue.put_nowait, ("chunk", chunk))
             except Exception as exc:  # surfaced to the awaiting consumer
@@ -510,7 +531,7 @@ class TurnEngine:
                 cancel_task.cancel()
                 if get_task not in done:
                     get_task.cancel()
-                    if self._cancel.is_set():
+                    if self._stop_requested():
                         return  # user pressed Stop — the producer exits on its own
                     if not got_any:
                         # 流式 90s 零 chunk: 部分 OpenAI 兼容端点(小米 Mimo 等)对
@@ -584,7 +605,7 @@ class TurnEngine:
         )
         cleared: list[ToolCall] = []
         for tool_call in tool_calls:
-            if self._cancel.is_set():
+            if self._stop_requested():
                 # Stopped: every remaining call still gets an answer (no orphans).
                 yield self._interrupted_tool(tool_call)
                 continue
@@ -651,7 +672,7 @@ class TurnEngine:
                 yield self._record_result(tool_call, result, status)
 
         for tool_call in serial:
-            if self._cancel.is_set():
+            if self._stop_requested():
                 yield self._interrupted_tool(tool_call)
                 continue
             yield Event(EventType.TOOL_STARTED, {"name": tool_call.name})
@@ -791,7 +812,7 @@ class TurnEngine:
             if outcome is ApprovalOutcome.DENY:
                 allowed, reason = (
                     False,
-                    "interrupted by user" if self._cancel.is_set() else "denied by user",
+                    "interrupted by user" if self._stop_requested() else "denied by user",
                 )
                 self._audit(
                     tool_call,

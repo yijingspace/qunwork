@@ -71,7 +71,9 @@ def test_persona_detail_endpoint(tmp_path, monkeypatch):
     )  # §16 collapse: ops is a scratch persona now
     assert detail["default_permission_mode"] == "interactive"
     assert "anthropic:claude-opus-4-8" in detail["recommended_models"]
-    assert set(detail["tools"]) == {"files", "search", "shell", "todo"}
+    # ops.md manifest 声明 tools: [files, search, shell, todo, vision] —
+    # vision (analyze_image) 2026-08 加入 (8bc4b8b 图+文字发送链路)。
+    assert set(detail["tools"]) == {"files", "search", "shell", "todo", "vision"}
     assert detail["description"]  # the manifest description is surfaced
 
     # recommends annotated with `connected` (github connected; slack/datadog not)

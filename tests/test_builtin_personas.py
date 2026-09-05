@@ -49,5 +49,7 @@ def test_ops_persona_composes_knowledge_toolset(tmp_path):
 def test_code_keeps_single_root_file_tools(tmp_path):
     reg = PersonaRegistry()
     names = _names(reg.agent("code"), _ctx(tmp_path))
-    assert "read_file" in names and "read_file_lines" not in names
+    # 5160c0c: read_file_lines 现在是我们自己的安全窗口别名 (与 read_file 同 reader),
+    # code 侧保留 — aisuite 原生的异常版才是被替换掉的 (test_code_tools 同语义)。
+    assert "read_file" in names and "read_file_lines" in names
     assert "git_log" in names  # code has git; cowork/ops do not

@@ -24,6 +24,7 @@ CODE_TOOLS = {
     "apply_patch",
     "replace_in_file",
     "read_file",  # numbered/windowed (single-root)
+    "read_file_lines",  # OUR safe windowed alias (5160c0c) — aisuite native was dropped
     "git_status",
     "git_diff",
     "git_log",
@@ -82,12 +83,14 @@ def test_agents_use_catalog(tmp_path):
 
 
 def test_file_capability_distinction(tmp_path):
-    # Code drops read_file_lines (folded into the windowed reader); Cowork keeps it (multi-root).
+    # 5160c0c 后两个 capability 共享 OUR 安全版 file_tools (read_file + read_file_lines
+    # 别名同行为) — 区别在 root 语义: code 单 root, cowork 多 root。两侧都不得出现
+    # aisuite 原生的慢速 search_files。
     code = _names(expand(["code_files"], _full_context(tmp_path)))
     cowork = _names(expand(["files"], _full_context(tmp_path)))
-    assert "read_file_lines" not in code
-    assert "read_file_lines" in cowork
-    assert "read_file" in code and "read_file" in cowork
+    assert "read_file" in code and "read_file_lines" in code
+    assert "read_file" in cowork and "read_file_lines" in cowork
+    assert "search_files" not in code and "search_files" not in cowork
 
 
 def test_requirements_skip_unavailable(tmp_path):

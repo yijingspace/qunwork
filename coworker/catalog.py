@@ -55,7 +55,8 @@ class Capability:
 
 def _code_files(context: AgentContext) -> list:
     """Repo-oriented files: single-root, line-numbered/windowed `read_file`. Our `grep` and
-    windowed `read_file` replace aisuite's slower `search_files` / `read_file`/`read_file_lines`.
+    windowed `read_file`/`read_file_lines` (both OUR safe versions) replace aisuite's
+    slower `search_files` and its exception-raising native readers.
     """
     ws = str(context.workspace)
     replaced = {"search_files", "read_file", "read_file_lines"}

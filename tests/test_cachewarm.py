@@ -35,7 +35,9 @@ class _FakeProvider:
 
 def _fake_hornet(nodes):
     class H:
-        def list_nodes(self):
+        # 实现演进: cold_nodes 用 fields=("id","title","freshness") 只取冷度
+        # 所需列 (2026-09) — fake 跟上签名, 返回全量节点字段即可。
+        def list_nodes(self, fields=None):
             return nodes
 
     return H()
