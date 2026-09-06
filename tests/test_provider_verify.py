@@ -102,3 +102,49 @@ def test_verify_unexpected_status(monkeypatch):
     res = verify_provider_key("anthropic", api_key="sk-ant-x")
     assert res["ok"] is False
     assert "500" in res["error"]
+
+
+# -- GET /models 404 回退: 部分网关只暴露 chat/completions (2026-09-06 SCNet 实证) --
+def _patch_post(monkeypatch, status=200, capture=None):
+    def fake_post(url, **kwargs):
+        if capture is not None:
+            capture["url"] = url
+            capture.update(kwargs)
+        return SimpleNamespace(status_code=status)
+
+    monkeypatch.setattr("httpx.post", fake_post)
+
+
+def test_verify_models_404_falls_back_to_chat_probe(monkeypatch):
+    cap: dict = {}
+    _patch_get(monkeypatch, status=404)
+    _patch_post(monkeypatch, status=200, capture=cap)
+    res = verify_provider_key(
+        "scnet-like", api_key="sk-x",
+        base_url="https://api.scnet.cn/api/llm/v1",
+    )
+    assert res == {"ok": True}  # 鉴权通过
+    assert cap["url"] == "https://api.scnet.cn/api/llm/v1/chat/completions"
+    assert cap["json"]["max_tokens"] == 1  # 成本≈0
+    assert cap["headers"]["Authorization"] == "Bearer sk-x"
+
+
+def test_verify_models_404_probe_rejected_key(monkeypatch):
+    _patch_get(monkeypatch, status=404)
+    _patch_post(monkeypatch, status=401)
+    res = verify_provider_key("scnet-like", api_key="sk-bad", base_url="https://x.example/v1")
+    assert res == {"ok": False, "error": "Invalid API key."}
+
+
+def test_verify_models_404_probe_model_error_still_ok(monkeypatch):
+    """探针返回 400/404 (模型不存在等业务错误) — 鉴权已通过, 钥匙是好的。"""
+    _patch_get(monkeypatch, status=404)
+    _patch_post(monkeypatch, status=400)
+    assert verify_provider_key("scnet-like", api_key="sk-x", base_url="https://x.example/v1") == {"ok": True}
+
+
+def test_verify_models_404_probe_500_reports_failure(monkeypatch):
+    _patch_get(monkeypatch, status=404)
+    _patch_post(monkeypatch, status=500)
+    res = verify_provider_key("scnet-like", api_key="sk-x", base_url="https://x.example/v1")
+    assert res["ok"] is False

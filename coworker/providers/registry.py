@@ -466,6 +466,27 @@ def verify_provider_key(
                 headers={"Authorization": f"Bearer {key}"},
                 timeout=timeout,
             )
+            if resp.status_code in (404, 405):
+                # 供应商未实现 GET /models（不少国内网关只暴露 chat/completions）
+                # → 用一次 1-token 对话探针验证鉴权（成本≈0，只为区分钥匙对错）。
+                resp = httpx.post(
+                    base + "/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {key}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "model": d.recommended_model or "default",
+                        "messages": [{"role": "user", "content": "ping"}],
+                        "max_tokens": 1,
+                        "stream": False,
+                    },
+                    timeout=timeout,
+                )
+                if resp.status_code < 300 or 400 <= resp.status_code < 500 and resp.status_code not in (401, 403):
+                    # 鉴权已通过（200，或模型不存在/参数/限流等 4xx 业务错误 — 都不是钥匙问题）
+                    return {"ok": True}
+                # 401/403 → 下方统一"Invalid API key."; 5xx → 下方 generic HTTP 错误
     except Exception as exc:  # DNS/connection/timeout — never let it bubble to a 500
         return {
             "ok": False,
