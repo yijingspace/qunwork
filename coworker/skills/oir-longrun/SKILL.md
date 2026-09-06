@@ -31,9 +31,14 @@ curl -s http://127.0.0.1:8787/api/longrun/health
 先启动网关（计划任务 "OIR Longrun Gateway"，或
 `pwsh E:\DesktopProjects\OIR\oir-rebuilt\scripts\start_oir_longrun_gateway.ps1`）。
 
-### Step 2: 统计文档总量
-用 Glob 统计 QunWork 工作区（默认 `E:\QunWork\研究文档`）下 `*.md` 数量，
-作为 `total_documents`（0 或取不到时用 1，OIR 侧按持续增长记账）。
+### Step 2: 统计文档总量（可选）
+`total_documents` 填 `0` 即可（OIR 按"持续增长"记账，调度器驱动时按
+实际文档数推进）。只有当用户问到规模时才用 shell 数一次
+（注意：你的工作区是会话目录，`E:\QunWork\研究文档` 在工作区之外，
+read_file/Glob 够不到，要用 shell）：
+```bash
+cmd /c "dir /b E:\QunWork\研究文档\*.md 2>nul | find /c /v """
+```
 
 ### Step 3: 提交任务
 ```bash
