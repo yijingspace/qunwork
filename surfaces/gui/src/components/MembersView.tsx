@@ -2,7 +2,8 @@ import { useEffect, useState } from "react";
 import { useT } from "../i18n";
 import {
   addAgent,
-  addMember,
+  inviteTeamMember,
+  joinTeam,
   listAgents,
   listMembers,
   listTeamRoles,
@@ -55,6 +56,13 @@ export function MembersView() {
   const [newName, setNewName] = useState("");
   const [newRole, setNewRole] = useState<Member["role"]>("worker");
   const [savingMember, setSavingMember] = useState(false);
+  // --- 方案C: invite code / join ---
+  const [inviteCode, setInviteCode] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
+  const [joinCode, setJoinCode] = useState("");
+  const [joinName, setJoinName] = useState("");
+  const [joining, setJoining] = useState(false);
+  const [joinMsg, setJoinMsg] = useState<string | null>(null);
 
   // --- agent form ---
   const [newAgentRole, setNewAgentRole] = useState<AgentInstance["role"]>("worker");
@@ -102,11 +110,49 @@ export function MembersView() {
     const name = newName.trim();
     if (!name || savingMember) return;
     setSavingMember(true);
+    setJoinMsg(null);
     try {
-      await addMember(name, newRole);
-      setNewName("");
+      // 方案C: 邀请 = 预分配槽位 + 生成组织钥匙 (邀请码), 对方用码 join。
+      const r = await inviteTeamMember(name, newRole);
+      if (r.ok && r.invite_code) {
+        setInviteCode(r.invite_code);
+        setCopied(false);
+        setNewName("");
+      } else if (r.error) {
+        setErr(r.error);
+      }
     } finally {
       setSavingMember(false);
+      reload();
+    }
+  };
+
+  const onCopyInvite = async () => {
+    if (!inviteCode) return;
+    try {
+      await navigator.clipboard.writeText(inviteCode);
+      setCopied(true);
+    } catch {
+      /* clipboard 不可用时用户可手动全选复制 */
+    }
+  };
+
+  const onJoin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const code = joinCode.trim();
+    if (!code || joining) return;
+    setJoining(true);
+    setJoinMsg(null);
+    try {
+      const r = await joinTeam(code, joinName.trim());
+      if (r.ok) {
+        setJoinMsg(t("Joined. The roster is syncing."));
+        setJoinCode("");
+      } else {
+        setJoinMsg(r.error || "join failed");
+      }
+    } finally {
+      setJoining(false);
       reload();
     }
   };
@@ -188,6 +234,62 @@ export function MembersView() {
           </button>
         </form>
 
+        {/* 方案C: 生成的邀请码 (组织钥匙) — 复制交给被邀请人 */}
+        {inviteCode && (
+          <div className="mb-4 rounded-lg border border-accent/40 bg-accent/5 p-3">
+            <div className="flex items-center justify-between gap-2">
+              <div className="text-[12px] font-medium text-accent">{t("Invite code")}</div>
+              <div className="flex items-center gap-1.5">
+                <button
+                  onClick={onCopyInvite}
+                  className="rounded-md border border-line px-2 py-0.5 text-[11.5px] hover:bg-paper"
+                >
+                  {copied ? t("Copied") : t("Copy invite code")}
+                </button>
+                <button
+                  onClick={() => setInviteCode(null)}
+                  className="rounded-md px-1.5 py-0.5 text-[11.5px] text-faint hover:text-muted"
+                  title={t("Dismiss")}
+                >
+                  ✕
+                </button>
+              </div>
+            </div>
+            <code className="mt-1.5 block break-all rounded-md bg-paper border border-line px-2 py-1.5 text-[11px] leading-relaxed select-all">
+              {inviteCode}
+            </code>
+            <div className="mt-1.5 text-[11px] text-muted leading-relaxed">
+              {t("The invite code is the key to your org — anyone holding it can join. Share it over a trusted channel.")}
+            </div>
+          </div>
+        )}
+
+        {/* 方案C: 用邀请码加入真实团队 */}
+        <form onSubmit={onJoin} className="mb-4 flex gap-2">
+          <input
+            type="text"
+            value={joinCode}
+            onChange={(e) => setJoinCode(e.target.value)}
+            placeholder={t("Paste invite code")}
+            className="flex-[2] min-w-0 rounded-lg border border-line bg-paper px-3 py-1.5 text-[13px] outline-none focus:border-accent"
+          />
+          <input
+            type="text"
+            value={joinName}
+            onChange={(e) => setJoinName(e.target.value)}
+            placeholder={t("Your display name")}
+            className="flex-1 min-w-0 rounded-lg border border-line bg-paper px-3 py-1.5 text-[13px] outline-none focus:border-accent"
+          />
+          <button
+            type="submit"
+            disabled={!joinCode.trim() || joining}
+            className="rounded-lg border border-accent text-accent px-3 py-1.5 text-[12.5px] font-medium hover:bg-accent/10 disabled:opacity-40"
+          >
+            {joining ? "…" : t("Join with invite code")}
+          </button>
+        </form>
+        {joinMsg && <div className="mb-3 text-[12px] text-muted">{joinMsg}</div>}
+
         {!members ? (
           <div className="text-[13px] text-faint">{t("Loading…")}</div>
         ) : members.length === 0 ? (
@@ -223,10 +325,13 @@ export function MembersView() {
                     </select>
                   </td>
                   <td className="py-2">
-                    <span className={m.status === "online" ? "text-ok" : "text-faint"}>
-                      {m.status === "online" ? "● " : "○ "}
-                      {t(m.status === "online" ? "Online" : "Offline")}
-                    </span>
+                    {m.status === "online" ? (
+                      <span className="text-ok">● {t("Online")}</span>
+                    ) : m.status === "invited" ? (
+                      <span className="text-accent">◌ {t("invited")}</span>
+                    ) : (
+                      <span className="text-faint">○ {t("Offline")}</span>
+                    )}
                   </td>
                   <td className="py-2 text-muted">{m.current_task_group || "—"}</td>
                   <td className="py-2 text-right">

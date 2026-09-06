@@ -142,27 +142,42 @@ class TeamStore:
             self._db.commit()
 
     # ── Team identity -------------------------------------------------------
-    def ensure_team(self, name: str = "My Team") -> dict:
-        """Idempotently create the local team row. Returns current team info."""
+    def ensure_team(
+        self, name: str = "My Team", *, create_member: bool = True, team_id: Optional[str] = None
+    ) -> dict:
+        """Idempotently create the local team row. Returns current team info.
+
+        `create_member=False` (方案C join): only the team row — the joiner's
+        identity row is the inviter pre-assigned member slot, NOT a fresh
+        "Me/chairman". Without this, every joined node would push a chairman
+        ghost row into the shared roster (一人一条董事长).
+        `team_id`: join 时沿用邀请码的团队 id (两端身份一致)。"""
         with self._lock:
             row = self._db.execute("SELECT * FROM team LIMIT 1").fetchone()
             if row is None:
-                team_id = f"team-{uuid.uuid4().hex[:12]}"
+                team_id = team_id or f"team-{uuid.uuid4().hex[:12]}"
                 member_id = f"member-{uuid.uuid4().hex[:10]}"
                 now = _now()
                 self._db.execute(
                     "INSERT INTO team(id,name,my_member_id,created_at) VALUES (?,?,?,?)",
-                    (team_id, name, member_id, now),
+                    (team_id, name, member_id if create_member else None, now),
                 )
                 # 自动把本机用户加为董事长
-                self._db.execute(
-                    """INSERT INTO members(id,name,role,status,invited_at,joined_at)
-                       VALUES (?,?,?,?,?,?)""",
-                    (member_id, "Me", "chairman", "online", now, now),
-                )
+                if create_member:
+                    self._db.execute(
+                        """INSERT INTO members(id,name,role,status,invited_at,joined_at)
+                           VALUES (?,?,?,?,?,?)""",
+                        (member_id, "Me", "chairman", "online", now, now),
+                    )
                 self._db.commit()
-                return self._dict_team(team_id, name, member_id, now, None, None)
+                return self._dict_team(team_id, name, member_id if create_member else None, now, None, None)
             return self._dict_team(*row)
+
+    def set_my_member_id(self, member_id: str) -> None:
+        """方案C join: 本机身份指向邀请槽位行 (加入前 my_member_id 为 None)。"""
+        with self._lock:
+            self._db.execute("UPDATE team SET my_member_id = ?", (member_id,))
+            self._db.commit()
 
     def get_team(self) -> Optional[dict]:
         with self._lock:
@@ -190,18 +205,32 @@ class TeamStore:
         *,
         persona_id: Optional[str] = None,
         public_key: Optional[str] = None,
+        member_id: Optional[str] = None,
+        status: str = "offline",
     ) -> dict:
         role = normalize_role(role)
         if role not in _VALID_MEMBER_ROLES:
             raise ValueError(f"invalid member role: {role}")
-        member_id = f"member-{uuid.uuid4().hex[:10]}"
+        member_id = member_id or f"member-{uuid.uuid4().hex[:10]}"
         now = _now()
         with self._lock:
-            self._db.execute(
-                """INSERT INTO members(id,name,role,persona_id,status,public_key,invited_at)
-                   VALUES (?,?,?,?,?,?,?)""",
-                (member_id, name, role, persona_id, "offline", public_key, now),
-            )
+            exists = self._db.execute(
+                "SELECT 1 FROM members WHERE id=?", (member_id,)
+            ).fetchone()
+            if exists:
+                # 方案C join: 邀请槽位行可能已被对端 roster 先同步进来 (同 id)
+                # → 原位更新, 不产生第二行。
+                self._db.execute(
+                    "UPDATE members SET name=?, role=?, status=?, joined_at=? WHERE id=?",
+                    (name, role, status, now, member_id),
+                )
+            else:
+                self._db.execute(
+                    """INSERT INTO members(id,name,role,persona_id,status,public_key,invited_at,joined_at)
+                       VALUES (?,?,?,?,?,?,?,?)""",
+                    (member_id, name, role, persona_id, status, public_key, now,
+                     now if status == "online" else None),
+                )
             self._db.commit()
         return self.get_member(member_id) or {"id": member_id, "name": name, "role": role}
 

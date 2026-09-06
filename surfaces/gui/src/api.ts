@@ -3773,7 +3773,7 @@ export interface Member {
   id: string;
   name: string;
   role: string;
-  status: "online" | "offline";
+  status: "online" | "offline" | "invited";
   current_task_group: string | null;
   last_seen: number | null;
 }
@@ -3905,6 +3905,47 @@ export async function updateMember(
 export async function removeMember(id: string): Promise<{ ok: boolean }> {
   const res = await apiFetch(`${httpBase()}/v1/team/members/${encodeURIComponent(id)}`, {
     method: "DELETE",
+  });
+  return await res.json();
+}
+
+// 方案C 邀请码激活: invite 生成一次性展示的组织钥匙; join 用码加入真团队。
+export interface TeamInviteResult {
+  ok: boolean;
+  error?: string;
+  invite_code?: string;
+  member_id?: string;
+  role?: string;
+  team_name?: string;
+  peer_url?: string;
+}
+
+export async function inviteTeamMember(
+  name: string,
+  role: string = "worker",
+  baseUrl?: string,
+): Promise<TeamInviteResult> {
+  const res = await apiFetch(`${httpBase()}/v1/team/invite`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name, role, base_url: baseUrl || "" }),
+  });
+  return await res.json();
+}
+
+export interface TeamJoinResult {
+  ok: boolean;
+  error?: string;
+  member_id?: string;
+  role?: string;
+  team?: { id: string; name: string };
+}
+
+export async function joinTeam(inviteCode: string, name?: string): Promise<TeamJoinResult> {
+  const res = await apiFetch(`${httpBase()}/v1/team/join`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ invite_code: inviteCode, name: name || "" }),
   });
   return await res.json();
 }

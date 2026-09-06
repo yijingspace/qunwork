@@ -46,6 +46,12 @@ class SyncSecrets:
             serialization.Encoding.Raw, serialization.PublicFormat.Raw
         ).hex()
 
+    @property
+    def shared_key_b64(self) -> str:
+        """团队共享 AES 密钥 (base64) — 邀请码携带它, 新成员 import_sync_secrets
+        导入后即拿到全队解密能力。泄露此值 = 泄露组织入场券。"""
+        return base64.b64encode(self.aes_key).decode("ascii")
+
     def sign(self, data: bytes) -> bytes:
         return self.sign_key.sign(data)
 
@@ -133,6 +139,46 @@ def load_or_create_sync_secrets(path: str | Path) -> SyncSecrets:
 
     write_private_text(aes_path, _b64.b64encode(aes_key).decode("ascii"))
     return SyncSecrets(sign_key, aes_key)
+
+
+def import_sync_secrets(path: str | Path, shared_key_b64: str) -> SyncSecrets:
+    """方案C join: 用邀请码里的共享 AES 密钥覆盖本机 .aes 文件 (Ed25519 签名
+    keypair 保持本机独立)。密钥不匹配则后续所有解密失败 — 伪邀请码自然失效,
+    不产生"半加入"状态。
+
+    注意不能直接走 load_or_create_sync_secrets — 本地无 .sign.pem 时它会生成
+    **整套**新密钥 (顺带覆盖刚导入的 .aes); 这里只补缺失的签名 keypair,
+    共享密钥以导入值为准。"""
+    import base64 as _b64
+
+    from ..secrets import write_private_text
+
+    try:
+        key = _b64.b64decode(shared_key_b64.encode("ascii"))
+    except Exception as exc:
+        raise ValueError(f"invalid shared key: {exc}") from exc
+    if len(key) != 32:
+        raise ValueError(f"shared key must be 32 bytes, got {len(key)}")
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    sign_path = path.with_suffix(".sign.pem")
+    aes_path = path.with_suffix(".aes")
+    write_private_text(aes_path, _b64.b64encode(key).decode("ascii"))
+    if sign_path.exists():
+        sign_key = serialization.load_pem_private_key(
+            sign_path.read_bytes(), password=None
+        )
+    else:
+        sign_key = ed25519.Ed25519PrivateKey.generate()
+        write_private_text(
+            sign_path,
+            sign_key.private_bytes(
+                serialization.Encoding.PEM,
+                serialization.PrivateFormat.PKCS8,
+                serialization.NoEncryption(),
+            ).decode("ascii"),
+        )
+    return SyncSecrets(sign_key, key)
 
 
 class TeamSync:
@@ -339,7 +385,9 @@ class TeamSync:
                 local_ts = 0
             return remote_ts >= local_ts
         if etype == "member":
-            return remote_ts >= (self.store.get_member(eid) or {}).get("last_seen", 0)
+            # `or 0` 防 last_seen=None (新行/邀请槽位从不心跳) — .get(key, 0)
+            # 只兜缺键不兜 NULL 值, 直接比较会 float >= None TypeError。
+            return remote_ts >= ((self.store.get_member(eid) or {}).get("last_seen") or 0)
         if etype == "task_group":
             g = self.store.get_task_group(eid)
             if g is None:
@@ -353,17 +401,35 @@ class TeamSync:
                 if op == "delete":
                     self.store.remove_member(eid)
                 elif self.store.get_member(eid) is None:
+                    # member_id=eid: 两端 roster 对齐靠同 id (task_group 分支同
+                    # 理传 group_id)。历史版本让 add_member 自生成 id → 同一远端
+                    # 成员在本机换了主键, 后续 LWW/去重全部错位。
                     self.store.add_member(
                         str(payload.get("name") or eid),
                         role=str(payload.get("role") or "worker"),
                         persona_id=payload.get("persona_id"),
+                        member_id=eid,
+                        status=str(payload.get("status") or "offline"),
                     )
                 else:
+                    # 方案C 合并语义 (纯 ts-LWW 在 join 竞态下会倒退):
+                    # 1) 本机身份行本地说了算 — 远端旧快照不得覆盖本人选的
+                    #    显示名/激活状态 (角色由邀请方管理, 走名册 API 变更)。
+                    # 2) status 单调 (invited < offline < online) — 激活终态
+                    #    不被先到后合的邀请快照回退。
+                    my_id = (self.store.get_team() or {}).get("my_member_id")
+                    if eid == my_id:
+                        return
+                    existing = self.store.get_member(eid) or {}
+                    new_status = str(payload.get("status") or "offline")
+                    rank = {"invited": 0, "offline": 1, "busy": 1, "online": 2}
+                    if rank.get(new_status, 1) < rank.get(str(existing.get("status") or "offline"), 1):
+                        new_status = str(existing.get("status"))
                     self.store.update_member(
                         eid,
                         name=str(payload.get("name") or eid),
                         role=str(payload.get("role") or "worker"),
-                        status=str(payload.get("status") or "offline"),
+                        status=new_status,
                     )
             elif etype == "task_group":
                 if op == "delete":

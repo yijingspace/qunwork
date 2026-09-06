@@ -951,6 +951,16 @@ export const zh: Messages = {
   "Team Members": "团队成员",
   "No team members yet. Invite colleagues to join your swarm.": "暂无团队成员。邀请同事加入你的蜂群。",
   "Online": "在线",
+  // 方案C 邀请码激活
+  "invited": "待接受",
+  "Invite code": "邀请码",
+  "Copy invite code": "复制邀请码",
+  "The invite code is the key to your org — anyone holding it can join. Share it over a trusted channel.":
+    "邀请码即组织钥匙 — 拿到它的任何人都能加入,请通过可信渠道传递。",
+  "Join with invite code": "用邀请码加入",
+  "Paste invite code": "粘贴邀请码",
+  "Your display name": "你的显示名",
+  "Joined. The roster is syncing.": "已加入,名册同步中。",
   "Current task": "当前任务",
   "Agent Pool": "Agent 实例池",
   "No Agent instances. Agent pool will be available in Phase 1.": "暂无 Agent 实例。Agent 状态池将在 Phase 1 上线。",

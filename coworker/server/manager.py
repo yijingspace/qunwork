@@ -347,9 +347,10 @@ class SessionManager:
         # P2P 团队同步 (设计方案第六章): 加密变更日志 + LWW 合并 + peer 拉取。
         from ..team.sync import TeamSync
 
+        self._sync_secrets_path = base / "sync_secrets"  # 方案C join 要重写 .aes
         self.team_sync = TeamSync(
             self.team_store,
-            secrets_path=base / "sync_secrets",
+            secrets_path=self._sync_secrets_path,
             author="local",
             knowledge_upsert=self._sync_knowledge_upsert,
         )
@@ -5264,6 +5265,96 @@ class SessionManager:
                 content=content,
                 kind=str(payload.get("kind") or "synced"),
             )
+    # -- 方案C: 邀请码激活 (名册→真组织) ----------------------------------------
+    def team_invite(self, *, name: str = "新成员", role: str = "worker", base_url: str = "") -> dict[str, Any]:
+        """生成邀请码: 预分配 roster 槽位 (status=invited) + 打包团队密钥。
+        邀请码 = 组织钥匙 (含共享 AES key + 我方公钥 + peer 地址), 泄露即入队 —
+        GUI 文案要明确这一点。joiner 用同 member_id 落身份行, LWW 天然对上。"""
+        from ..team.invite import make_invite
+
+        team = self.team_store.ensure_team()
+        try:
+            m = self.team_store.add_member(name or "新成员", role)
+        except ValueError as exc:
+            return {"ok": False, "error": str(exc)}
+        self.team_store.update_member(m["id"], status="invited")
+        peer_url = (
+            (base_url or "").strip().rstrip("/")
+            or self.team_store.sync_config_get("peer_url")
+            or "http://127.0.0.1:8765"
+        )
+        code = make_invite(
+            team_id=team["id"],
+            team_name=team["name"],
+            peer_url=peer_url,
+            sync_key_b64=self.team_sync.secrets.shared_key_b64,
+            inviter_pub=self.team_sync.secrets.public_key_hex,
+            member_id=m["id"],
+            role=m["role"],
+            invited_by=team.get("my_member_id") or "",
+        )
+        return {
+            "ok": True,
+            "invite_code": code,
+            "member_id": m["id"],
+            "role": m["role"],
+            "team_name": team["name"],
+            "peer_url": peer_url,
+        }
+
+    async def team_join(self, invite_code: str, my_name: str = "") -> dict[str, Any]:
+        """用邀请码加入团队: 导入共享密钥 → TOFU 信任预登记 → 激活预分配
+        槽位行 (同 member_id) → 首轮 push/pull 同步花名册。
+        幂等: 重复 join 同一码 = 原位更新 (不产生第二行)。"""
+        from ..team.invite import InviteError, parse_invite
+        from ..team.sync import import_sync_secrets
+
+        try:
+            inv = parse_invite(invite_code)
+        except InviteError as exc:
+            return {"ok": False, "error": str(exc)}
+
+        team = self.team_store.get_team()
+        if team is None:
+            team = self.team_store.ensure_team(
+                inv["team_name"], create_member=False, team_id=inv["team_id"]
+            )
+        elif team.get("id") != inv["team_id"]:
+            return {
+                "ok": False,
+                "error": f"本机已属于其它团队「{team.get('name')}」— 请先重置团队数据",
+            }
+        try:
+            self.team_sync.secrets = import_sync_secrets(
+                self._sync_secrets_path, inv["sync_key"]
+            )
+        except ValueError as exc:
+            return {"ok": False, "error": f"invite key invalid: {exc}"}
+        self.team_store.sync_config_set("peer_url", inv["peer_url"])
+        self.team_sync.record_peer_public_key(inv["inviter_pub"])
+        try:
+            m = self.team_store.add_member(
+                my_name or "新成员", inv["role"],
+                member_id=inv["member_id"], status="online",
+            )
+        except ValueError as exc:
+            return {"ok": False, "error": str(exc)}
+        self.team_store.set_my_member_id(m["id"])
+        # collect_snapshot_changes 按 entity_id 跳过已知实体 — 槽位行若已由
+        # 对端 roster 同步进来 (invited 态), 不强制登记就永远推不出去, 邀请方
+        # 的名册卡在「待接受」。显式记录一条 upsert 确保激活信号送达。
+        self.team_store.record_sync_change(
+            "member", m["id"], "upsert", m, author="local"
+        )
+        first_sync = await self.team_sync.run()  # 网络失败不致命: outbox 已落盘可重试
+        return {
+            "ok": True,
+            "member_id": m["id"],
+            "role": m["role"],
+            "team": {"id": team["id"], "name": team["name"]},
+            "first_sync": first_sync,
+        }
+
     def team_sync_config(self, peer_url: str) -> dict[str, Any]:
         peer_url = (peer_url or "").strip().rstrip("/")
         if not peer_url:

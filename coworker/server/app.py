@@ -1912,6 +1912,23 @@ def create_app(manager: SessionManager) -> FastAPI:
         return manager.team_roles_view()
 
     # -- P2P 团队同步 (设计方案第六章) ----------------------------------------
+    @app.post("/v1/team/invite")
+    def team_invite(body: dict) -> dict[str, Any]:
+        """生成邀请码 (方案C): 预分配名册槽位 + 打包团队密钥。邀请码即组织钥匙。"""
+        return manager.team_invite(
+            name=str((body or {}).get("name") or "新成员"),
+            role=str((body or {}).get("role") or "worker"),
+            base_url=str((body or {}).get("base_url") or ""),
+        )
+
+    @app.post("/v1/team/join")
+    async def team_join(body: dict) -> dict[str, Any]:
+        """用邀请码加入团队: 密钥导入 + TOFU 信任 + 槽位激活 + 首轮同步。"""
+        return await manager.team_join(
+            str((body or {}).get("invite_code") or ""),
+            my_name=str((body or {}).get("name") or ""),
+        )
+
     @app.post("/v1/team/sync/config")
     def team_sync_config(body: dict) -> dict[str, Any]:
         """Configure the peer endpoint; collects a local snapshot on first set.
