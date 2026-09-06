@@ -1615,6 +1615,22 @@ def create_app(manager: SessionManager) -> FastAPI:
         """回读 OIR task/trend/growth 遥测（网关 reflect_telemetry 落盘文件）。"""
         return manager.oir_longrun_telemetry()
 
+    @app.get("/v1/7x24/oir-longrun/tasks")
+    async def oir_longrun_tasks() -> dict[str, Any]:
+        """活跃长程任务列表（网关 + 本地驱动状态合并；GUI 任务控制台）。"""
+        return await manager.oir_longrun_list_tasks()
+
+    @app.post("/v1/7x24/oir-longrun/tasks")
+    async def oir_longrun_submit_task(body: dict) -> dict[str, Any]:
+        """用户发起一个真实长程任务（goal 文本 → 网关 submit，tick 自动驱动）。"""
+        goal = (body or {}).get("goal") or ""
+        return await manager.oir_longrun_submit_task(goal)
+
+    @app.post("/v1/7x24/oir-longrun/tasks/{goal_id}/{action}")
+    async def oir_longrun_control_task(goal_id: str, action: str) -> dict[str, Any]:
+        """对单个 goal 执行 pause / resume / complete。"""
+        return await manager.oir_longrun_control_task(goal_id, action)
+
     @app.get("/v1/7x24/channel-health")
     def longrun_channel_health() -> dict[str, Any]:
         """① 渠道健康分/历史趋势 (probe_history, 阈值可配)。"""

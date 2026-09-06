@@ -1525,6 +1525,56 @@ export async function getOirLongrunTelemetry(): Promise<OirLongrunTelemetrySnaps
   return await res.json();
 }
 
+export interface OirLongrunActiveTask {
+  oir_task_id?: string;
+  goal_id?: string | null;
+  goal?: string;
+  percent?: number;
+  pos?: number;
+  origin?: "manual" | "adopted" | "auto";
+}
+
+export interface OirLongrunTasksSnapshot {
+  registered_goals?: number;
+  active?: OirLongrunActiveTask[];
+  tracked?: Record<string, Record<string, unknown>>;
+  error?: string;
+}
+
+export async function listOirLongrunTasks(): Promise<OirLongrunTasksSnapshot> {
+  const res = await apiFetch(`${httpBase()}/v1/7x24/oir-longrun/tasks`);
+  return await res.json();
+}
+
+export async function submitOirLongrunTask(goal: string): Promise<{
+  goal_id?: string;
+  total_documents?: number;
+  oir_task_id?: string;
+  error?: string;
+}> {
+  const res = await fetch(`${httpBase()}/v1/7x24/oir-longrun/tasks`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ goal }),
+  });
+  if (!res.ok) throw new ApiError(res.status, "/v1/7x24/oir-longrun/tasks");
+  return await res.json();
+}
+
+export type OirLongrunTaskAction = "pause" | "resume" | "complete";
+
+export async function controlOirLongrunTask(
+  goalId: string,
+  action: OirLongrunTaskAction,
+): Promise<{ goal_id?: string; action?: string; success?: boolean; error?: string }> {
+  const res = await fetch(
+    `${httpBase()}/v1/7x24/oir-longrun/tasks/${encodeURIComponent(goalId)}/${action}`,
+    { method: "POST" },
+  );
+  if (!res.ok) throw new ApiError(res.status, `/v1/7x24/oir-longrun/tasks/${goalId}/${action}`);
+  return await res.json();
+}
+
 export async function getLongrunTelemetry(limit = 20): Promise<LongrunTelemetry> {
   const res = await apiFetch(`${httpBase()}/v1/7x24/telemetry?limit=${limit}`);
   return await res.json();

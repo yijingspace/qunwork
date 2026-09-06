@@ -3323,33 +3323,43 @@ class SessionManager:
             logger.exception("extra_tick oir longrun failed")
 
     async def _maybe_oir_longrun_tick(self) -> None:
-        """若 OIR longrun 已启用则每 tick 推进一批 (best-effort)。
+        """每 tick 驱动 OIR longrun（best-effort）。
 
-        惰性构造 OirLongrunTick(契约 = QunWork Scheduler extra_tick), 配置存
+        enabled 开关只控制"自动批"goal；用户经面板/技能发起的手动任务无论
+        开关都会被驱动。惰性构造 OirLongrunTick，配置存
         _prefs["oir_longrun"] = {enabled, doc_dir, glob, batch, goal_id}。
-        GUI 经 /v1/7x24/oir-longrun 开关与查看。
+        GUI 经 /v1/7x24/oir-longrun 开关与查看，/v1/7x24/oir-longrun/tasks 控制。
         """
         cfg = (self._prefs or {}).get("oir_longrun") or {}
-        if not cfg.get("enabled"):
-            return
+        enabled = bool(cfg.get("enabled"))
         tick = getattr(self, "_oir_longrun_tick_obj", None)
         if tick is None:
+            import sys as _sys
+            bridge = Path(r"E:\QunWork\oir_bridge")
+            if str(bridge) not in _sys.path:
+                _sys.path.insert(0, str(bridge))
             try:
-                import sys as _sys
-                bridge = Path(r"E:\QunWork\oir_bridge")
-                if str(bridge) not in _sys.path:
-                    _sys.path.insert(0, str(bridge))
-                from oir_longrun_driver import OirLongrunTick
-                tick = OirLongrunTick(
-                    doc_dir=cfg.get("doc_dir") or "研究文档",
-                    glob=cfg.get("glob") or "*.md",
-                    batch=int(cfg.get("batch") or 3),
-                    goal_id=cfg.get("goal_id") or None,
-                )
-                self._oir_longrun_tick_obj = tick
+                from oir_longrun_driver import OirLongrunTick, has_tracked_goals
             except Exception as e:
                 logger.warning("oir longrun tick init failed: %s", e)
                 return
+            # 关闭且没有任何未完成目标 → 不构造、不产生网关流量
+            if not enabled:
+                try:
+                    if not await asyncio.to_thread(has_tracked_goals):
+                        return
+                except Exception:
+                    return
+            tick = OirLongrunTick(
+                doc_dir=cfg.get("doc_dir") or "研究文档",
+                glob=cfg.get("glob") or "*.md",
+                batch=int(cfg.get("batch") or 3),
+                goal_id=cfg.get("goal_id") or None,
+                auto_enabled=enabled,
+            )
+            self._oir_longrun_tick_obj = tick
+        elif tick.auto_enabled != enabled:
+            tick.auto_enabled = enabled  # 开关实时生效
         try:
             await tick()
         except Exception as e:
@@ -3402,6 +3412,71 @@ class SessionManager:
                     logger.warning("oir longrun telemetry read failed: %s", e)
                     return {"error": str(e), "source": str(p)}
         return {}
+
+    # -- OIR longrun 用户发起/控制（方案 A：面板任务控制台）----------------
+
+    @staticmethod
+    def _oir_driver():
+        """导入 oir_bridge 驱动模块（与 tick 同一路径注入）。"""
+        import sys as _sys
+        bridge = Path(r"E:\QunWork\oir_bridge")
+        if str(bridge) not in _sys.path:
+            _sys.path.insert(0, str(bridge))
+        import oir_longrun_driver as drv
+        return drv
+
+    async def oir_longrun_submit_task(self, goal: str) -> dict[str, Any]:
+        """用户发起一个真实长程任务（独立 goal，tick 自动收养驱动）。"""
+        def _do():
+            drv = self._oir_driver()
+            cfg = (self._prefs or {}).get("oir_longrun") or {}
+            return drv.submit_manual_goal(
+                goal,
+                doc_dir=cfg.get("doc_dir") or "研究文档",
+                glob=cfg.get("glob") or "*.md",
+            )
+        try:
+            return await asyncio.to_thread(_do)
+        except Exception as e:
+            return {"error": str(e)}
+
+    async def oir_longrun_list_tasks(self) -> dict[str, Any]:
+        """活跃任务列表（网关）+ 本地驱动状态（pos/来源）合并。"""
+        def _do():
+            drv = self._oir_driver()
+            active = drv.list_gateway_tasks()
+            state = drv.load_state()
+            for t in active.get("active") or []:
+                gid = t.get("goal_id")
+                rec = state.get(gid) if gid else None
+                if isinstance(rec, dict):
+                    t["pos"] = int(rec.get("pos", 0))
+                    t["origin"] = ("manual" if rec.get("manual")
+                                   else "adopted" if rec.get("adopted") else "auto")
+            active["tracked"] = {
+                gid: {k: rec.get(k) for k in ("pos", "total", "goal", "manual", "adopted",
+                                              "completed", "superseded") if k in rec}
+                for gid, rec in state.items() if isinstance(rec, dict)
+            }
+            return active
+        try:
+            return await asyncio.to_thread(_do)
+        except Exception as e:
+            return {"error": str(e), "active": [], "tracked": {}}
+
+    async def oir_longrun_control_task(self, goal_id: str, action: str) -> dict[str, Any]:
+        """对单个 goal 执行 pause / resume / complete（经网关生命周期接口）。"""
+        if action not in ("pause", "resume", "complete"):
+            return {"error": f"不支持的操作: {action}"}
+        def _do():
+            drv = self._oir_driver()
+            fn = {"pause": drv.pause_goal, "resume": drv.resume_goal,
+                  "complete": drv.complete_goal}[action]
+            return {"goal_id": goal_id, "action": action, "success": bool(fn(goal_id))}
+        try:
+            return await asyncio.to_thread(_do)
+        except Exception as e:
+            return {"error": str(e)}
 
     def mark_running(self, session_id: str) -> None:
         self._running_sessions.add(session_id)

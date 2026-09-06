@@ -204,6 +204,23 @@ const OIR_TELEMETRY = {
   growth_report: { direction: "growing", note: "2 day buckets" },
 };
 
+const OIR_TASKS_EMPTY = { registered_goals: 0, active: [], tracked: {} };
+
+const OIR_TASKS = {
+  registered_goals: 1,
+  active: [
+    {
+      oir_task_id: "oir-77",
+      goal_id: "qunwork-manual-20260906-120000",
+      goal: "九月新资料索引",
+      percent: 0.4,
+      pos: 2,
+      origin: "manual",
+    },
+  ],
+  tracked: {},
+};
+
 function stubFetch(routes: { match: string | RegExp; method?: string; json: unknown }[]) {
   const calls: { url: string; method: string; body?: unknown }[] = [];
   vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -253,6 +270,9 @@ function stubFetch(routes: { match: string | RegExp; method?: string; json: unkn
       }
       if (path.endsWith("/v1/7x24/oir-longrun/telemetry")) {
         return { ok: true, status: 200, json: async () => OIR_TELEMETRY, text: async () => JSON.stringify(OIR_TELEMETRY) } as Response;
+      }
+      if (path.endsWith("/v1/7x24/oir-longrun/tasks")) {
+        return { ok: true, status: 200, json: async () => OIR_TASKS_EMPTY, text: async () => JSON.stringify(OIR_TASKS_EMPTY) } as Response;
       }
       return { ok: false, status: 404, json: async () => ({ error: "not found" }), text: async () => "not found" } as Response;
     }
@@ -328,6 +348,48 @@ describe("LongRunView", () => {
     expect(put).toBeTruthy();
     expect(put!.body).toContain('"enabled":true');
     await waitFor(() => expect(screen.getByText(/g-oir-index-growth/)).toBeTruthy());
+  });
+
+  it("launches and controls a long-run task from the panel", async () => {
+    const calls = stubFetch([
+      {
+        match: /oir-longrun\/tasks\/[^/]+\/pause/,
+        method: "POST",
+        json: { goal_id: "qunwork-manual-20260906-120000", action: "pause", success: true },
+      },
+      { match: "/v1/7x24/checkpoints", json: CHECKPOINTS },
+      { match: "/v1/7x24/health", json: HEALTH },
+      { match: "/v1/7x24/telemetry", json: TELEMETRY },
+      { match: "/v1/7x24/storage", json: STORAGE },
+      { match: "/v1/7x24/alerts", json: EMPTY_ALERTS },
+      { match: "/v1/7x24/oir-longrun/tasks", json: OIR_TASKS },
+      {
+        match: "/v1/7x24/oir-longrun/tasks",
+        method: "POST",
+        json: { goal_id: "qunwork-manual-20260906-120000", total_documents: 5 },
+      },
+    ]);
+    render(<LongRunView onBack={() => {}} />);
+
+    // 用户发起真实长程任务 → POST /v1/7x24/oir-longrun/tasks {goal}。
+    await waitFor(() => expect(screen.getByTestId("oir-longrun-goal-input")).toBeTruthy());
+    fireEvent.change(screen.getByTestId("oir-longrun-goal-input"), {
+      target: { value: "九月新资料索引" },
+    });
+    fireEvent.click(screen.getByTestId("oir-longrun-submit"));
+    const post = calls.find(
+      (c) => c.method === "POST" && c.url.endsWith("/v1/7x24/oir-longrun/tasks"),
+    );
+    await waitFor(() => expect(post).toBeTruthy());
+    expect(post!.body).toContain("九月新资料索引");
+    // 列表回读：活跃任务行 + 进度 + 暂停/恢复/完成操作。
+    await waitFor(() => expect(screen.getByTestId("oir-task-row")).toBeTruthy());
+    expect(screen.getByText("九月新资料索引")).toBeTruthy();
+    expect(screen.getByText(/40%/)).toBeTruthy();
+    fireEvent.click(screen.getByTestId("oir-task-pause"));
+    await waitFor(() =>
+      expect(calls.some((c) => c.method === "POST" && /\/pause$/.test(c.url))).toBe(true),
+    );
   });
 
   it("shows checkpoint chain when a session is selected", async () => {

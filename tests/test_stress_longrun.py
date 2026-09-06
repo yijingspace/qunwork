@@ -2028,3 +2028,114 @@ class TestOirLongrunIntegration:
         m = self._manager(tmp_path)
         # 默认 disabled: _maybe_oir_longrun_tick stub 直接返回，不抛错。
         assert SessionManager.oir_longrun_config(m)["enabled"] is False
+
+    # -- 方案 A: 用户发起/控制长程任务（面板任务控制台后端）----------------
+
+    def _fake_driver(self, calls):
+        class _FakeDrv:
+            def submit_manual_goal(self, goal, doc_dir="研究文档", glob="*.md"):
+                calls.append(("submit", goal, doc_dir, glob))
+                return {"goal_id": "qunwork-manual-1", "total_documents": 3, "oir_task_id": "oir-1"}
+
+            def pause_goal(self, gid):
+                calls.append(("pause", gid))
+                return True
+
+            def resume_goal(self, gid):
+                calls.append(("resume", gid))
+                return True
+
+            def complete_goal(self, gid):
+                calls.append(("complete", gid))
+                return True
+
+            def list_gateway_tasks(self):
+                return {
+                    "registered_goals": 1,
+                    "active": [{"goal_id": "qunwork-manual-1", "goal": "g", "percent": 0.5}],
+                }
+
+            def load_state(self):
+                return {"qunwork-manual-1": {"pos": 1, "manual": True}}
+
+        return _FakeDrv()
+
+    def test_submit_list_control_proxy(self, tmp_path, monkeypatch):
+        """发起/列表/控制经 manager 代理驱动模块（含合并本地状态与非法操作兜底）。"""
+        import asyncio
+
+        from coworker.server.manager import SessionManager
+
+        m = self._manager(tmp_path)
+        calls: list = []
+        # stub 不是 SessionManager 子类 → 把驱动工厂挂到实例上（生产路径等价）。
+        fake = self._fake_driver(calls)
+        m._oir_driver = lambda: fake
+
+        r = asyncio.run(SessionManager.oir_longrun_submit_task(m, "九月新资料索引"))
+        assert r["goal_id"] == "qunwork-manual-1" and r["total_documents"] == 3
+        assert ("submit", "九月新资料索引", "研究文档", "*.md") in calls
+
+        r = asyncio.run(SessionManager.oir_longrun_list_tasks(m))
+        assert r["active"][0]["origin"] == "manual"
+        assert r["active"][0]["pos"] == 1
+        assert "qunwork-manual-1" in r["tracked"]
+
+        r = asyncio.run(SessionManager.oir_longrun_control_task(m, "qunwork-manual-1", "pause"))
+        assert r["success"] is True
+        r = asyncio.run(SessionManager.oir_longrun_control_task(m, "x", "bogus"))
+        assert "error" in r
+        assert ("pause", "qunwork-manual-1") in calls
+
+    def test_disabled_tick_still_drives_tracked_goals(self, tmp_path, monkeypatch):
+        """开关只控制自动批：已跟踪（手动/收养）目标在 disabled 下仍被驱动。"""
+        import asyncio
+        import sys
+        import types
+
+        from coworker.server.manager import SessionManager
+
+        m = self._manager(tmp_path)
+        driven: list = []
+
+        class _FakeTick:
+            def __init__(self, **kw):
+                driven.append(("init", dict(kw)))
+                self.auto_enabled = kw.get("auto_enabled", True)
+
+            async def __call__(self):
+                driven.append(("call", None))
+
+        fake = types.ModuleType("oir_longrun_driver")
+        fake.OirLongrunTick = _FakeTick
+        fake.has_tracked_goals = lambda: True
+        monkeypatch.setitem(sys.modules, "oir_longrun_driver", fake)
+
+        asyncio.run(SessionManager._maybe_oir_longrun_tick(m))
+        assert any(d[0] == "call" for d in driven)
+        assert getattr(m, "_oir_longrun_tick_obj", None) is not None
+        assert m._oir_longrun_tick_obj.auto_enabled is False
+        # 第二次 tick：驱动对象已缓存 → 直接调用，不重建。
+        asyncio.run(SessionManager._maybe_oir_longrun_tick(m))
+        assert sum(1 for d in driven if d[0] == "call") == 2
+
+    def test_disabled_tick_noop_without_tracked(self, tmp_path, monkeypatch):
+        """disabled 且无未完成目标 → 不构造驱动、不产生网关流量。"""
+        import asyncio
+        import sys
+        import types
+
+        from coworker.server.manager import SessionManager
+
+        m = self._manager(tmp_path)
+
+        def _boom(**kw):
+            raise AssertionError("should not construct OirLongrunTick")
+
+        fake = types.ModuleType("oir_longrun_driver")
+        fake.OirLongrunTick = _boom
+        fake.has_tracked_goals = lambda: False
+        monkeypatch.setitem(sys.modules, "oir_longrun_driver", fake)
+
+        asyncio.run(SessionManager._maybe_oir_longrun_tick(m))
+        assert not hasattr(m, "_oir_longrun_tick_obj")
