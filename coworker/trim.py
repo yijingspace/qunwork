@@ -51,11 +51,13 @@ MIN_NET_SAVING = 200
 # 豁免裁剪的工具 (S3 上下文预算管理实证修复, 蜂群自造 read_file_plain 的根因):
 # 这些工具的输出是模型"显式请求的完整内容" (文件内容/知识检索/搜索结果/
 # 技能正文), 裁剪会让模型读到残缺数据 — 静默信息丢失。只裁机械性膨胀输出
-# (base64/元数据/超大日志), 不裁"内容请求"类结果。
+# (base64/超大日志), 不裁"内容请求"类结果。
 # 匹配规则见 _is_exempt_tool: 精确命中 TRIM_EXEMPT_TOOLS, 或命中
 # _TRIM_EXEMPT_PREFIXES 前缀 (read_ 覆盖 read_file_lines; load_skill 是
-# 精确项 — 2026-09-06: SKILL.md 中文正文 5.6KB 被裁到 head+tail 1200 字符,
-# agent 读不到铁律/使用步骤, 只能写辅助脚本绕道 run_shell 折腾十几轮)。
+# 精确项 — 2026-09-06 两次实证: ① SKILL.md 中文正文 5.6KB 被裁到
+# head+tail 1200 字符, agent 读不到铁律/使用步骤; ② head/tail 豁免后
+# 正文仍被元数据 elide 整段替换 — dict 结果 json.dumps 后正文是单个
+# 超长引号字符串, 豁免工具因此连元数据 elide 一并跳过)。
 TRIM_EXEMPT_TOOLS: tuple[str, ...] = (
     "read_file",
     "read_file_plain",
@@ -165,11 +167,14 @@ def trim_tool_content(content: Any, *, tool_name: Optional[str] = None) -> Any:
 
     `tool_name`: 触发该 tool 消息的工具名。对"显式内容请求"类工具
     (read_file/read_file_lines/load_skill/knowledge_search/web_fetch…,
-    见 _is_exempt_tool) 跳过 head/tail 裁剪 — 它们的输出是模型要用的
-    完整内容, 裁剪=静默信息丢失 (S3 实证: 蜂群 worker 因 read_file 内容
-    被裁而自造 read_file_plain; 2026-09-06: load_skill 的 SKILL.md 中文
-    正文被裁致 agent 写辅助脚本绕道)。base64/元数据折叠对所有工具仍生效
-    (那才是真·机械性膨胀)。
+    见 _is_exempt_tool) 跳过 head/tail 裁剪与元数据 elide — 它们的输出
+    是模型要用的完整内容, 裁剪=静默信息丢失 (S3 实证: 蜂群 worker 因
+    read_file 内容被裁而自造 read_file_plain; 2026-09-06 两次实证:
+    ① load_skill 的 SKILL.md 中文正文被裁致 agent 写辅助脚本绕道;
+    ② 豁免后正文仍被元数据 elide 整段替换 — dict 结果经 json.dumps
+    序列化, 正文整体成为单个超长引号字符串, 对"内容载荷"而言元数据
+    elide 与 head/tail 裁剪同样致命)。base64 折叠对所有工具仍生效
+    (那才是与内容无关的机械性膨胀)。
     """
     if _is_exempt_tool(tool_name):
         return _collapse_only(content)
@@ -189,14 +194,21 @@ def trim_tool_content(content: Any, *, tool_name: Optional[str] = None) -> Any:
 
 
 def _collapse_only(content: Any) -> Any:
-    """豁免工具的降级处理: 只折叠 base64/元数据膨胀, 不做 head/tail 裁剪。"""
+    """豁免工具的降级处理: 只折叠 base64 膨胀, 不做 head/tail 裁剪,
+    也不做元数据 elide。
+
+    2026-09-06 第二次实证: engine 对 dict 结果 json.dumps 序列化,
+    load_skill 的 instructions / read_file 的 content 整体成为**一个**
+    超长 JSON 引号字符串 — _elide_meta_json 视其为"元数据块"整段替换,
+    技能正文在豁免名单内仍被折叠 (元数据 = payload 本身)。豁免工具的
+    输出是模型显式请求的内容, 只有 base64 (与内容无关的机械膨胀) 才折叠。"""
     if isinstance(content, str):
-        return _elide_meta_json(_collapse_base64(content))
+        return _collapse_base64(content)
     if isinstance(content, list):
         out = []
         for part in content:
             if isinstance(part, dict) and part.get("type") == "text":
-                collapsed = _elide_meta_json(_collapse_base64(part.get("text", "")))
+                collapsed = _collapse_base64(part.get("text", ""))
                 out.append({**part, "text": collapsed})
             else:
                 out.append(part)

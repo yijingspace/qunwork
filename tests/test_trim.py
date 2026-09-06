@@ -196,8 +196,10 @@ def test_load_skill_full_body_preserved():
     assert "trimmed" not in out
 
 
-def test_load_skill_still_collapses_base64_and_meta():
-    """豁免的降级语义: load_skill 输出里的 base64/超大元数据仍折叠。"""
+def test_load_skill_still_collapses_base64_but_keeps_long_strings():
+    """豁免的降级语义 (2026-09-06 第二次实证后收紧): load_skill 输出里的
+    base64 仍折叠; 但元数据 elide 不再作用于豁免工具 — engine 对 dict
+    结果 json.dumps 后技能正文整体是单个超长引号字符串, elide 它 = 折叠正文。"""
     text = (
         "body text\n"
         + "data:image/png;base64," + "Z" * 3000 + "\n"
@@ -205,8 +207,48 @@ def test_load_skill_still_collapses_base64_and_meta():
     )
     out = trim_tool_content(text, tool_name="load_skill")
     assert "collapsed" in out
-    assert "elided metadata block" in out
+    assert "elided metadata block" not in out
     assert "body text" in out
+    assert "m" * 100 in out  # 长字符串值原样保留
+
+
+def test_load_skill_json_envelope_body_preserved():
+    """生产形态回归: engine 对 dict 工具结果 json.dumps (engine.py:1492),
+    load_skill 的 instructions 成为单个超长 JSON 引号字符串 — 豁免工具
+    必须原样送达 (2026-09-06 主会话实证: 正文被元数据 elide 整段替换,
+    agent 读不到技能正文, 只能写辅助脚本绕道折腾十几轮浪费大量 token)。"""
+    import json
+
+    skill_body = (
+        "---\nname: oir-longrun\n---\n# OIR 长程任务\n\n## 工作流\n"
+        + "curl -s http://127.0.0.1:8787/api/longrun/health  # 先握手再提交\n" * 40
+        + "\n## 控制接口\nPOST /api/longrun/pause|resume|complete"
+    )
+    assert len(skill_body) > 900  # 超过 META_MIN_LEN, 正是事发条件
+    envelope = json.dumps(
+        {
+            "name": "oir-longrun",
+            "instructions": skill_body,
+            "resources_path": r"C:\some\skills\oir-longrun",
+        },
+        ensure_ascii=False,
+    )
+    out = trim_tool_content(envelope, tool_name="load_skill")
+    assert out == envelope  # JSON 信封逐字节原样: 正文一字不丢
+    assert "elided metadata block" not in out
+
+
+def test_read_file_json_envelope_content_preserved():
+    """同类回归: read_file 返回 dict → json.dumps 后 content 是超长引号
+    字符串 — 豁免工具的文件内容同样不得被元数据 elide 折叠。"""
+    import json
+
+    envelope = json.dumps(
+        {"path": "notes.md", "content": "第一章 中文正文内容\n" * 300, "total_lines": 300},
+        ensure_ascii=False,
+    )
+    out = trim_tool_content(envelope, tool_name="read_file")
+    assert out == envelope
 
 
 def test_read_file_lines_exempt_via_prefix():
