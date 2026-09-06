@@ -222,6 +222,7 @@ class SkillLoader:
         author: Optional[str] = None,
         tags: Optional[list[str]] = None,
         allowed_tools: Optional[list[str]] = None,
+        draft: Optional[bool] = None,
     ) -> Optional[Path]:
         """Patch an existing skill's frontmatter/body in place (returns its SKILL.md
         path, or None when the skill does not exist). S7: 更新前把旧版本快照
@@ -254,6 +255,9 @@ class SkillLoader:
             front = _set("tags", ", ".join(tags))
         if allowed_tools is not None:
             front = _set("allowed-tools", ", ".join(allowed_tools))
+        if draft is not None:
+            # P1-8 转正链: draft: true → false 即发布 (解析端 "false" → False)。
+            front = _set("draft", "true" if draft else "false")
         if body is not None:
             body_text = body
         md.write_text(f"---\n{front.lstrip(chr(10))}\n---\n\n{body_text}\n", encoding="utf-8")

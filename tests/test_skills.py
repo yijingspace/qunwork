@@ -82,6 +82,57 @@ def test_skill_loader_catalog_and_load(tmp_path):
     assert reg.execute("load_skill", {"name": "missing"})["error"]
 
 
+# -- P1-8 转正链: 涌现草稿 (draft) → 正式技能 -------------------------------------
+
+
+def test_draft_skill_roundtrip_and_promote(tmp_path):
+    """save_skill(draft=True) 生成草稿; update_skill(draft=False) 转正 —
+    draft 状态经 frontmatter 写入/解析往返保持一致, 其他字段不被破坏。"""
+    import re as _re
+
+    skills_dir = tmp_path / "skills"
+    loader = SkillLoader([skills_dir])
+    loader.save_skill(
+        name="emergence-守恒分流",
+        description="[涌现-共现模式压缩] 守恒⊕分流",
+        body="# 草稿正文",
+        version="0.0.1",
+        category="emergence",
+        tags=["hornet", "emergence", "hypernode", "draft"],
+        draft=True,
+        source="hornet_emergence",
+    )
+    row = next(r for r in loader.catalog() if r["name"] == "emergence-守恒分流")
+    assert row["draft"] is True
+    assert row["source"] == "hornet_emergence"
+    assert "draft" in row["tags"]
+
+    # manager.skill_promote 的清洗语义 (同一 regex): description 去 [涌现-…] 前缀
+    new_desc = _re.sub(r"^\[涌现-[^\]]+\]\s*", "", row["description"])
+    assert new_desc == "守恒⊕分流"
+
+    loader.update_skill(
+        "emergence-守恒分流",
+        description=new_desc,
+        tags=[t for t in row["tags"] if t != "draft"],
+        draft=False,
+        version="0.1.0",
+    )
+    published = next(r for r in loader.catalog() if r["name"] == "emergence-守恒分流")
+    assert published["draft"] is False
+    assert "draft" not in published["tags"]
+    assert published["description"] == "守恒⊕分流"
+    assert published["version"] == "0.1.0"
+    assert published["category"] == "emergence"  # 未指定的字段保持原值
+
+    # 转正后正文完好 (update_skill 只动 frontmatter)
+    skill = loader.get("emergence-守恒分流")
+    assert skill is not None
+    md = (skills_dir / "emergence-守恒分流" / "SKILL.md").read_text(encoding="utf-8")
+    assert "草稿正文" in md
+    assert "draft: false" in md
+
+
 # -- engine assembly per agent --------------------------------------------------
 
 

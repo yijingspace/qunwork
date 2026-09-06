@@ -1299,6 +1299,11 @@ def create_app(manager: SessionManager) -> FastAPI:
         removed = manager.skill_delete(name)
         return {"ok": removed, "name": name} if removed else {"ok": False, "error": f"unknown skill: {name}"}
 
+    @app.post("/v1/skills/{name}/promote")
+    def skill_promote(name: str) -> dict[str, Any]:
+        """涌现草稿转正为正式技能 (P1-8 补全: draft → published)。"""
+        return manager.skill_promote(name)
+
     # -- Skill 信任基础 (版本市场 + lock + 安全 + 兼容 + 自动修复) --------
     @app.get("/v1/skills/{name}/versions")
     def skill_versions(name: str) -> dict[str, Any]:

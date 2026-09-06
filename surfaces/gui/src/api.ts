@@ -713,6 +713,16 @@ export async function rateSkill(
   return await res.json();
 }
 
+// P1-8 转正链: 涌现草稿 → 正式技能 (draft: false + tags 去 draft + 版本 0.1.0)
+export async function promoteSkill(
+  name: string,
+): Promise<{ ok: boolean; name?: string; error?: string }> {
+  const res = await apiFetch(`${httpBase()}/v1/skills/${encodeURIComponent(name)}/promote`, {
+    method: "POST",
+  });
+  return await res.json();
+}
+
 export async function exportSkill(name: string): Promise<{ ok: boolean; zip_base64?: string; error?: string }> {
   const res = await apiFetch(`${httpBase()}/v1/skills/export`, {
     method: "POST",

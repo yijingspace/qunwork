@@ -4627,6 +4627,31 @@ class SessionManager:
             self._refresh_engine_skill_loaders()
         return removed
 
+    def skill_promote(self, name: str) -> dict[str, Any]:
+        """涌现草稿转正 (P1-8 补全): draft: false + tags 去 draft + description
+        去 [涌现-…] 前缀 + 版本 0.0.1 → 0.1.0 (首个正式版)。update_skill 内部
+        先快照旧版本 (可回退), 完成后刷新所有 live 引擎的技能目录。"""
+        skill = self.skill_loader.get(name)
+        if skill is None:
+            return {"ok": False, "error": f"unknown skill: {name}"}
+        if not getattr(skill, "draft", False):
+            return {"ok": False, "error": f"skill is not a draft: {name}"}
+        new_desc = re.sub(r"^\[涌现-[^\]]+\]\s*", "", skill.description or "")
+        self.skill_loader.update_skill(
+            name,
+            description=new_desc or None,
+            tags=[t for t in (skill.tags or []) if t != "draft"],
+            draft=False,
+            version="0.1.0",
+        )
+        self._refresh_engine_skill_loaders()
+        updated = self.skill_loader.get(name)
+        return {
+            "ok": True,
+            "name": name,
+            "skill": updated.catalog_row() if updated else None,
+        }
+
     def _refresh_engine_skill_loaders(self) -> None:
         """Re-scan skill dirs in every live engine so mid-session imports/deletes apply."""
         for engine in self._engines.values():

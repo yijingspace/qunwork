@@ -14,6 +14,7 @@ import {
   importSkill,
   listSkills,
   pickFolderViaServer,
+  promoteSkill,
   rateSkill,
   rescanSkillSecurity,
   setSkillsPath as apiSetSkillsPath,
@@ -170,6 +171,14 @@ export default function SkillsView() {
     const res = await deleteSkill(name);
     if (res.ok) flash(t("Deleted") + ` ${name}`);
     else flash(t("Delete failed"));
+    refresh();
+  };
+
+  // P1-8 转正链: 涌现草稿 → 正式技能
+  const handlePromote = async (name: string) => {
+    const res = await promoteSkill(name);
+    if (res.ok) flash(t("Promoted") + ` ${name}`);
+    else flash(t("Promote failed") + (res.error ? `: ${res.error}` : ""));
     refresh();
   };
 
@@ -434,6 +443,7 @@ export default function SkillsView() {
                     onRate={handleRate}
                     onExport={handleExport}
                     onDelete={handleDelete}
+                    onPromote={handlePromote}
                     flash={flash}
                   />
                 ))}
@@ -457,6 +467,7 @@ export default function SkillsView() {
                   onRate={handleRate}
                   onExport={handleExport}
                   onDelete={handleDelete}
+                  onPromote={handlePromote}
                   flash={flash}
                 />
               ))}
@@ -482,6 +493,7 @@ interface SkillCardProps {
   onRate: (name: string, score: number) => void;
   onExport: (name: string) => void;
   onDelete: (name: string) => void;
+  onPromote: (name: string) => void;
   flash: (msg: string) => void;
 }
 
@@ -492,14 +504,23 @@ const COMPAT_SEVERITY_STYLE: Record<string, string> = {
   high: "bg-rose-500/20 text-rose-100 border-rose-500/40",
 };
 
-function SkillCard({ skill, onRate, onExport, onDelete, flash }: SkillCardProps) {
+function SkillCard({ skill, onRate, onExport, onDelete, onPromote, flash }: SkillCardProps) {
   const t = useT();
   const [sec, setSec] = useState<SkillSecurityReport | null>(null);
   const [compat, setCompat] = useState<SkillCompatibilityReport | null>(null);
   const [lockInfo, setLockInfo] = useState<SkillLockInfo | null>(null);
   const [versions, setVersions] = useState<SkillVersions | null>(null);
   const [showDetail, setShowDetail] = useState(false);
-  const [busy, setBusy] = useState<"lock" | "sec" | "compat" | "versions" | null>(null);
+  const [busy, setBusy] = useState<"lock" | "sec" | "compat" | "versions" | "promote" | null>(null);
+
+  const handlePromote = async () => {
+    setBusy("promote");
+    try {
+      onPromote(skill.name);
+    } finally {
+      setBusy(null);
+    }
+  };
 
   const handleLock = async () => {
     setBusy("lock");
@@ -791,6 +812,16 @@ function SkillCard({ skill, onRate, onExport, onDelete, flash }: SkillCardProps)
       )}
 
       <div className="flex items-center gap-1.5 mt-auto flex-wrap">
+        {skill.draft && (
+          <button
+            className="btn-primary text-[11.5px] py-1 px-2.5"
+            disabled={busy !== null}
+            onClick={handlePromote}
+            title={t("Promote this draft into a published skill")}
+          >
+            {busy === "promote" ? "…" : `✓ ${t("Promote")}`}
+          </button>
+        )}
         {[1, 2, 3, 4, 5].map((star) => (
           <button
             key={star}
