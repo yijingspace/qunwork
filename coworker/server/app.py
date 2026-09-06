@@ -1622,9 +1622,14 @@ def create_app(manager: SessionManager) -> FastAPI:
 
     @app.post("/v1/7x24/oir-longrun/tasks")
     async def oir_longrun_submit_task(body: dict) -> dict[str, Any]:
-        """用户发起一个真实长程任务（goal 文本 → 网关 submit，tick 自动驱动）。"""
-        goal = (body or {}).get("goal") or ""
-        return await manager.oir_longrun_submit_task(goal)
+        """用户发起一个真实长程任务（goal 文本 → 网关 submit，tick 自动驱动）。
+
+        body: {goal: str, doc_paths?: [绝对路径...]} — doc_paths 提供时只索引清单内文档。
+        """
+        b = body or {}
+        return await manager.oir_longrun_submit_task(
+            b.get("goal") or "", doc_paths=b.get("doc_paths") or None
+        )
 
     @app.post("/v1/7x24/oir-longrun/tasks/{goal_id}/{action}")
     async def oir_longrun_control_task(goal_id: str, action: str) -> dict[str, Any]:

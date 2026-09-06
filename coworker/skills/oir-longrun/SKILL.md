@@ -40,7 +40,7 @@ read_file/Glob 够不到，要用 shell）：
 cmd /c "dir /b E:\QunWork\研究文档\*.md 2>nul | find /c /v """
 ```
 
-### Step 3: 提交任务
+### Step 3: 提交任务 + 写文档清单
 ```bash
 curl -s -X POST http://127.0.0.1:8787/api/longrun/submit \
   -H "Content-Type: application/json" \
@@ -52,11 +52,19 @@ python -X utf8 -c "import json,urllib.request; d={'goal_id':'qunwork-manual-<时
 ```
 要求响应 `success:true`（`goal_id 已存在` → 换一个时间戳重试一次）。
 
+**提交成功后必须写文档清单**（否则调度器回退按 doc_dir 全集投喂，任务
+索引的就不是用户指定的文档）：
+- 路径: `E:\QunWork\OIR握手交付\longrun\goal_manifests\<goal_id>.json`
+- 内容: `{"goal_id":"<goal_id>","docs":["D:\\path\\a.md","D:\\path\\b.md"]}`（绝对路径数组）
+- 调度器收养后**只索引清单内文档**，`completed_documents` 即清单推进数
+
 ### Step 4: 回报用户
-- 已提交: goal_id、文档总量、oir_task_id
-- 说明: QunWork 调度器最迟 ~30s 开始自动推进（读 `doc_dir` 下的文档逐批
-  索引），交付物写入 `E:\QunWork\OIR握手交付\longrun\`
+- 已提交: goal_id、清单文档数、oir_task_id
+- 说明: QunWork 调度器最迟 ~30s 开始自动推进（只索引清单内文档），交付物
+  写入 `E:\QunWork\OIR握手交付\longrun\`
 - 进度查看: 7×24 管理页 → OIR longrun 面板（或用 Step 5 的状态接口）
+- 计数口径: `completed_documents` = 该 goal 实际被调度器索引的文档数
+  （有清单时即清单文档），不是全局累计
 
 ### Step 5: 查询/控制（用户追问进度或要求暂停/完成时）
 ```bash
@@ -67,3 +75,10 @@ curl -s -X POST http://127.0.0.1:8787/api/longrun/complete -H "Content-Type: app
 ```
 `phase` 取值: Planning / Executing（进行中）、Paused（已暂停）、
 Completed（已完成）。
+
+## 输出纪律（避免工具输出被折叠浪费轮次）
+
+- 扫描/统计类脚本的**完整结果写到文件**（如 `monthly_new_docs.json`），
+  stdout 只打印一两行摘要（计数 + 文件名列表）——shell 输出超 1200 字符
+  会被结构化裁剪，别把结论放在长输出的中段。
+- 每个阶段完成后立即汇报结论再进入下一步，不要攒到最后一口气输出。

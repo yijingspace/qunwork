@@ -3425,8 +3425,11 @@ class SessionManager:
         import oir_longrun_driver as drv
         return drv
 
-    async def oir_longrun_submit_task(self, goal: str) -> dict[str, Any]:
-        """用户发起一个真实长程任务（独立 goal，tick 自动收养驱动）。"""
+    async def oir_longrun_submit_task(self, goal: str, doc_paths: list | None = None) -> dict[str, Any]:
+        """用户发起一个真实长程任务（独立 goal，tick 自动收养驱动）。
+
+        doc_paths 提供时任务只索引这批文档（清单文件契约），否则 doc_dir 全集。
+        """
         def _do():
             drv = self._oir_driver()
             cfg = (self._prefs or {}).get("oir_longrun") or {}
@@ -3434,6 +3437,7 @@ class SessionManager:
                 goal,
                 doc_dir=cfg.get("doc_dir") or "研究文档",
                 glob=cfg.get("glob") or "*.md",
+                doc_paths=doc_paths,
             )
         try:
             return await asyncio.to_thread(_do)

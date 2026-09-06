@@ -2033,8 +2033,8 @@ class TestOirLongrunIntegration:
 
     def _fake_driver(self, calls):
         class _FakeDrv:
-            def submit_manual_goal(self, goal, doc_dir="研究文档", glob="*.md"):
-                calls.append(("submit", goal, doc_dir, glob))
+            def submit_manual_goal(self, goal, doc_dir="研究文档", glob="*.md", doc_paths=None):
+                calls.append(("submit", goal, doc_dir, glob, doc_paths))
                 return {"goal_id": "qunwork-manual-1", "total_documents": 3, "oir_task_id": "oir-1"}
 
             def pause_goal(self, gid):
@@ -2074,7 +2074,14 @@ class TestOirLongrunIntegration:
 
         r = asyncio.run(SessionManager.oir_longrun_submit_task(m, "九月新资料索引"))
         assert r["goal_id"] == "qunwork-manual-1" and r["total_documents"] == 3
-        assert ("submit", "九月新资料索引", "研究文档", "*.md") in calls
+        assert ("submit", "九月新资料索引", "研究文档", "*.md", None) in calls
+
+        # doc_paths 透传（清单契约: 只索引指定文档）
+        r = asyncio.run(
+            SessionManager.oir_longrun_submit_task(m, "指定两份", doc_paths=["D:\\x\\a.md"])
+        )
+        assert r["goal_id"] == "qunwork-manual-1"
+        assert ("submit", "指定两份", "研究文档", "*.md", ["D:\\x\\a.md"]) in calls
 
         r = asyncio.run(SessionManager.oir_longrun_list_tasks(m))
         assert r["active"][0]["origin"] == "manual"
@@ -2139,3 +2146,116 @@ class TestOirLongrunIntegration:
 
         asyncio.run(SessionManager._maybe_oir_longrun_tick(m))
         assert not hasattr(m, "_oir_longrun_tick_obj")
+
+
+class TestOirLongrunDriverManifest:
+    """驱动器文档清单契约（2026-09-06 实证修复）:
+
+    用户发起任务时 agent 承诺的索引对象（如 D 盘本月新增 2 份）与调度器
+    实际投喂（cfg doc_dir 全集按 pos 顺序）曾完全脱节 — completed_documents
+    9 > total 2 就是驱动器在灌 doc_dir 文档。修复: goal 自带清单
+    (goal_manifests/<goal_id>.json) 时收养后只投喂清单内文档。
+    """
+
+    def _load_driver(self, monkeypatch, tmp_path):
+        import importlib.util
+        import pathlib as _pl
+
+        driver_file = _pl.Path(r"E:\QunWork\oir_bridge\oir_longrun_driver.py")
+        if not driver_file.is_file():
+            pytest.skip("oir_bridge 驱动不在本机（CI/他机跳过）")
+        spec = importlib.util.spec_from_file_location(
+            "oir_longrun_driver_real", driver_file
+        )
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        # 隔离: state/manifest 全部落 tmp，绝不触碰真实 state 文件
+        monkeypatch.setattr(mod, "STATE_FILE", tmp_path / "state.json")
+        monkeypatch.setattr(mod, "MANIFEST_DIR", tmp_path / "manifests")
+        return mod
+
+    def test_manifest_adoption_feeds_only_manifest_docs(self, tmp_path, monkeypatch):
+        """收养带清单的 goal → 只推进清单内文档，不碰 doc_dir 全集。"""
+        import asyncio
+        import json as _json
+
+        mod = self._load_driver(monkeypatch, tmp_path)
+        calls = {"advance": []}
+
+        monkeypatch.setattr(mod, "gateway_healthy", lambda timeout=3.0: True)
+        monkeypatch.setattr(
+            mod, "list_gateway_tasks",
+            lambda: {"registered_goals": 1, "active": [
+                {"oir_task_id": "oir-9", "goal_id": "qunwork-manual-x",
+                 "goal": "g", "percent": 0.0}]},
+        )
+        monkeypatch.setattr(
+            mod, "gateway_task_phase", lambda gid: "Executing"
+        )
+        monkeypatch.setattr(mod, "submit_goal", lambda gid, goal, total: {"oir_task_id": "x"})
+        monkeypatch.setattr(mod, "complete_goal", lambda gid: True)
+
+        def fake_advance(gid, batch, max_terms=40):
+            calls["advance"].append([p.name for p in batch])
+            return {"deliverables": [], "completed_documents": len(batch),
+                    "total_documents": 1}
+
+        monkeypatch.setattr(mod, "advance_batch", fake_advance)
+
+        # doc_dir 全集 2 份；清单只指定 1 份 → 驱动器必须只喂清单那份
+        doc_dir = tmp_path / "docs"
+        doc_dir.mkdir()
+        (doc_dir / "a.md").write_text("A", encoding="utf-8")
+        (doc_dir / "b.md").write_text("B", encoding="utf-8")
+        manifest_doc = tmp_path / "elsewhere.md"
+        manifest_doc.write_text("M", encoding="utf-8")
+        mod.write_manifest("qunwork-manual-x", [manifest_doc])
+
+        tick = mod.OirLongrunTick(
+            doc_dir=str(doc_dir), glob="*.md", batch=3,
+            auto_enabled=False, heartbeat=False,
+        )
+        asyncio.run(tick())
+        assert calls["advance"] == [[manifest_doc.name]]
+        state = _json.loads((tmp_path / "state.json").read_text(encoding="utf-8"))
+        rec = state["qunwork-manual-x"]
+        assert rec["pos"] == 1 and rec["docs"] == [str(manifest_doc)]
+
+        # 第二 tick: 清单队列耗尽 → complete 且从活跃跟踪移除，不再投喂
+        asyncio.run(tick())
+        state = _json.loads((tmp_path / "state.json").read_text(encoding="utf-8"))
+        assert state["qunwork-manual-x"]["superseded"] is True
+        assert len(calls["advance"]) == 1
+
+    def test_submit_manual_goal_with_doc_paths_writes_manifest(self, tmp_path, monkeypatch):
+        """submit_manual_goal(doc_paths=...) → 清单落盘 + state.docs 记录 + total 正确。"""
+        import asyncio
+        import json as _json
+
+        mod = self._load_driver(monkeypatch, tmp_path)
+        monkeypatch.setattr(
+            mod, "submit_goal", lambda gid, goal, total: {"oir_task_id": "x"}
+        )
+        docs = []
+        for i in range(2):
+            p = tmp_path / f"doc{i}.md"
+            p.write_text(f"content {i}", encoding="utf-8")
+            docs.append(p)
+
+        r = mod.submit_manual_goal("索引这两份", doc_dir="研究文档", doc_paths=docs)
+        assert r["total_documents"] == 2
+        manifest = _json.loads(
+            (tmp_path / "manifests" / f"{r['goal_id']}.json").read_text(encoding="utf-8")
+        )
+        assert manifest["docs"] == [str(p) for p in docs]
+        state = _json.loads((tmp_path / "state.json").read_text(encoding="utf-8"))
+        assert state[r["goal_id"]]["docs"] == [str(p) for p in docs]
+
+    def test_submit_manual_goal_filters_missing_paths(self, tmp_path, monkeypatch):
+        """清单路径全部不存在 → 明确报错，不产生空清单任务。"""
+        mod = self._load_driver(monkeypatch, tmp_path)
+        try:
+            mod.submit_manual_goal("x", doc_paths=[tmp_path / "ghost.md"])
+            raise AssertionError("should raise")
+        except ValueError as e:
+            assert "不存在" in str(e)
