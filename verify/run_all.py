@@ -22,6 +22,7 @@ SCRIPTS = [
     "verify_degradation_fractal.py",  # 突破五: 分形降级
     # 握手打通（需要 OIR longrun 网关在 127.0.0.1:8787 运行）
     "verify_oir_longrun_handshake.py",  # QunWork 7×24 ↔ OIR longrun 握手契约
+    "verify_oir_scheduler_driven.py",  # QunWork 真实 Scheduler 驱动 OIR longrun
 ]
 
 
