@@ -64,6 +64,10 @@ class PersonaManifest:
     skills: list[str] = field(default_factory=list)
     mcp: list[str] = field(default_factory=list)
     recommends: list[Recommendation] = field(default_factory=list)
+    # 方案B 角色即能力包 (2026-09-06): 声明该 persona 在组织中的角色
+    # (permission_matrix.ROLE_REGISTRY 之一)。蜂群 executor / 会话引擎会据此
+    # 注入能力包契约 + 组织门禁 (org_gate_approver)。None = 不受组织约束 (现状)。
+    org_role: Optional[str] = None
     builtin: bool = False
     source: Optional[str] = (
         None  # where it was loaded from (path / url), for provenance
@@ -89,6 +93,7 @@ class PersonaManifest:
             family=self.family,
             messaging=self.messaging,
             connectors=self.connectors,
+            org_role=self.org_role,
         )
 
 
@@ -221,6 +226,20 @@ def parse_manifest(
     tools = _strlist(meta, "tools")
     _validate_tools(persona_id, tools)
 
+    # org_role: 必须是权限矩阵注册表中的规范角色 (历史别名 gm 自动规范化)。
+    org_role_raw = str(meta.get("org_role", "") or "").strip()
+    org_role: Optional[str] = None
+    if org_role_raw:
+        from ..permission_matrix import ROLE_REGISTRY, normalize_role
+
+        candidate = normalize_role(org_role_raw)
+        if candidate not in ROLE_REGISTRY:
+            raise ManifestError(
+                f"persona {persona_id!r}: org_role {org_role_raw!r} is not a registered "
+                f"org role (known: {sorted(ROLE_REGISTRY)})"
+            )
+        org_role = candidate
+
     return PersonaManifest(
         id=persona_id,
         name=str(meta.get("name") or persona_id).strip(),
@@ -238,6 +257,7 @@ def parse_manifest(
         skills=_strlist(meta, "skills"),
         mcp=_strlist(meta, "mcp"),
         recommends=_recommends(persona_id, meta),
+        org_role=org_role,
         builtin=builtin,
         source=source,
     )

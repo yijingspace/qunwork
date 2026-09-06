@@ -179,8 +179,17 @@ def build_executor_engine(
 
     ws = str(Path(workspace).resolve())
     Path(ws).mkdir(parents=True, exist_ok=True)
+    agent_obj = get_agent(agent)
+    # 方案B 角色即能力包: persona 声明了 org_role → 组织门禁包在审批链前面
+    # (放行后进原审批兜底), 并把能力包行为契约注入 system 段。无 org_role =
+    # 现状行为, 零变化。
+    org_role = getattr(agent_obj, "org_role", None)
+    if org_role and approver is not None:
+        from ..permission_matrix import org_gate_approver
+
+        approver = org_gate_approver(approver, org_role)
     engine = build_engine(
-        agent=get_agent(agent),
+        agent=agent_obj,
         workspace=ws,
         model=model,
         mode=Mode.INTERACTIVE,
@@ -194,7 +203,14 @@ def build_executor_engine(
         usage_sink=usage_sink,
     )
     # Reinforce the single-task execution contract on top of the persona prompt.
-    engine.messages.insert(0, {"role": "system", "content": EXECUTOR_INSTRUCTIONS})
+    instructions = EXECUTOR_INSTRUCTIONS
+    if org_role:
+        from ..permission_matrix import role_capability_brief
+
+        brief = role_capability_brief(org_role)
+        if brief:
+            instructions = instructions + "\n\n" + brief
+    engine.messages.insert(0, {"role": "system", "content": instructions})
     return engine
 
 

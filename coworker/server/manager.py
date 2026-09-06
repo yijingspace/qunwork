@@ -131,7 +131,7 @@ def _approval_body(request) -> str:
 
 
 # P2: re-export for inline use in inbox_compliance_view
-from ..permission_matrix import annotate_compliance  # noqa: E402
+from ..permission_matrix import annotate_compliance, org_gate_approver  # noqa: E402
 
 
 class SessionManager:
@@ -669,7 +669,12 @@ class SessionManager:
             # Background / self-wake / durable-resume runs have no live socket → default to the
             # Inbox-based callbacks so a rebuilt engine can still get approvals/answers (and, on
             # resume, the already-resolved item returns immediately).
-            approver=approver or self.inbox_approver(session_id, agent),
+            # 方案B: persona 声明 org_role → 组织门禁包在审批链前面 (现状不变=无 org_role)。
+            approver=(
+                org_gate_approver(approver or self.inbox_approver(session_id, agent), ag.org_role)
+                if getattr(ag, "org_role", None)
+                else approver or self.inbox_approver(session_id, agent)
+            ),
             directory_requester=directory_requester
             or self.inbox_directory_requester(session_id, agent),
             plan_approver=plan_approver or self.inbox_plan_approver(session_id, agent),
@@ -3044,7 +3049,11 @@ class SessionManager:
             workspace=ws,
             model=task.model or self.model,
             mode=mode,
-            approver=self._scheduled_approver(task, session_id),
+            approver=(
+                org_gate_approver(self._scheduled_approver(task, session_id), ag.org_role)
+                if getattr(ag, "org_role", None)
+                else self._scheduled_approver(task, session_id)
+            ),
             provider=self.provider,
             memory_store=self.memory_store,
             secrets=self.secrets,

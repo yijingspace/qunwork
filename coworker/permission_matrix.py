@@ -14,7 +14,10 @@
 
 from __future__ import annotations
 
-from typing import Optional
+import logging
+from typing import Any, Optional
+
+logger = logging.getLogger(__name__)
 
 # -- 资金分级 (方案建议) ------------------------------------------------------
 FUND_TIERS: list[tuple[float, str, str]] = [
@@ -270,3 +273,81 @@ def annotate_compliance(
         result["escalation"] = human_escalation_for(member_role or "")
 
     return result
+
+
+# -- 方案B: 角色即能力包 — 运行时组织门禁 (2026-09-06) -------------------------
+# 语义: 组织角色约束是**叠加**在现有审批兜底 (approver/PermissionEngine) 之上,
+# 不是替代 — 未映射工具不受 gate (读/搜索等操作照常), 已映射工具按矩阵硬拒,
+# 资金动作按分级审批硬拒 (超出角色权限 → DENY + 升级路径)。persona 声明
+# org_role 即受约束; 无 org_role / 未知角色 = 不 gate (现状行为)。
+
+def role_can_tool(role: str, tool_name: str) -> bool:
+    """组织角色可否调用该工具。未映射工具返回 True (不受组织约束)。
+    scope 变体视为持有该能力 (write_memory:business → 可写, 具体 scope 粒度
+    由 annotate_compliance 在审批卡标注; 门禁先按能力级粗粒度执行)。"""
+    cap = _TOOL_CAPABILITY.get(tool_name)
+    if cap is None:
+        return True
+    caps = MATRIX.get(normalize_role(role), set())
+    return cap in caps or any(c.startswith(f"{cap}:") for c in caps)
+
+
+def org_gate(role: str, tool_name: str, arguments: Optional[dict]) -> tuple[bool, str]:
+    """运行时组织门禁: 角色 + 工具 (+ 金额) → (allowed, deny_reason)。"""
+    norm = normalize_role(str(role or ""))
+    if not norm or norm not in MATRIX:
+        return True, ""
+    if not role_can_tool(norm, tool_name):
+        cap = _TOOL_CAPABILITY.get(tool_name)
+        label = ROLE_REGISTRY.get(norm, {}).get("label", norm)
+        esc = human_escalation_for(norm) or ""
+        return False, (
+            f"组织角色「{label}」未获授权执行 {tool_name} (需要能力: {cap}); "
+            f"越权已拦截, 升级路径: {esc}"
+        )
+    amount = detect_amount(arguments)
+    if amount is not None and amount > 0:
+        verdict = fund_approval(norm, amount)
+        if not verdict["allowed"]:
+            label = ROLE_REGISTRY.get(norm, {}).get("label", norm)
+            return False, (
+                f"金额 ¥{amount:,.0f} 超出组织角色「{label}」的审批权限 "
+                f"(需 {verdict['tier_label']} 级审批); 升级路径: {verdict.get('escalation', '')}"
+            )
+    return True, ""
+
+
+def role_capability_brief(role: str) -> str:
+    """组织角色能力包 (中文行为契约) — 注入 executor/会话 system 段。"""
+    norm = normalize_role(str(role or ""))
+    meta = ROLE_REGISTRY.get(norm)
+    if not meta:
+        return ""
+    caps = sorted(MATRIX.get(norm, set()))
+    return (
+        f"【组织角色能力包】你在本组织中的角色: {meta['label']} (org_role={norm})"
+        f" — {meta['description']}。\n"
+        f"授权能力: {', '.join(caps) if caps else '(无)'}。\n"
+        "未授权的操作 (越权写入/命令执行/超出角色额度的资金动作) 会被组织门禁直接拦截并转人工"
+        " — 不要尝试绕过; 判断需要越权时, 停下并把决策交给人类审批。"
+    )
+
+
+def org_gate_approver(inner: Any, role: str) -> Any:
+    """包装既有 approver: 组织门禁先行, 放行后进原审批链 (人兜底不变)。
+    role 为空/未知 → 原样返回 inner (零行为变化)。"""
+    norm = normalize_role(str(role or ""))
+    if not norm or norm not in MATRIX:
+        return inner
+
+    async def gated(request: Any) -> Any:
+        from .engine import ApprovalOutcome
+
+        allowed, reason = org_gate(norm, request.tool_name, request.arguments)
+        if not allowed:
+            logger.info("org gate deny (%s): %s", norm, reason)
+            request.reason = reason
+            return ApprovalOutcome.DENY
+        return await inner(request)
+
+    return gated

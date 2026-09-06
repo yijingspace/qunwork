@@ -39,6 +39,9 @@ class Agent:
     family: str = "knowledge"
     messaging: bool = False
     connectors: bool = False
+    # 方案B 角色即能力包: persona manifest 声明的组织角色
+    # (permission_matrix.ROLE_REGISTRY 规范名); None = 不受组织门禁约束。
+    org_role: Optional[str] = None
 
     def build_tools(self, context: AgentContext) -> list:
         return list(self.tool_factory(context)) if self.tool_factory else []
