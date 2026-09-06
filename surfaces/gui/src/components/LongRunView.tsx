@@ -48,6 +48,7 @@ import {
   type WeekCompare,
 } from "../api";
 import { useT } from "../i18n";
+import { OirLongrunPanel } from "./OirLongrunPanel";
 
 function fmtBytes(n: number): string {
   if (n >= 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`;
@@ -1533,6 +1534,10 @@ export function LongRunView({ onBack }: { onBack: () => void }) {
             <div className="mt-3 border-t border-line pt-3">
               <TrendCharts telemetry={telemetry} />
             </div>
+          </Card>
+
+          <Card title={t("OIR longrun — shared 7×24 horizon task (handshake consumer)")}>
+            <OirLongrunPanel />
           </Card>
 
           <Card title={t("Checkpoints — session checkpoint chains")}>

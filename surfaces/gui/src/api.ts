@@ -1475,6 +1475,56 @@ export async function getLongrunHealth(): Promise<LongrunHealth> {
   return await res.json();
 }
 
+// ── OIR longrun 集成（握手任务配置/状态，经 QunWork 7×24 tick 驱动）──
+
+export interface OirLongrunConfig {
+  enabled: boolean;
+  doc_dir: string;
+  glob: string;
+  batch: number;
+  goal_id: string | null;
+}
+
+export interface OirLongrunRemoteTask {
+  goal_id?: string;
+  oir_task_id?: string;
+  phase?: string;
+  completed_documents?: number;
+  total_documents?: number;
+  progress_percent?: number;
+}
+
+export interface OirLongrunTelemetrySnapshot {
+  generated_at?: string;
+  source?: string;
+  task?: OirLongrunRemoteTask;
+  trend?: { days?: Record<string, unknown> } | null;
+  growth_report?: { direction?: string; note?: string } | null;
+  telemetry_file?: string;
+}
+
+export async function getOirLongrunConfig(): Promise<OirLongrunConfig> {
+  const res = await apiFetch(`${httpBase()}/v1/7x24/oir-longrun`);
+  return await res.json();
+}
+
+export async function setOirLongrunConfig(
+  patch: Partial<OirLongrunConfig>,
+): Promise<OirLongrunConfig> {
+  const res = await fetch(`${httpBase()}/v1/7x24/oir-longrun`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(patch),
+  });
+  if (!res.ok) throw new ApiError(res.status, "/v1/7x24/oir-longrun");
+  return await res.json();
+}
+
+export async function getOirLongrunTelemetry(): Promise<OirLongrunTelemetrySnapshot> {
+  const res = await apiFetch(`${httpBase()}/v1/7x24/oir-longrun/telemetry`);
+  return await res.json();
+}
+
 export async function getLongrunTelemetry(limit = 20): Promise<LongrunTelemetry> {
   const res = await apiFetch(`${httpBase()}/v1/7x24/telemetry?limit=${limit}`);
   return await res.json();

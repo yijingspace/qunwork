@@ -181,6 +181,29 @@ const CHANNELS = {
   },
 };
 
+const OIR_CONFIG = {
+  enabled: false,
+  doc_dir: "研究文档",
+  glob: "*.md",
+  batch: 3,
+  goal_id: null,
+};
+
+const OIR_TELEMETRY = {
+  generated_at: "2026-09-06T09:00:00Z",
+  source: "oir_bridge",
+  task: {
+    goal_id: "g-oir-index-growth",
+    oir_task_id: "oir-42",
+    phase: "indexing",
+    completed_documents: 2,
+    total_documents: 5,
+    progress_percent: 40,
+  },
+  trend: { days: { "2026-09-05": {}, "2026-09-06": {} } },
+  growth_report: { direction: "growing", note: "2 day buckets" },
+};
+
 function stubFetch(routes: { match: string | RegExp; method?: string; json: unknown }[]) {
   const calls: { url: string; method: string; body?: unknown }[] = [];
   vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -225,6 +248,12 @@ function stubFetch(routes: { match: string | RegExp; method?: string; json: unkn
       if (path.endsWith("/v1/7x24/channel-health/export")) {
         return { ok: true, status: 200, text: async () => "id,channel,ok,ms,error,ts\n", json: async () => "{}" } as Response;
       }
+      if (path.endsWith("/v1/7x24/oir-longrun")) {
+        return { ok: true, status: 200, json: async () => OIR_CONFIG, text: async () => JSON.stringify(OIR_CONFIG) } as Response;
+      }
+      if (path.endsWith("/v1/7x24/oir-longrun/telemetry")) {
+        return { ok: true, status: 200, json: async () => OIR_TELEMETRY, text: async () => JSON.stringify(OIR_TELEMETRY) } as Response;
+      }
       return { ok: false, status: 404, json: async () => ({ error: "not found" }), text: async () => "not found" } as Response;
     }
     return {
@@ -265,6 +294,40 @@ describe("LongRunView", () => {
     // 存储面板: 会话数/大小。
     expect(screen.getByText("2.4 MB")).toBeTruthy();
     expect(screen.getByText("7")).toBeTruthy();
+  });
+
+  it("renders OIR longrun panel and saves shared-task config", async () => {
+    const calls = stubFetch([
+      { match: "/v1/7x24/checkpoints", json: CHECKPOINTS },
+      { match: "/v1/7x24/health", json: HEALTH },
+      { match: "/v1/7x24/telemetry", json: TELEMETRY },
+      { match: "/v1/7x24/storage", json: STORAGE },
+      { match: "/v1/7x24/alerts", json: EMPTY_ALERTS },
+      {
+        match: "/v1/7x24/oir-longrun",
+        method: "PUT",
+        json: { ...OIR_CONFIG, enabled: true, goal_id: "g-oir-index-growth" },
+      },
+    ]);
+    render(<LongRunView onBack={() => {}} />);
+
+    // 配置回读: 默认 disabled, 遥测任务状态经 /telemetry 回显。
+    await waitFor(() => expect(screen.getByTestId("oir-longrun-enabled")).toBeTruthy());
+    expect((screen.getByTestId("oir-longrun-enabled") as HTMLInputElement).checked).toBe(false);
+    await waitFor(() => expect(screen.getByTestId("oir-longrun-phase").textContent).toBe("indexing"));
+    expect(screen.getByText(/2\/5/)).toBeTruthy();
+    expect(screen.getByText("growing")).toBeTruthy();
+
+    // 开启共享任务并保存 → PUT /v1/7x24/oir-longrun。
+    fireEvent.click(screen.getByTestId("oir-longrun-enabled"));
+    fireEvent.click(screen.getByTestId("oir-longrun-save"));
+    await waitFor(() =>
+      expect((screen.getByTestId("oir-longrun-enabled") as HTMLInputElement).checked).toBe(true),
+    );
+    const put = calls.find((c) => c.method === "PUT" && c.url.includes("/v1/7x24/oir-longrun"));
+    expect(put).toBeTruthy();
+    expect(put!.body).toContain('"enabled":true');
+    await waitFor(() => expect(screen.getByText(/g-oir-index-growth/)).toBeTruthy());
   });
 
   it("shows checkpoint chain when a session is selected", async () => {
