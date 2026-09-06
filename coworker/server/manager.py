@@ -354,6 +354,14 @@ class SessionManager:
             author="local",
             knowledge_upsert=self._sync_knowledge_upsert,
         )
+        # 方案D: org gate 拦截事件 (permission_matrix 纯模块不知道持久层)
+        # 经 sink 回落到治理审计日志。
+        from ..permission_matrix import register_audit_sink
+
+        def _gate_audit_sink(action: str, actor: str, target: str, detail: dict) -> None:
+            self.team_store.append_audit(action, actor=actor, target=target, detail=detail)
+
+        register_audit_sink(_gate_audit_sink)
         # G2 command deck: run_id → live control channel while a swarm run is active
         # (paused flag, operator messages, pending requeue approvals).
         self.active_orchestration_controls: dict[str, Any] = {}
@@ -4647,11 +4655,18 @@ class SessionManager:
                 "name": name,
                 "label": meta["label"],
                 "description": meta["description"],
-                "capabilities": sorted(MATRIX.get(name, set())),
+                "capabilities": sorted(self._effective_role_caps(name)),
             }
             for name, meta in sorted(ROLE_REGISTRY.items())
         ]
         return {"ok": True, "roles": roles, "aliases": dict(sorted(_ROLE_ALIASES.items()))}
+
+    @staticmethod
+    def _effective_role_caps(role: str) -> set:
+        """方案D: 角色能力展示与实际门禁同源 — 生效矩阵 (base+覆盖)。"""
+        from ..permission_matrix import role_caps
+
+        return role_caps(role)
 
     def skill_promote(self, name: str) -> dict[str, Any]:
         """涌现草稿转正 (P1-8 补全): draft: false + tags 去 draft + description
@@ -5293,6 +5308,7 @@ class SessionManager:
             role=m["role"],
             invited_by=team.get("my_member_id") or "",
         )
+        self._audit("member.invited", m["id"], {"name": m["name"], "role": m["role"]})
         return {
             "ok": True,
             "invite_code": code,
@@ -5347,6 +5363,7 @@ class SessionManager:
             "member", m["id"], "upsert", m, author="local"
         )
         first_sync = await self.team_sync.run()  # 网络失败不致命: outbox 已落盘可重试
+        self._audit("member.joined", m["id"], {"role": m["role"], "team": team["name"]})
         return {
             "ok": True,
             "member_id": m["id"],
@@ -5543,13 +5560,29 @@ class SessionManager:
 
     def add_member(self, name: str, role: str = "worker", persona_id=None):
         self.team_store.ensure_team()
-        return self.team_store.add_member(name, role=role, persona_id=persona_id)
+        m = self.team_store.add_member(name, role=role, persona_id=persona_id)
+        self._audit("member.add", str(m.get("id") or ""), {"name": name, "role": m.get("role", role)})
+        return m
 
     def update_member(self, member_id: str, **fields):
-        return {"ok": bool(self.team_store.update_member(member_id, **fields))}
+        ok = bool(self.team_store.update_member(member_id, **fields))
+        if ok:
+            self._audit("member.update", member_id, dict(fields))
+        return {"ok": ok}
 
     def remove_member(self, member_id: str):
-        return {"ok": bool(self.team_store.remove_member(member_id))}
+        ok = bool(self.team_store.remove_member(member_id))
+        if ok:
+            self._audit("member.remove", member_id)
+        return {"ok": ok}
+
+    def _audit(self, action: str, target: str, detail: Optional[dict] = None) -> None:
+        """治理审计: actor = 本机身份成员 id (未加入团队时 system)。"""
+        try:
+            actor = (self.team_store.get_team() or {}).get("my_member_id") or "system"
+            self.team_store.append_audit(action, actor=str(actor), target=str(target), detail=detail or {})
+        except Exception:
+            logger.exception("audit write failed: %s", action)
 
     def list_team_agents(self) -> list[dict]:
         """GET /v1/team/agents. Returns BOTH the live in-memory pool + the
@@ -5647,16 +5680,34 @@ class SessionManager:
             "items": items,
         }
 
-    # -- P0 增量3: 组织级权限矩阵 ---------------------------------------------
-    def permission_matrix_view(self) -> dict[str, Any]:
-        """The org permission matrix (角色×能力) + fund tiers — read-only view
-        for the human console. Capabilities are sets, sorted for stable JSON."""
-        from ..permission_matrix import FUND_TIERS, HUMAN_ESCALATION, MATRIX
+    # -- P0 增量3: 组织级权限矩阵 + 方案D 治理 ----------------------------------
+    @staticmethod
+    def _coverage_grid(effective: dict) -> dict:
+        """cell 语义 = **覆盖**: 角色持有 cap 本身或任一 cap:scope 变体即 allowed。
+        行 = 全部 base 能力名 (去 scope)。否则 worker 的 write_memory 格会在
+        实际可写时显示 ❌ — 误导编辑决策。"""
+        caps = sorted({c.split(":", 1)[0] for role_caps_ in effective.values() for c in role_caps_})
+        grid = {}
+        for role, held in effective.items():
+            cells = {}
+            for cap in caps:
+                variants = sorted(c for c in held if c == cap or c.startswith(cap + ":"))
+                cells[cap] = {"allowed": bool(variants)}
+                if variants and variants[0] != cap:
+                    cells[cap]["scope"] = variants[0].split(":", 1)[1]
+            grid[role] = cells
+        return {"capabilities": caps, "roles": grid}
 
+    def permission_matrix_view(self) -> dict[str, Any]:
+        """The org permission matrix (角色×能力) + fund tiers — 方案D 起展示
+        **生效矩阵** (代码底 + 组织覆盖) 并附覆盖层原貌。"""
+        from ..permission_matrix import FUND_TIERS, HUMAN_ESCALATION, MATRIX, effective_matrix
+
+        eff = effective_matrix()
         return {
-            "matrix": {
-                role: sorted(caps) for role, caps in sorted(MATRIX.items())
-            },
+            "matrix": {role: sorted(caps) for role, caps in sorted(eff.items())},
+            "base_matrix": {role: sorted(caps) for role, caps in sorted(MATRIX.items())},
+            "overrides": self.team_store.get_matrix_overrides(),
             "fund_tiers": [
                 {"limit": limit, "role": role, "label": label}
                 for limit, role, label in FUND_TIERS
@@ -5664,15 +5715,62 @@ class SessionManager:
             "human_escalation": dict(sorted(HUMAN_ESCALATION.items())),
         }
 
-    def team_permissions_view(self) -> dict[str, Any]:
-        """GET /v1/team/permissions — the shape the PermissionsView page renders:
-        `roles` (capability → cell) + `thresholds` (fund tiers as ranges)."""
-        from ..permission_matrix import FUND_TIERS, MATRIX
+    def team_matrix_update(self, role: str, capability: str, grant: bool) -> dict[str, Any]:
+        """单格编辑 (组织级): toggle 角色×能力 → 覆盖层落库 + outbox 登记
+        (随 P2P 通道传播全团队) + 治理审计。MVP 信任本机操作者; 跨节点
+        角色级管控 (谁能改矩阵) 归入后续治理迭代。"""
+        import re
 
-        roles = {
-            role: {cap: {"allowed": True} for cap in sorted(caps)}
-            for role, caps in sorted(MATRIX.items())
+        from ..permission_matrix import ROLE_REGISTRY, normalize_role
+
+        _cap_re = re.compile(r"^[a-z][a-z0-9_]*(?::[a-z0-9_]+)?$")
+        norm = normalize_role(str(role))
+        if norm not in ROLE_REGISTRY:
+            return {"ok": False, "error": f"unknown role {role!r}"}
+        cap = str(capability or "").strip()
+        if not _cap_re.match(cap):
+            return {"ok": False, "error": f"invalid capability name: {capability!r}"}
+        actor = (self.team_store.get_team() or {}).get("my_member_id") or "system"
+        result = self.team_store.toggle_matrix_capability(norm, cap, bool(grant), by=str(actor))
+        if result is None:
+            return {"ok": False, "error": f"role not settable: {role!r}"}
+        # 确定性 change_id: 同 (role, ts) 只生成一条变更, collect 不重复。
+        self.team_store.record_sync_change(
+            "matrix", norm, "upsert",
+            {"role": norm, "add": result["add"], "remove": result["remove"],
+             "ts": result["ts"], "by": str(actor)},
+            author="local", change_id=f"matrix:{norm}:{result['ts']:.3f}", ts=result["ts"],
+        )
+        self._audit("matrix.grant" if grant else "matrix.revoke", norm,
+                    {"capability": cap, "add": result["add"], "remove": result["remove"]})
+        return {"ok": True, "role": norm, "override": result}
+
+    def team_matrix_reset(self, role: str) -> dict[str, Any]:
+        """清除单角色覆盖 (回归代码默认矩阵), 变更同步传播。"""
+        from ..permission_matrix import normalize_role
+
+        norm = normalize_role(str(role))
+        changed = self.team_store.reset_matrix_override(norm, by=str(
+            (self.team_store.get_team() or {}).get("my_member_id") or "system"))
+        if changed:
+            self._audit("matrix.reset", norm)
+        return {"ok": True, "role": norm, "reset": changed}
+
+    def team_audit_view(self, *, limit: int = 100, before_seq: int = 0,
+                        action: Optional[str] = None, target: Optional[str] = None) -> dict[str, Any]:
+        """GET /v1/team/audit — 治理事件流 (矩阵变更/成员生命周期/门禁拦截)。"""
+        return {
+            "events": self.team_store.query_audit(
+                limit=limit, before_seq=before_seq, action=action, target=target
+            )
         }
+
+    def team_permissions_view(self) -> dict[str, Any]:
+        """GET /v1/team/members.../permissions — PermissionsView 页形状:
+        覆盖网格 (生效矩阵) + thresholds + 覆盖层原貌 (override 角标)。"""
+        from ..permission_matrix import FUND_TIERS, effective_matrix
+
+        grid = self._coverage_grid(effective_matrix())
         thresholds = []
         prev = 0.0
         for limit, role, _label in FUND_TIERS:
@@ -5687,7 +5785,11 @@ class SessionManager:
                 }
             )
             prev = limit
-        return {"roles": roles, "thresholds": thresholds}
+        return {
+            **grid,
+            "thresholds": thresholds,
+            "overrides": self.team_store.get_matrix_overrides(),
+        }
 
     def hornet_stats(self) -> dict:
         return {

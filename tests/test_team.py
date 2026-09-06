@@ -243,7 +243,12 @@ def test_api_team_permissions_shape(tmp_path, monkeypatch):
     d = client.get("/v1/team/permissions").json()
     assert "chairman" in d["roles"] and "worker" in d["roles"]
     assert d["roles"]["chairman"]["project_group"]["allowed"] is True
-    assert d["roles"]["worker"].get("issue_commands") is None  # fail-closed
+    # 方案D 覆盖网格: 每角色全能力显式格 — fail-closed 从"缺格"变显式 False,
+    # worker 的 write_memory 以 scope 变体覆盖显示 (business)。
+    assert d["roles"]["worker"]["issue_commands"]["allowed"] is False
+    assert d["roles"]["worker"]["write_memory"]["allowed"] is True
+    assert d["roles"]["worker"]["write_memory"]["scope"] == "business"
+    assert "write_memory" in d["capabilities"]
     t = d["thresholds"]
     assert [x["approver_role"] for x in t] == ["general_manager", "chairman", "board_human"]
     assert t[0]["max_amount"] == 5000 and t[2]["require_human"] is True

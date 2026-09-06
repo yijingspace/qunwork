@@ -81,6 +81,102 @@ def normalize_role(role: str) -> str:
     return _ROLE_ALIASES.get(str(role), str(role))
 
 
+# -- 方案D: 组织级可编辑覆盖层 (运行时生效, 代码矩阵只作默认底) -----------------
+# 方向纪律: permission_matrix 是叶子模块, 不 import team store —
+# TeamStore 初始化时注册 provider (函数注入)。override 形状:
+#   {role: {"add": [cap…], "remove": [cap…], "ts": float, "by": str}}
+# remove 支持能力前缀: remove "write_memory" 同时移除 "write_memory:business"。
+_matrix_override_provider: Optional[Any] = None  # Callable[[], dict] | None
+_audit_sink: Optional[Any] = None  # Callable[[str, str, str, dict], None] | None
+
+
+def register_matrix_provider(fn: Optional[Any]) -> None:
+    """TeamStore (或其它持久层) 注册矩阵覆盖提供者; None 注销 (测试隔离)。"""
+    global _matrix_override_provider
+    _matrix_override_provider = fn
+
+
+def register_audit_sink(fn: Optional[Any]) -> None:
+    """注册治理审计落点 (manager 启动时接 TeamStore.append_audit); None 注销。"""
+    global _audit_sink
+    _audit_sink = fn
+
+
+def _emit_audit(action: str, target: str, detail: dict, actor: str = "system") -> None:
+    if _audit_sink is None:
+        return
+    try:
+        _audit_sink(action, actor, target, dict(detail))
+    except Exception:  # 审计失败绝不反伤主流程
+        logger.exception("audit sink failed for %s", action)
+
+
+def _cap_covers(specific: str, general: str) -> bool:
+    """specific 是否落在 general 之下 (exact 或 scope 变体): write_memory:log
+    被 write_memory 覆盖。remove/has 判定统一用这个方向。"""
+    return specific == general or specific.startswith(general + ":")
+
+
+def _cap_covered_by(held: str, entries) -> bool:
+    """held 能力是否被某条 remove/add 记录覆盖 (记录更粗或同名)。"""
+    return any(_cap_covers(held, str(e)) for e in entries)
+
+
+def get_matrix_overrides() -> dict:
+    if _matrix_override_provider is None:
+        return {}
+    try:
+        ov = _matrix_override_provider()
+        return ov if isinstance(ov, dict) else {}
+    except Exception:
+        logger.exception("matrix override provider failed — fail-closed 到代码底矩阵")
+        return {}
+
+
+def effective_matrix(overrides: Optional[dict] = None) -> dict[str, set[str]]:
+    """代码底矩阵 + 组织覆盖层 → 运行时生效矩阵。"""
+    ov = get_matrix_overrides() if overrides is None else overrides
+    out = {role: set(caps) for role, caps in MATRIX.items()}
+    for role, entry in (ov or {}).items():
+        if not isinstance(entry, dict):
+            continue
+        caps = out.setdefault(role, set())
+        for rm in entry.get("remove") or ():
+            caps = {c for c in caps if not _cap_covers(str(c), str(rm))}
+        for add in entry.get("add") or ():
+            caps.add(str(add))
+        out[role] = caps
+    return out
+
+
+def role_caps(role: str, overrides: Optional[dict] = None) -> set[str]:
+    return effective_matrix(overrides).get(normalize_role(role), set())
+
+
+def compute_override_toggle(
+    base_caps: set[str], current: dict, cap: str, grant: bool
+) -> tuple[list[str], list[str]]:
+    """GUI 单格 toggle → 该 role 新的 (add, remove) 列表 (幂等: 目标态已达成
+    则返回原列表)。base 矩阵是底, override 只记增量 — base 已提供的不再 add。"""
+    add = [str(x) for x in (current or {}).get("add") or ()]
+    remove = [str(x) for x in (current or {}).get("remove") or ()]
+    effective = set(base_caps)
+    for rm in remove:
+        effective = {c for c in effective if not _cap_covers(c, rm)}
+    effective |= set(add)
+    base_has = any(_cap_covers(c, cap) for c in base_caps)
+    has = any(_cap_covers(c, cap) for c in effective)
+    if grant and not has:
+        remove = [r for r in remove if not _cap_covers(cap, r)]
+        if not base_has and not any(_cap_covers(cap, a) for a in add):
+            add.append(cap)
+    elif not grant and has:
+        add = [a for a in add if not _cap_covers(cap, a)]
+        if base_has and not any(_cap_covers(cap, r) for r in remove):
+            remove.append(cap)
+    return add, remove
+
+
 # -- 角色注册表 (2026-09-06 方案A: 单一角色定义源) -----------------------------
 # team 校验 / 权限矩阵 / GUI 下拉三方共用, 不再各自硬编码词汇表。
 ROLE_REGISTRY: dict[str, dict] = {
@@ -147,8 +243,9 @@ HUMAN_ESCALATION: dict[str, str] = {
 
 def can(role: str, capability: str) -> bool:
     """Role may exercise `capability`? Capabilities not declared = denied.
-    历史别名 (gm) 自动规范化 — 存量数据迁移前后的行为一致。"""
-    return capability in MATRIX.get(normalize_role(role), set())
+    历史别名 (gm) 自动规范化 — 存量数据迁移前后的行为一致。
+    方案D: 读**生效矩阵** (代码底 + 组织覆盖层)。"""
+    return capability in role_caps(role)
 
 
 def fund_approval(role: str, amount: float) -> dict:
@@ -288,32 +385,39 @@ def role_can_tool(role: str, tool_name: str) -> bool:
     cap = _TOOL_CAPABILITY.get(tool_name)
     if cap is None:
         return True
-    caps = MATRIX.get(normalize_role(role), set())
+    caps = role_caps(role)  # 方案D: 生效矩阵 (base + 组织覆盖层)
     return cap in caps or any(c.startswith(f"{cap}:") for c in caps)
 
 
 def org_gate(role: str, tool_name: str, arguments: Optional[dict]) -> tuple[bool, str]:
     """运行时组织门禁: 角色 + 工具 (+ 金额) → (allowed, deny_reason)。"""
     norm = normalize_role(str(role or ""))
-    if not norm or norm not in MATRIX:
+    if norm not in effective_matrix():
         return True, ""
     if not role_can_tool(norm, tool_name):
         cap = _TOOL_CAPABILITY.get(tool_name)
         label = ROLE_REGISTRY.get(norm, {}).get("label", norm)
         esc = human_escalation_for(norm) or ""
-        return False, (
+        reason = (
             f"组织角色「{label}」未获授权执行 {tool_name} (需要能力: {cap}); "
             f"越权已拦截, 升级路径: {esc}"
         )
+        _emit_audit("org_gate.deny", norm, {"tool": tool_name, "reason": reason})
+        return False, reason
     amount = detect_amount(arguments)
     if amount is not None and amount > 0:
         verdict = fund_approval(norm, amount)
         if not verdict["allowed"]:
             label = ROLE_REGISTRY.get(norm, {}).get("label", norm)
-            return False, (
+            reason = (
                 f"金额 ¥{amount:,.0f} 超出组织角色「{label}」的审批权限 "
                 f"(需 {verdict['tier_label']} 级审批); 升级路径: {verdict.get('escalation', '')}"
             )
+            _emit_audit(
+                "org_gate.fund_deny", norm,
+                {"tool": tool_name, "amount": amount, "reason": reason},
+            )
+            return False, reason
     return True, ""
 
 
@@ -323,7 +427,7 @@ def role_capability_brief(role: str) -> str:
     meta = ROLE_REGISTRY.get(norm)
     if not meta:
         return ""
-    caps = sorted(MATRIX.get(norm, set()))
+    caps = sorted(role_caps(norm))  # 方案D: 契约文案与实际门禁同源 (生效矩阵)
     return (
         f"【组织角色能力包】你在本组织中的角色: {meta['label']} (org_role={norm})"
         f" — {meta['description']}。\n"
@@ -337,7 +441,7 @@ def org_gate_approver(inner: Any, role: str) -> Any:
     """包装既有 approver: 组织门禁先行, 放行后进原审批链 (人兜底不变)。
     role 为空/未知 → 原样返回 inner (零行为变化)。"""
     norm = normalize_role(str(role or ""))
-    if not norm or norm not in MATRIX:
+    if norm not in effective_matrix():
         return inner
 
     async def gated(request: Any) -> Any:

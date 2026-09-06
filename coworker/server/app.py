@@ -1906,6 +1906,29 @@ def create_app(manager: SessionManager) -> FastAPI:
         """PermissionMatrix shape for the PermissionsView page (roles + thresholds)."""
         return manager.team_permissions_view()
 
+    # -- 方案D: 矩阵可编辑 + 治理审计 ------------------------------------------
+    @app.put("/v1/team/matrix/{role}")
+    def team_matrix_update(role: str, body: dict) -> dict[str, Any]:
+        """单格编辑角色×能力 (组织级覆盖, 随 P2P 同步全团队 + 落审计)。"""
+        return manager.team_matrix_update(
+            role,
+            str((body or {}).get("capability") or ""),
+            bool((body or {}).get("grant")),
+        )
+
+    @app.delete("/v1/team/matrix/{role}")
+    def team_matrix_reset(role: str) -> dict[str, Any]:
+        """清除该角色的组织覆盖, 回归代码默认矩阵。"""
+        return manager.team_matrix_reset(role)
+
+    @app.get("/v1/team/audit")
+    def team_audit(limit: int = 100, before_seq: int = 0, action: str = "", target: str = "") -> dict[str, Any]:
+        """治理审计事件流 (矩阵变更/成员生命周期/门禁拦截)。"""
+        return manager.team_audit_view(
+            limit=limit, before_seq=before_seq,
+            action=action or None, target=target or None,
+        )
+
     @app.get("/v1/team/roles")
     def team_roles() -> dict[str, Any]:
         """单一角色注册表 (方案A): 团队校验/权限矩阵/GUI 下拉共用此定义。"""

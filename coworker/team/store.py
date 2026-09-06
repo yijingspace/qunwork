@@ -59,6 +59,12 @@ class TeamStore:
         self._db = sqlite3.connect(str(self._path), check_same_thread=False)
         self._db.execute("PRAGMA foreign_keys = ON")
         self._init_schema()
+        # 方案D: 把本 store 的矩阵覆盖层挂进 permission_matrix 生效路径
+        # (provider 注入, 无反向依赖)。生产为单 store; 多实例最后注册者
+        # 生效 — 测试直接断言 store 方法, 不依赖全局路径。
+        from ..permission_matrix import register_matrix_provider
+
+        register_matrix_provider(self.get_matrix_overrides)
 
     # ── schema --------------------------------------------------------------
     def _init_schema(self) -> None:
@@ -132,6 +138,21 @@ class TeamStore:
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL
                 )"""
+            )
+            # 方案D 治理审计日志: 谁(角色/成员)在何时对什么做了什么。
+            # 矩阵变更/成员生命周期/org gate 拦截都落这里 (方案E 时间线数据源)。
+            self._db.execute(
+                """CREATE TABLE IF NOT EXISTS audit_log (
+                    seq INTEGER PRIMARY KEY AUTOINCREMENT,
+                    ts REAL NOT NULL,
+                    actor TEXT NOT NULL,
+                    action TEXT NOT NULL,
+                    target TEXT NOT NULL,
+                    detail TEXT NOT NULL DEFAULT '{}'
+                )"""
+            )
+            self._db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_audit_action ON audit_log(action, seq)"
             )
             # 2026-09-06 方案A 数据迁移: 历史角色别名 gm → general_manager
             # (幂等 — 旧值不存在时 0 行更新)。同版本代码在对端节点执行同样
@@ -538,6 +559,132 @@ class TeamStore:
                 (key, value),
             )
             self._db.commit()
+
+    # ── 方案D: 矩阵覆盖层 (组织可编辑, 经 sync 通道跨节点一致) ----------------
+    _MATRIX_OV_KEY = "matrix_overrides"
+
+    def get_matrix_overrides(self) -> dict:
+        """{role: {"add":[…],"remove":[…],"ts":float,"by":str}} — 无覆盖 = {}。"""
+        raw = self.sync_config_get(self._MATRIX_OV_KEY)
+        data = _json_loads(raw, {})
+        return data if isinstance(data, dict) else {}
+
+    def set_matrix_overrides(
+        self, role: str, *, add: list, remove: list,
+        ts: Optional[float] = None, by: str = "", if_newer: bool = False,
+    ) -> bool:
+        """写一个角色的覆盖。if_newer=True 用于 sync ingest LWW: 现有版本
+        ts ≥ 新 ts 则跳过。role 必须 ∈ ROLE_REGISTRY (fail-closed)。"""
+        role = normalize_role(str(role))
+        if role not in _VALID_MEMBER_ROLES:
+            raise ValueError(f"invalid matrix role: {role}")
+        with self._lock:
+            ov = self.get_matrix_overrides()
+            cur = ov.get(role) or {}
+            if if_newer and float(cur.get("ts") or 0) >= float(ts or 0):
+                return False
+            add = sorted({str(x) for x in add if str(x).strip()})
+            remove = sorted({str(x) for x in remove if str(x).strip()})
+            if not add and not remove:
+                ov.pop(role, None)  # 空覆盖 = 回归代码底矩阵
+            else:
+                ov[role] = {"add": add, "remove": remove, "ts": float(ts if ts is not None else _now()), "by": str(by)}
+            self.sync_config_set(self._MATRIX_OV_KEY, _json_dumps(ov))
+        return True
+
+    def toggle_matrix_capability(self, role: str, capability: str, grant: bool, *, by: str = "") -> Optional[dict]:
+        """GUI 单格编辑的落库动作。返回 {"add","remove"} 新覆盖 (None = 该角色
+        非法)。幂等: 目标态已达成时仍刷新 ts (让 sync 传播确定性)。"""
+        from ..permission_matrix import MATRIX, compute_override_toggle
+
+        role = normalize_role(str(role))
+        if role not in _VALID_MEMBER_ROLES:
+            return None
+        with self._lock:
+            ov = self.get_matrix_overrides()
+            add, remove = compute_override_toggle(
+                set(MATRIX.get(role, set())), ov.get(role) or {}, str(capability), grant
+            )
+        ts = _now()
+        self.set_matrix_overrides(role, add=add, remove=remove, ts=ts, by=by)
+        return {"add": add, "remove": remove, "ts": ts}
+
+    def reset_matrix_override(self, role: str, *, by: str = "") -> bool:
+        """清除单角色覆盖 (回归代码默认)。ts 前进 → sync 端 add/remove 皆空
+        会 pop role — 两端一致。"""
+        role = normalize_role(str(role))
+        with self._lock:
+            ov = self.get_matrix_overrides()
+            if role not in ov:
+                return False
+            ov.pop(role)
+            self.sync_config_set(self._MATRIX_OV_KEY, _json_dumps(ov))
+            # 重置也要可传播: 记一条空覆盖变更 (对端 set(if_newer) pop)。
+            # change_id 与 ts 必须同源 — 确定性 cid 防重复生成。
+            now = _now()
+            self.record_sync_change(
+                "matrix", role, "upsert",
+                {"role": role, "add": [], "remove": [], "ts": now, "by": str(by)},
+                author="local", change_id=f"matrix:{role}:{now:.3f}", ts=now,
+            )
+        return True
+
+    def has_sync_change(self, change_id: str) -> bool:
+        with self._lock:
+            return self._db.execute(
+                "SELECT 1 FROM sync_changes WHERE change_id=?", (change_id,)
+            ).fetchone() is not None
+
+    # ── 方案D: 治理审计日志 ----------------------------------------------------
+    def append_audit(self, action: str, actor: str = "system", target: str = "", detail: Optional[dict] = None) -> int:
+        """落一条治理事件。永不抛 (审计失败不能反伤主流程)。"""
+        try:
+            with self._lock:
+                cur = self._db.execute(
+                    "INSERT INTO audit_log(ts,actor,action,target,detail) VALUES (?,?,?,?,?)",
+                    (_now(), str(actor), str(action), str(target), _json_dumps(detail or {})),
+                )
+                self._db.commit()
+            return int(cur.lastrowid or 0)
+        except Exception:
+            import logging
+
+            logging.getLogger(__name__).exception("append_audit failed")
+            return 0
+
+    def query_audit(
+        self, *, limit: int = 100, before_seq: int = 0, action: Optional[str] = None, target: Optional[str] = None
+    ) -> list[dict]:
+        """倒序分页 (before_seq 游标)。action 支持 'org_gate.%' 前缀匹配。"""
+        sql = "SELECT seq,ts,actor,action,target,detail FROM audit_log"
+        conds: list[str] = []
+        vals: list[Any] = []
+        if before_seq:
+            conds.append("seq < ?")
+            vals.append(int(before_seq))
+        if action:
+            if action.endswith("%"):
+                conds.append("action LIKE ?")
+                vals.append(action)
+            else:
+                conds.append("action = ?")
+                vals.append(action)
+        if target:
+            conds.append("target = ?")
+            vals.append(str(target))
+        if conds:
+            sql += " WHERE " + " AND ".join(conds)
+        sql += " ORDER BY seq DESC LIMIT ?"
+        vals.append(max(1, min(int(limit), 1000)))
+        with self._lock:
+            rows = self._db.execute(sql, vals).fetchall()
+        return [
+            {
+                "seq": r[0], "ts": r[1], "actor": r[2], "action": r[3],
+                "target": r[4], "detail": _json_loads(r[5], {}),
+            }
+            for r in rows
+        ]
 
     def close(self) -> None:
         with self._lock:

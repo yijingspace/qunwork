@@ -305,6 +305,32 @@ class TeamSync:
                     "payload": g, "ts": ts, "author": self.author,
                 }
             )
+        # 方案D: 矩阵覆盖 = 组织级配置, 走同一加密通道传播。change_id 由
+        # (role, ts) 确定性派生 — 同一版本无论 collect 多少轮只生成一次,
+        # 新版本自然产生新变更; 对端 LWW 在 store.set_matrix_overrides 里做。
+        for role, entry in self.store.get_matrix_overrides().items():
+            ts = float(entry.get("ts") or 0)
+            cid = f"matrix:{role}:{ts:.3f}"
+            if not force and self.store.has_sync_change(cid):
+                continue
+            payload = {
+                "role": role,
+                "add": list(entry.get("add") or ()),
+                "remove": list(entry.get("remove") or ()),
+                "ts": ts,
+                "by": str(entry.get("by") or ""),
+            }
+            self.store.record_sync_change(
+                "matrix", role, "upsert", payload, author=self.author,
+                change_id=cid, ts=ts,
+            )
+            changes.append(
+                {
+                    "change_id": cid, "entity_type": "matrix",
+                    "entity_id": role, "op": "upsert",
+                    "payload": payload, "ts": ts, "author": self.author,
+                }
+            )
         return changes
 
     def pending(self) -> list[dict]:
@@ -446,6 +472,17 @@ class TeamSync:
                     st = payload.get("state")
                     if st in ("active", "reviewing", "dissolved"):
                         self.store.update_task_group_state(eid, st)
+            elif etype == "matrix":
+                # 方案D: ts-LWW 在 store 内 (if_newer), 旧版本自然被拒 —
+                # 空 add/remove 的 payload 会把该 role 覆盖 pop (回归代码底)。
+                self.store.set_matrix_overrides(
+                    str(payload.get("role") or eid),
+                    add=list(payload.get("add") or ()),
+                    remove=list(payload.get("remove") or ()),
+                    ts=float(payload.get("ts") or 0),
+                    by=str(payload.get("by") or ""),
+                    if_newer=True,
+                )
             elif etype == "knowledge" and self._knowledge_upsert is not None:
                 self._knowledge_upsert(payload)
         except Exception:

@@ -737,6 +737,42 @@ export async function listTeamRoles(): Promise<TeamRoleDef[]> {
   return data?.roles ?? [];
 }
 
+// -- 方案D: 矩阵治理 (可编辑矩阵 + 审计事件流) --------------------------------
+export async function setTeamMatrixCapability(
+  role: string,
+  capability: string,
+  grant: boolean,
+): Promise<{ ok: boolean; error?: string }> {
+  const res = await apiFetch(`${httpBase()}/v1/team/matrix/${encodeURIComponent(role)}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ capability, grant }),
+  });
+  return await res.json();
+}
+
+export async function resetTeamMatrix(
+  role: string,
+): Promise<{ ok: boolean; reset?: boolean; error?: string }> {
+  const res = await apiFetch(`${httpBase()}/v1/team/matrix/${encodeURIComponent(role)}`, {
+    method: "DELETE",
+  });
+  return await res.json();
+}
+
+export async function listTeamAudit(opts: {
+  limit?: number;
+  beforeSeq?: number;
+  action?: string;
+} = {}): Promise<{ events: AuditEvent[] }> {
+  const q = new URLSearchParams();
+  if (opts.limit) q.set("limit", String(opts.limit));
+  if (opts.beforeSeq) q.set("before_seq", String(opts.beforeSeq));
+  if (opts.action) q.set("action", opts.action);
+  const res = await apiFetch(`${httpBase()}/v1/team/audit?${q.toString()}`);
+  return await res.json();
+}
+
 export async function exportSkill(name: string): Promise<{ ok: boolean; zip_base64?: string; error?: string }> {
   const res = await apiFetch(`${httpBase()}/v1/skills/export`, {
     method: "POST",
@@ -3813,9 +3849,27 @@ export interface ApprovalThreshold {
   require_board: boolean;
 }
 
+export interface MatrixOverride {
+  add: string[];
+  remove: string[];
+  ts: number;
+  by: string;
+}
+
 export interface PermissionMatrix {
   roles: Record<string, Record<string, PermissionCell>>;
+  capabilities?: string[];
   thresholds: ApprovalThreshold[];
+  overrides?: Record<string, MatrixOverride>;
+}
+
+export interface AuditEvent {
+  seq: number;
+  ts: number;
+  actor: string;
+  action: string;
+  target: string;
+  detail: Record<string, unknown>;
 }
 
 export interface SyncStatus {

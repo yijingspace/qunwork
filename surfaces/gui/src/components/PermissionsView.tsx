@@ -5,24 +5,37 @@ import {
   getPermissions,
   getPermissionsHeatmap,
   getPersonaScopes,
+  listTeamAudit,
+  resetTeamMatrix,
+  setTeamMatrixCapability,
   setPersonaScopes,
+  type AuditEvent,
   type ConnectorScopeMatrix,
   type PermissionHeatmapCell,
   type PermissionMatrix,
 } from "../api";
 
 /**
- * Permissions page (P2 + P1-5).
+ * Permissions page (P2 + P1-5 + 方案D).
  *
- * 三个区块:
- *  1. 角色 × 能力 矩阵 (原有 RBAC)
+ * 四个区块:
+ *  1. 角色 × 能力 矩阵 — **可编辑** (单格点击 grant/revoke, 组织覆盖层随
+ *     P2P 同步传播全团队; override 角标 + 列级重置)
  *  2. P1-5 零信任能力袋: 角色 × 连接器 × scope 等级 配置面板
  *  3. P1-5 权限审计热力图: persona × connector × tool 调用次数 / 越权升级次数
+ *  4. 方案D 治理审计日志: 矩阵变更 / 成员生命周期 / 组织门禁拦截事件流
  */
 export function PermissionsView() {
   const t = useT();
   const [matrix, setMatrix] = useState<PermissionMatrix | null>(null);
   const [loading, setLoading] = useState(true);
+  const [busyCell, setBusyCell] = useState<string | null>(null);
+  const [cellError, setCellError] = useState<string | null>(null);
+
+  const reload = () =>
+    getPermissions()
+      .then((m) => setMatrix(m ?? null))
+      .catch(() => setMatrix(null));
 
   useEffect(() => {
     let alive = true;
@@ -31,17 +44,45 @@ export function PermissionsView() {
       .catch(() => { if (alive) setMatrix(null); })
       .finally(() => { if (alive) setLoading(false); });
     return () => { alive = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Derive roles + capabilities dynamically from the matrix.
   const roleNames = matrix?.roles ? Object.keys(matrix.roles) : [];
-  const capSet = new Set<string>();
-  if (matrix?.roles) {
-    for (const r of roleNames) {
-      for (const c of Object.keys(matrix.roles[r])) capSet.add(c);
+  const capabilities = matrix?.capabilities ?? (() => {
+    const capSet = new Set<string>();
+    if (matrix?.roles) {
+      for (const r of roleNames) {
+        for (const c of Object.keys(matrix.roles[r])) capSet.add(c);
+      }
     }
-  }
-  const capabilities = Array.from(capSet);
+    return Array.from(capSet);
+  })();
+
+  const onToggleCell = async (role: string, cap: string, grant: boolean) => {
+    const key = `${role}:${cap}`;
+    if (busyCell) return;
+    setBusyCell(key);
+    setCellError(null);
+    try {
+      const r = await setTeamMatrixCapability(role, cap, grant);
+      if (!r.ok && r.error) setCellError(r.error);
+      await reload();
+    } finally {
+      setBusyCell(null);
+    }
+  };
+
+  const onResetRole = async (role: string) => {
+    if (busyCell) return;
+    setBusyCell(`reset:${role}`);
+    try {
+      await resetTeamMatrix(role);
+      await reload();
+    } finally {
+      setBusyCell(null);
+    }
+  };
 
   return (
     <div className="h-full overflow-y-auto">
@@ -68,9 +109,24 @@ export function PermissionsView() {
               <thead>
                 <tr className="text-faint text-left border-b border-line">
                   <th className="py-1.5 font-medium">{t("Capability")}</th>
-                  {roleNames.map((r) => (
-                    <th key={r} className="py-1.5 font-medium text-center">{t(r)}</th>
-                  ))}
+                  {roleNames.map((r) => {
+                    const hasOverride = !!(matrix.overrides?.[r]?.add?.length || matrix.overrides?.[r]?.remove?.length);
+                    return (
+                      <th key={r} className="py-1.5 font-medium text-center">
+                        {t(r)}
+                        {hasOverride && (
+                          <button
+                            onClick={() => onResetRole(r)}
+                            disabled={busyCell === `reset:${r}`}
+                            className="ml-1 text-[10px] text-accent hover:underline"
+                            title={t("Reset this role to the default matrix")}
+                          >
+                            ✎
+                          </button>
+                        )}
+                      </th>
+                    );
+                  })}
                 </tr>
               </thead>
               <tbody>
@@ -82,22 +138,43 @@ export function PermissionsView() {
                       const allowed = cell?.allowed;
                       const scope = cell?.scope;
                       const max = cell?.max_amount;
+                      const ov = matrix.overrides?.[r];
+                      const ovAdd = !!ov?.add?.includes(cap);
+                      const ovRemove = !!ov?.remove?.some((x) => x === cap || x.startsWith(cap + ":"));
                       const title =
                         scope && max ? `${scope} · ≤ ¥${max.toLocaleString()}`
                           : scope ? scope
                           : max ? `≤ ¥${max.toLocaleString()}`
                           : undefined;
+                      const key = `${r}:${cap}`;
                       return (
                         <td key={r} className="py-2 text-center">
-                          {allowed === undefined ? (
-                            <span className="text-faint">—</span>
-                          ) : allowed ? (
-                            <span className="text-ok" title={title}>
-                              {scope ? scope : "✅"}
-                            </span>
-                          ) : (
-                            <span className="text-faint">❌</span>
-                          )}
+                          <button
+                            onClick={() => onToggleCell(r, cap, !allowed)}
+                            disabled={busyCell !== null || allowed === undefined}
+                            className={
+                              "px-1.5 py-0.5 rounded-md text-[12px] transition disabled:cursor-default " +
+                              (allowed === undefined
+                                ? "text-faint"
+                                : allowed
+                                  ? "text-ok hover:bg-ok/10"
+                                  : "text-faint hover:bg-line/40 hover:text-muted")
+                            }
+                            title={
+                              busyCell === key
+                                ? "…"
+                                : [
+                                    title,
+                                    allowed
+                                      ? t("Click to revoke for this role (synced to the org)")
+                                      : t("Click to grant this capability (synced to the org)"),
+                                  ].filter(Boolean).join(" · ")
+                            }
+                          >
+                            {busyCell === key ? "…" : allowed === undefined ? "—" : allowed ? (scope ? scope : "✅") : "❌"}
+                            {ovAdd && <sup className="text-accent text-[9px]">＋</sup>}
+                            {ovRemove && <sup className="text-danger text-[9px]">－</sup>}
+                          </button>
                         </td>
                       );
                     })}
@@ -105,6 +182,11 @@ export function PermissionsView() {
                 ))}
               </tbody>
             </table>
+          )}
+          {cellError && (
+            <div className="mt-2 px-3 py-1.5 rounded-lg border border-warnInk/30 bg-warnSoft/60 text-[12px] text-warnInk" role="alert">
+              {cellError}
+            </div>
           )}
         </div>
 
@@ -139,7 +221,117 @@ export function PermissionsView() {
 
         {/* 4. P1-5 权限审计热力图 */}
         <PermissionsHeatmapPanel />
+
+        {/* 5. 方案D 治理审计日志 */}
+        <GovernanceAuditPanel />
       </div>
+    </div>
+  );
+}
+
+// -- 方案D 治理审计日志面板 ---------------------------------------------------
+
+const AUDIT_ACTION_LABELS: Record<string, string> = {
+  "matrix.grant": "矩阵授权",
+  "matrix.revoke": "矩阵回收",
+  "matrix.reset": "矩阵重置",
+  "member.add": "成员添加",
+  "member.update": "成员变更",
+  "member.remove": "成员移除",
+  "member.invited": "发出邀请",
+  "member.joined": "加入团队",
+  "org_gate.deny": "门禁拦截",
+  "org_gate.fund_deny": "资金拦截",
+};
+
+function fmtAuditDetail(detail: Record<string, unknown>): string {
+  const parts: string[] = [];
+  if (detail.capability) parts.push(String(detail.capability));
+  if (detail.role) parts.push(String(detail.role));
+  if (detail.name) parts.push(String(detail.name));
+  if (detail.tool) parts.push(String(detail.tool));
+  if (typeof detail.amount === "number") parts.push(`¥${detail.amount.toLocaleString()}`);
+  if (detail.reason) parts.push(String(detail.reason));
+  return parts.join(" · ");
+}
+
+function GovernanceAuditPanel() {
+  const t = useT();
+  const [events, setEvents] = useState<AuditEvent[] | null>(null);
+  const [loadingMore, setLoadingMore] = useState(false);
+
+  const fetchPage = async (beforeSeq = 0) => {
+    setLoadingMore(true);
+    try {
+      const r = await listTeamAudit({ limit: 50, beforeSeq });
+      setEvents((prev) => (beforeSeq ? [...(prev ?? []), ...r.events] : r.events));
+    } catch {
+      setEvents((prev) => prev ?? []);
+    } finally {
+      setLoadingMore(false);
+    }
+  };
+
+  useEffect(() => {
+    void fetchPage(0);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  return (
+    <div className="mt-4 rounded-xl2 border border-line bg-panel p-4">
+      <div className="flex items-center gap-3 mb-3">
+        <div className="text-[14px] font-semibold">{t("Governance Audit Log")}</div>
+        <span className="text-[11.5px] text-faint">
+          {t("Matrix changes · member lifecycle · org-gate denials — the org's paper trail")}
+        </span>
+      </div>
+      {!events ? (
+        <div className="text-[13px] text-faint">{t("Loading…")}</div>
+      ) : events.length === 0 ? (
+        <div className="text-[13px] text-faint">{t("No governance events yet.")}</div>
+      ) : (
+        <>
+          <div className="space-y-1">
+            {events.map((e) => {
+              const deny = e.action.startsWith("org_gate.");
+              return (
+                <div key={e.seq} className="flex items-baseline gap-2.5 text-[12px] leading-relaxed">
+                  <span className="font-mono text-faint shrink-0">
+                    {new Date(e.ts * 1000).toLocaleString()}
+                  </span>
+                  <span
+                    className={
+                      "shrink-0 rounded-md px-1.5 py-px text-[11px] border " +
+                      (deny
+                        ? "border-danger/40 text-danger bg-danger/5"
+                        : e.action.startsWith("matrix.")
+                          ? "border-accent/40 text-accent bg-accent/5"
+                          : "border-line text-muted")
+                    }
+                  >
+                    {AUDIT_ACTION_LABELS[e.action] ?? e.action}
+                  </span>
+                  <span className="font-medium shrink-0">
+                    {e.target.length > 14 ? `${e.target.slice(0, 8)}…${e.target.slice(-4)}` : t(e.target)}
+                  </span>
+                  <span className="text-muted truncate" title={fmtAuditDetail(e.detail)}>
+                    {fmtAuditDetail(e.detail)}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+          {events.length >= 50 && (
+            <button
+              onClick={() => void fetchPage(events[events.length - 1].seq)}
+              disabled={loadingMore}
+              className="mt-2 text-[12px] text-accent hover:underline disabled:opacity-50"
+            >
+              {loadingMore ? "…" : t("Load more")}
+            </button>
+          )}
+        </>
+      )}
     </div>
   );
 }
