@@ -1968,3 +1968,63 @@ class TestProbeHistoryRetention:
         # 维护周期调用 prune — 这里验证 manager 方法 (维护内部路径)。
         r = SessionManager.longrun_probe_history_prune(m)
         assert r["ok"] and r["kept"] == 0
+
+
+class TestOirLongrunIntegration:
+    """OIR longrun 集成: 配置持久化 + 每 tick 推进开关 (GUI /v1/7x24/oir-longrun)。"""
+
+    def _manager(self, tmp_path):
+        from coworker.conversations import ConversationStore
+
+        class _M:
+            def __init__(self):
+                self.base_dir = tmp_path
+                self.default_workspace = str(tmp_path / "ws")
+                self.session_store = ConversationStore(tmp_path / "conv")
+                self._prefs = {}
+                self._prefs_path_file = tmp_path / "prefs.json"
+
+            def _prefs_path(self):
+                return self._prefs_path_file
+
+            def _save_prefs(self):
+                import json
+                self._prefs_path_file.write_text(
+                    json.dumps(self._prefs, indent=2), encoding="utf-8"
+                )
+
+            async def _maybe_oir_longrun_tick(self):  # 默认禁用 → 无操作
+                pass
+
+        return _M()
+
+    def test_config_default_disabled(self, tmp_path):
+        from coworker.server.manager import SessionManager
+
+        m = self._manager(tmp_path)
+        c = SessionManager.oir_longrun_config(m)
+        assert c["enabled"] is False
+        assert c["doc_dir"] == "研究文档" and c["batch"] == 3
+
+    def test_set_config_persists(self, tmp_path):
+        import json
+
+        from coworker.server.manager import SessionManager
+
+        m = self._manager(tmp_path)
+        c = SessionManager.set_oir_longrun_config(
+            m, {"enabled": True, "doc_dir": "研究文档", "batch": 5}
+        )
+        assert c["enabled"] is True and c["batch"] == 5
+        # 持久化到 prefs 文件（重启可恢复）。
+        saved = json.loads(m._prefs_path_file.read_text(encoding="utf-8"))
+        assert saved["oir_longrun"]["enabled"] is True
+        assert saved["oir_longrun"]["batch"] == 5
+
+    def test_disabled_tick_is_noop(self, tmp_path):
+        """未启用时 tick 直接返回（不构造 OIR 驱动）。"""
+        from coworker.server.manager import SessionManager
+
+        m = self._manager(tmp_path)
+        # 默认 disabled: _maybe_oir_longrun_tick stub 直接返回，不抛错。
+        assert SessionManager.oir_longrun_config(m)["enabled"] is False

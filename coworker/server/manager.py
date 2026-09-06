@@ -3305,7 +3305,9 @@ class SessionManager:
         """scheduler 每 tick 调用: 唤醒到期 self-wake 会话 + 周期探针检查。
 
         探针到期 (按 interval_minutes) 时执行 run_scheduled_probe —
-        失败渠道自动落库告警。两者都 best-effort, 互不阻断。
+        失败渠道自动落库告警。OIR longrun 由 QunWork 原生 tick 驱动 (若启用):
+        把"持续概念索引增长"作为同一共享任务逐轮委托 OIR 执行。
+        三者都 best-effort, 互不阻断。
         """
         try:
             await self.resume_due_wakes()
@@ -3315,6 +3317,91 @@ class SessionManager:
             await self._maybe_run_scheduled_probe()
         except Exception:
             logger.exception("extra_tick scheduled probe failed")
+        try:
+            await self._maybe_oir_longrun_tick()
+        except Exception:
+            logger.exception("extra_tick oir longrun failed")
+
+    async def _maybe_oir_longrun_tick(self) -> None:
+        """若 OIR longrun 已启用则每 tick 推进一批 (best-effort)。
+
+        惰性构造 OirLongrunTick(契约 = QunWork Scheduler extra_tick), 配置存
+        _prefs["oir_longrun"] = {enabled, doc_dir, glob, batch, goal_id}。
+        GUI 经 /v1/7x24/oir-longrun 开关与查看。
+        """
+        cfg = (self._prefs or {}).get("oir_longrun") or {}
+        if not cfg.get("enabled"):
+            return
+        tick = getattr(self, "_oir_longrun_tick_obj", None)
+        if tick is None:
+            try:
+                import sys as _sys
+                bridge = Path(r"E:\QunWork\oir_bridge")
+                if str(bridge) not in _sys.path:
+                    _sys.path.insert(0, str(bridge))
+                from oir_longrun_driver import OirLongrunTick
+                tick = OirLongrunTick(
+                    doc_dir=cfg.get("doc_dir") or "研究文档",
+                    glob=cfg.get("glob") or "*.md",
+                    batch=int(cfg.get("batch") or 3),
+                    goal_id=cfg.get("goal_id") or None,
+                )
+                self._oir_longrun_tick_obj = tick
+            except Exception as e:
+                logger.warning("oir longrun tick init failed: %s", e)
+                return
+        try:
+            await tick()
+        except Exception as e:
+            logger.warning("oir longrun tick failed (best-effort): %s", e)
+
+    def oir_longrun_config(self) -> dict[str, Any]:
+        """OIR longrun 集成配置（GUI 可读）。"""
+        cfg = (self._prefs or {}).get("oir_longrun") or {}
+        return {
+            "enabled": bool(cfg.get("enabled")),
+            "doc_dir": cfg.get("doc_dir") or "研究文档",
+            "glob": cfg.get("glob") or "*.md",
+            "batch": int(cfg.get("batch") or 3),
+            "goal_id": cfg.get("goal_id"),
+        }
+
+    def set_oir_longrun_config(self, patch: dict[str, Any]) -> dict[str, Any]:
+        """更新 OIR longrun 集成配置（持久化 _prefs）。"""
+        cfg = dict(self._prefs.get("oir_longrun") or {})
+        for k in ("enabled", "doc_dir", "glob", "batch", "goal_id"):
+            if k in patch and patch[k] is not None:
+                cfg[k] = patch[k]
+        self._prefs["oir_longrun"] = cfg
+        self._save_prefs()
+        cfg = self._prefs.get("oir_longrun") or {}
+        return {
+            "enabled": bool(cfg.get("enabled")),
+            "doc_dir": cfg.get("doc_dir") or "研究文档",
+            "glob": cfg.get("glob") or "*.md",
+            "batch": int(cfg.get("batch") or 3),
+            "goal_id": cfg.get("goal_id"),
+        }
+
+    def oir_longrun_telemetry(self) -> dict[str, Any]:
+        """回读 OIR 侧 task/trend/growth 遥测（网关 reflect_telemetry 落盘文件）。
+
+        GUI 每 30s 轮询；网关未写遥测时返回空快照（面板显示占位）。
+        """
+        import pathlib as _pl
+
+        candidates = [
+            _pl.Path(r"E:\QunWork\OIR握手交付\longrun\longrun_telemetry.json"),
+            _pl.Path(r"E:\QunWork\OIR握手交付") / "longrun" / "longrun_telemetry.json",
+        ]
+        for p in candidates:
+            if p.is_file():
+                try:
+                    return json.loads(p.read_text(encoding="utf-8"))
+                except Exception as e:
+                    logger.warning("oir longrun telemetry read failed: %s", e)
+                    return {"error": str(e), "source": str(p)}
+        return {}
 
     def mark_running(self, session_id: str) -> None:
         self._running_sessions.add(session_id)

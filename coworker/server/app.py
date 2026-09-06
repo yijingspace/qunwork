@@ -1600,6 +1600,21 @@ def create_app(manager: SessionManager) -> FastAPI:
         """① 告警渠道健康探针: 各启用渠道连通性 + 延迟 (落库历史)。"""
         return manager.longrun_channel_probe()
 
+    @app.get("/v1/7x24/oir-longrun")
+    def oir_longrun_config() -> dict[str, Any]:
+        """OIR longrun 集成配置回读 (GUI 7×24 面板开关/查看)。"""
+        return manager.oir_longrun_config()
+
+    @app.put("/v1/7x24/oir-longrun")
+    def set_oir_longrun_config(body: dict) -> dict[str, Any]:
+        """更新 OIR longrun 集成配置 (enabled/doc_dir/glob/batch/goal_id)。"""
+        return manager.set_oir_longrun_config(body or {})
+
+    @app.get("/v1/7x24/oir-longrun/telemetry")
+    def oir_longrun_telemetry() -> dict[str, Any]:
+        """回读 OIR task/trend/growth 遥测（网关 reflect_telemetry 落盘文件）。"""
+        return manager.oir_longrun_telemetry()
+
     @app.get("/v1/7x24/channel-health")
     def longrun_channel_health() -> dict[str, Any]:
         """① 渠道健康分/历史趋势 (probe_history, 阈值可配)。"""
