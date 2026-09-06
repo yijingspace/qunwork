@@ -91,13 +91,14 @@ def main() -> int:
     except Exception as e:
         _check("任务提交 goal_id 映射", False, str(e)); return 1
 
-    # 3) 分批推进 ×2（每批 1 篇）
+    # 3) 分批推进 ×2（每批 1 篇，文档名不同；同名重放由幂等语义单独覆盖）
     try:
+        doc_b = dict(doc, name="verify-probe-b.md")
         r1 = http_json("/api/longrun/advance", {
             "goal_id": goal_id, "documents": [doc], "max_terms": 20})
         d1 = r1.get("data") or {}
         r2 = http_json("/api/longrun/advance", {
-            "goal_id": goal_id, "documents": [doc], "max_terms": 20})
+            "goal_id": goal_id, "documents": [doc_b], "max_terms": 20})
         d2 = r2.get("data") or {}
         ok = r1.get("success") and r2.get("success") \
             and d2.get("completed_documents", 0) > d1.get("completed_documents", 0)
@@ -106,7 +107,19 @@ def main() -> int:
     except Exception as e:
         _check("分批推进 completed 递增", False, str(e)); return 1
 
-    # 4) 显式完成 → 状态回读 phase
+    # 4) 幂等：同名文档重放（崩溃窗口续跑）不重复计数
+    try:
+        r3 = http_json("/api/longrun/advance", {
+            "goal_id": goal_id, "documents": [doc_b], "max_terms": 20})
+        d3 = r3.get("data") or {}
+        ok = r3.get("success") and d3.get("advanced_documents") == 0 \
+            and d3.get("already_completed", 0) >= 1 and d3.get("idempotent") is True
+        _check("同名重放幂等（不重复计数）", ok,
+               f"advanced={d3.get('advanced_documents')} completed={d3.get('completed_documents')}")
+    except Exception as e:
+        _check("同名重放幂等（不重复计数）", False, str(e)); return 1
+
+    # 5) 显式完成 → 状态回读 phase
     try:
         http_json("/api/longrun/complete", {"goal_id": goal_id})
         st = http_json(f"/api/longrun/task?goal_id={goal_id}")
@@ -116,7 +129,7 @@ def main() -> int:
     except Exception as e:
         _check("complete 后 phase=Completed", False, str(e)); return 1
 
-    # 5) 状态回读字段
+    # 6) 状态回读字段
     try:
         st = http_json(f"/api/longrun/task?goal_id={goal_id}")
         d = st.get("data") or {}
@@ -128,7 +141,7 @@ def main() -> int:
     except Exception as e:
         _check("状态回读字段齐全且累计正确", False, str(e)); return 1
 
-    # 6) 趋势回读
+    # 7) 趋势回读
     try:
         tr = http_json("/api/longrun/trend")
         t = tr.get("data") or {}
