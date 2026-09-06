@@ -723,6 +723,20 @@ export async function promoteSkill(
   return await res.json();
 }
 
+// 方案A 角色统一: 单一角色注册表 (团队校验/权限矩阵/GUI 下拉共用)
+export interface TeamRoleDef {
+  name: string;
+  label: string;
+  description: string;
+  capabilities: string[];
+}
+
+export async function listTeamRoles(): Promise<TeamRoleDef[]> {
+  const res = await apiFetch(`${httpBase()}/v1/team/roles`);
+  const data = await res.json();
+  return data?.roles ?? [];
+}
+
 export async function exportSkill(name: string): Promise<{ ok: boolean; zip_base64?: string; error?: string }> {
   const res = await apiFetch(`${httpBase()}/v1/skills/export`, {
     method: "POST",

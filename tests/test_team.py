@@ -108,7 +108,8 @@ def test_member_crud():
     store.ensure_team()
     m = store.add_member("Anna", role="gm")
     assert m["name"] == "Anna"
-    assert m["role"] == "gm"
+    # 方案A 角色统一: 历史别名 gm 入库即规范化为 general_manager
+    assert m["role"] == "general_manager"
 
     members = store.list_members()
     assert any(x["id"] == m["id"] for x in members)

@@ -50,6 +50,12 @@ MATRIX: dict[str, set[str]] = {
         "read_memory", "write_memory", "issue_commands", "project_group",
         "fund:general_manager",
     },
+    # 2026-09-06 角色统一 (方案A): 成员页可设置的 scheduler/auditor 曾不在矩阵,
+    # can() fail-closed 全禁 (连 read_memory 都无) — 补齐。
+    "scheduler": {
+        "read_memory", "write_memory:log", "issue_commands:route", "project_group",
+    },
+    "auditor": {"read_memory", "write_memory:report", "issue_commands:warn"},
     "operator": {
         "read_memory", "write_memory:status", "issue_commands:resource",
     },
@@ -61,6 +67,62 @@ MATRIX: dict[str, set[str]] = {
     "bus": {"read_memory", "write_memory:log", "issue_commands:route"},
     "memory_keeper": {"read_memory", "write_memory:archive"},
     "self_heal": {"write_memory:fault", "issue_commands:migrate"},
+}
+
+# 角色别名 (历史数据迁移用): 旧成员行 role='gm' → 规范名 general_manager。
+_ROLE_ALIASES: dict[str, str] = {"gm": "general_manager"}
+
+
+def normalize_role(role: str) -> str:
+    """Map a historical role alias to its canonical name (unknown → unchanged)."""
+    return _ROLE_ALIASES.get(str(role), str(role))
+
+
+# -- 角色注册表 (2026-09-06 方案A: 单一角色定义源) -----------------------------
+# team 校验 / 权限矩阵 / GUI 下拉三方共用, 不再各自硬编码词汇表。
+ROLE_REGISTRY: dict[str, dict] = {
+    "chairman": {
+        "label": "董事长", "description": "战略决策与最高资金审批",
+    },
+    "board": {
+        "label": "董事会", "description": "集体决策投票与超大额资金终审",
+    },
+    "general_manager": {
+        "label": "总经理", "description": "日常经营决策、项目组建与 ≤5k 资金审批",
+    },
+    "scheduler": {
+        "label": "运营调度", "description": "任务派单、资源路由与蜂群组建",
+    },
+    "reviewer": {
+        "label": "审校", "description": "评审产出、撰写报告、建议性指令",
+    },
+    "auditor": {
+        "label": "合规审计", "description": "只读审计全库、出具审计报告与合规警示",
+    },
+    "worker": {
+        "label": "工蜂", "description": "执行具体业务并沉淀业务记忆",
+    },
+    "compliance": {
+        "label": "风控合规", "description": "违规检测与流程合规警示",
+    },
+    "risk": {
+        "label": "风险评估", "description": "资金/舆情/技术风险预警",
+    },
+    "critic": {
+        "label": "纠错批判", "description": "识别幻觉与逻辑错误、驳回失真输出",
+    },
+    "operator": {
+        "label": "运维操作", "description": "算力资源管理与状态更新",
+    },
+    "bus": {
+        "label": "消息总线", "description": "组织内消息路由与通信日志",
+    },
+    "memory_keeper": {
+        "label": "记忆管家", "description": "共享记忆归档与索引维护",
+    },
+    "self_heal": {
+        "label": "自愈代理", "description": "故障记录与实例迁移恢复",
+    },
 }
 
 # 人类介入触发条件 (方案矩阵表「人类介入触发条件」列,精简)。
@@ -81,8 +143,9 @@ HUMAN_ESCALATION: dict[str, str] = {
 
 
 def can(role: str, capability: str) -> bool:
-    """Role may exercise `capability`? Capabilities not declared = denied."""
-    return capability in MATRIX.get(role, set())
+    """Role may exercise `capability`? Capabilities not declared = denied.
+    历史别名 (gm) 自动规范化 — 存量数据迁移前后的行为一致。"""
+    return capability in MATRIX.get(normalize_role(role), set())
 
 
 def fund_approval(role: str, amount: float) -> dict:

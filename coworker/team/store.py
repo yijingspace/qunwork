@@ -22,11 +22,13 @@ import uuid
 from pathlib import Path
 from typing import Any, Optional
 
+from ..permission_matrix import ROLE_REGISTRY, normalize_role
 
-_VALID_MEMBER_ROLES = {
-    "chairman", "board", "gm", "scheduler", "reviewer",
-    "worker", "auditor", "critic",
-}
+
+# 2026-09-06 方案A 角色统一: 校验词汇表来自 permission_matrix.ROLE_REGISTRY
+# (单一角色定义源, 与权限矩阵/团队 API/GUI 下拉共用), 历史别名 gm 经由
+# normalize_role 自动映射 general_manager — 不再维护独立清单。
+_VALID_MEMBER_ROLES = set(ROLE_REGISTRY)
 _VALID_GROUP_STATES = {"forming", "active", "reviewing", "dissolved"}
 
 
@@ -131,6 +133,12 @@ class TeamStore:
                     value TEXT NOT NULL
                 )"""
             )
+            # 2026-09-06 方案A 数据迁移: 历史角色别名 gm → general_manager
+            # (幂等 — 旧值不存在时 0 行更新)。同版本代码在对端节点执行同样
+            # 迁移, 两端自然一致, 无需额外同步变更。
+            self._db.execute(
+                "UPDATE members SET role='general_manager' WHERE role='gm'"
+            )
             self._db.commit()
 
     # ── Team identity -------------------------------------------------------
@@ -183,6 +191,7 @@ class TeamStore:
         persona_id: Optional[str] = None,
         public_key: Optional[str] = None,
     ) -> dict:
+        role = normalize_role(role)
         if role not in _VALID_MEMBER_ROLES:
             raise ValueError(f"invalid member role: {role}")
         member_id = f"member-{uuid.uuid4().hex[:10]}"
@@ -199,8 +208,10 @@ class TeamStore:
     def update_member(self, member_id: str, **fields) -> bool:
         allowed = {"name", "role", "persona_id", "status", "current_task_group", "last_seen", "public_key", "joined_at"}
         cols = [f for f in fields if f in allowed]
-        if "role" in fields and fields["role"] not in _VALID_MEMBER_ROLES:
-            raise ValueError(f"invalid member role: {fields['role']}")
+        if "role" in fields:
+            fields["role"] = normalize_role(fields["role"])
+            if fields["role"] not in _VALID_MEMBER_ROLES:
+                raise ValueError(f"invalid member role: {fields['role']}")
         if not cols:
             return False
         stmt = ", ".join(f"{c} = ?" for c in cols)

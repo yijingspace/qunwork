@@ -5,6 +5,7 @@ import {
   addMember,
   listAgents,
   listMembers,
+  listTeamRoles,
   removeAgent,
   removeMember,
   updateMember,
@@ -12,15 +13,19 @@ import {
   type Member,
 } from "../api";
 
-const VALID_ROLES: Array<Member["role"]> = [
-  "worker",
-  "gm",
-  "reviewer",
-  "auditor",
-  "critic",
-  "scheduler",
+// 方案A 角色统一: 下拉从 /v1/team/roles 拉取 (与权限矩阵/团队校验同一来源);
+// 团队模块未加载时回退到这份与注册表一致的静态清单。
+const FALLBACK_ROLES: Array<Member["role"]> = [
   "chairman",
   "board",
+  "general_manager",
+  "scheduler",
+  "reviewer",
+  "auditor",
+  "worker",
+  "critic",
+  "compliance",
+  "risk",
 ];
 
 /**
@@ -43,6 +48,8 @@ export function MembersView() {
   const [members, setMembers] = useState<Member[] | null>(null);
   const [agents, setAgents] = useState<AgentInstance[] | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  // 方案A: 角色清单从单一注册表拉取 (失败回退静态清单)
+  const [roles, setRoles] = useState<Array<string>>(FALLBACK_ROLES);
 
   // --- member form ---
   const [newName, setNewName] = useState("");
@@ -52,6 +59,18 @@ export function MembersView() {
   // --- agent form ---
   const [newAgentRole, setNewAgentRole] = useState<AgentInstance["role"]>("worker");
   const [savingAgent, setSavingAgent] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    listTeamRoles()
+      .then((defs) => {
+        if (alive && defs.length > 0) setRoles(defs.map((d) => d.name));
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   const reload = () => {
     Promise.allSettled([listMembers(), listAgents()]).then(([m, a]) => {
@@ -156,7 +175,7 @@ export function MembersView() {
             onChange={(e) => setNewRole(e.target.value as Member["role"])}
             className="rounded-lg border border-line bg-paper px-2 py-1.5 text-[13px] outline-none focus:border-accent"
           >
-            {VALID_ROLES.map((r) => (
+            {roles.map((r) => (
               <option key={r} value={r}>{t(r)}</option>
             ))}
           </select>
@@ -198,7 +217,7 @@ export function MembersView() {
                       }
                       className="rounded-md border border-line bg-paper px-1.5 py-0.5 text-[12px] outline-none focus:border-accent"
                     >
-                      {VALID_ROLES.map((r) => (
+                      {roles.map((r) => (
                         <option key={r} value={r}>{t(r)}</option>
                       ))}
                     </select>
@@ -238,7 +257,7 @@ export function MembersView() {
             onChange={(e) => setNewAgentRole(e.target.value as AgentInstance["role"])}
             className="flex-1 min-w-0 rounded-lg border border-line bg-paper px-3 py-1.5 text-[13px] outline-none focus:border-accent"
           >
-            {VALID_ROLES.map((r) => (
+            {roles.map((r) => (
               <option key={r} value={r}>{t("Add Agent")} · {t(r)}</option>
             ))}
           </select>

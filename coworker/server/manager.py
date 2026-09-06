@@ -4627,6 +4627,22 @@ class SessionManager:
             self._refresh_engine_skill_loaders()
         return removed
 
+    def team_roles_view(self) -> dict[str, Any]:
+        """GET /v1/team/roles — 单一角色注册表 (方案A): 团队校验/权限矩阵/GUI
+        下拉共用此定义, 附规范名别名与能力摘要。"""
+        from ..permission_matrix import ROLE_REGISTRY, _ROLE_ALIASES
+
+        roles = [
+            {
+                "name": name,
+                "label": meta["label"],
+                "description": meta["description"],
+                "capabilities": sorted(MATRIX.get(name, set())),
+            }
+            for name, meta in sorted(ROLE_REGISTRY.items())
+        ]
+        return {"ok": True, "roles": roles, "aliases": dict(sorted(_ROLE_ALIASES.items()))}
+
     def skill_promote(self, name: str) -> dict[str, Any]:
         """涌现草稿转正 (P1-8 补全): draft: false + tags 去 draft + description
         去 [涌现-…] 前缀 + 版本 0.0.1 → 0.1.0 (首个正式版)。update_skill 内部

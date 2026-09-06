@@ -1906,6 +1906,11 @@ def create_app(manager: SessionManager) -> FastAPI:
         """PermissionMatrix shape for the PermissionsView page (roles + thresholds)."""
         return manager.team_permissions_view()
 
+    @app.get("/v1/team/roles")
+    def team_roles() -> dict[str, Any]:
+        """单一角色注册表 (方案A): 团队校验/权限矩阵/GUI 下拉共用此定义。"""
+        return manager.team_roles_view()
+
     # -- P2P 团队同步 (设计方案第六章) ----------------------------------------
     @app.post("/v1/team/sync/config")
     def team_sync_config(body: dict) -> dict[str, Any]:
