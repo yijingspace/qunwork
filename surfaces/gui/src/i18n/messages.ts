@@ -448,9 +448,10 @@ export const zh: Messages = {
   "Confidence": "置信度",
   "Tokens (est)": "Token(估)",
   "Tasks": "任务",
-  "Run seems unresponsive (server restarted?). Try again.": "此运行似乎已无响应(服务可能重启过)。请重试。",
+  "Swarm has been quiet. It may still be finishing in the background — keep this open or re-open it from history.":
+    "蜂群已静默一段时间。它可能仍在后台收尾——请保持本页面打开，或稍后从历史记录重新打开。",
   "This run stopped updating (server may have restarted). The run record is kept; try running again.":
-    "此运行已停止更新(服务可能重启过)。记录已保留,请重新运行。",
+    "此运行已长时间无心跳更新，可能已失联。记录已保留——可稍后从历史重新打开，或重跑。",
   "Copy": "复制",
   "Saved to": "已保存到",
   "Back to chat": "返回主页",

@@ -588,37 +588,45 @@ export function SwarmView({
       setReportPath(res.report_path ?? "");
       setRunId(res.run_id);
       const rid = res.run_id;
-      // Poll until the run leaves "running" (heartbeat-aware: an orphaned run —
-      // background task lost on server restart — is detected and reported).
-      // Poll budget must cover the relaxed stale window: consolidation tasks can
-      // run well past the nominal budget (soft-budget deadline + task timeout).
-      const maxPolls = noTimeout
-        ? Infinity // 不限制: 不靠次数掐断, 只靠 status 离开 running 或心跳失联收敛
-        : Math.ceil((Math.max(timeoutSeconds * 3, 600) + 90) / 1);
-      let polls = 0;
+      // Poll until the run leaves "running". Liveness is judged ONLY by the
+      // heartbeat (run.updated_at, refreshed on every appended event): a long
+      // run — reworks, per-task timeouts, soft-budget overrun — keeps emitting
+      // events and must NEVER be killed by a fixed poll count. The old
+      // `polls > maxPolls` wall-clock cap (~timeout×3+90s) false-fired a red
+      // "server restarted?" on a run that in fact completed fine a moment later.
+      // Only a sustained silence (orphaned run after a server restart) ends
+      // polling; the floor is generous (≥15min, ≥3× budget; ≥30min if unlimited).
+      const stallMs = (noTimeout ? 1800 : Math.max(900, timeoutSeconds * 3)) * 1000;
       let lastActivity = Date.now();
+      // 交付物逐个落盘时刷右栏: 用 task_done 事件计数做信号, 每有任务完成 (新交付物
+      // 写进工作区) 就 bump 一次 refreshKey — 事件驱动, 不每秒空转扫盘。
+      let lastDone = 0;
       pollRef.current = setInterval(async () => {
-        polls += 1;
         try {
           const snap = await getOrchestrateRun(rid);
           if (!mounted.current) return;
           applySnapshot(snap);
+          const doneCount = snap.events.reduce((n, e) => (e.kind === "task_done" ? n + 1 : n), 0);
+          if (doneCount > lastDone) {
+            lastDone = doneCount;
+            onRunActivity?.();
+          }
           const upd = (snap.updated_at ?? 0) * 1000;
           if (upd > lastActivity) lastActivity = upd;
-          // Stale detection: long tool chains (consolidation tasks) can legitimately
-          // go quiet for minutes; require max(10min, 3× the run budget) without a
-          // heartbeat before declaring the run orphaned. Unlimited runs use a
-          // generous 30-min silence window (only a lost background task stalls that long).
-          const dead =
-            upd > 0 &&
-            Date.now() - upd > (noTimeout ? 1800 : Math.max(600, timeoutSeconds * 3)) * 1000;
-          if (snap.status !== "running" || polls > maxPolls || dead) {
+          const stalled = Date.now() - lastActivity > stallMs;
+          if (snap.status !== "running" || stalled) {
             if (pollRef.current) clearInterval(pollRef.current);
             if (timerRef.current) clearInterval(timerRef.current);
             if (snap.status === "running") {
-              setStatus(dead ? "stale" : "paused");
+              // Still "running" but silent past the window → likely orphaned, but
+              // word it so we don't falsely accuse the server (it may finish late).
+              setStatus("stale");
               setStale(true);
-              setError(t("Run seems unresponsive (server restarted?). Try again."));
+              setError(
+                t(
+                  "Swarm has been quiet. It may still be finishing in the background — keep this open or re-open it from history.",
+                ),
+              );
             } else {
               setElapsed((Date.now() - startRef.current) / 1000);
             }
