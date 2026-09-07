@@ -214,7 +214,6 @@ export function App() {
   const [surface, setSurface] = useState<
     | "session"
     | "scheduled"
-    | "swarm"
     | "skills"
     | "knowledge"
     | "integrations"
@@ -228,6 +227,13 @@ export function App() {
     | "usage"
     | "longrun"
   >("session");
+  // 统一入口 (2026-09-07): "swarm" 时中间栏换成蜂群页, Composer 发送即发起 run。
+  const [taskMode, setTaskMode] = useState<"normal" | "swarm">("normal");
+  const [swarmLaunch, setSwarmLaunch] = useState<{ text: string; seq: number }>({ text: "", seq: 0 });
+  // 会话切换时退出蜂群模式 (蜂群页不跨会话驻留)。
+  useEffect(() => {
+    setTaskMode("normal");
+  }, [sessionId]);
   // A remembered Scheduled-detail target must not outlive the surface (see the
   // scheduledOpenId comment above): nav re-entry lands on the list, never a
   // possibly-deleted automation's dead detail.
@@ -1384,8 +1390,6 @@ export function App() {
         onOpenAudit={() => setSurface("audit")}
         onOpenInbox={() => setSurface("inbox")}
         scheduledActive={surface === "scheduled"}
-        swarmActive={surface === "swarm"}
-        onOpenSwarm={() => setSurface("swarm")}
         skillsActive={surface === "skills"}
         onOpenSkills={() => setSurface("skills")}
         knowledgeActive={surface === "knowledge"}
@@ -1413,8 +1417,6 @@ export function App() {
           onRunNow={runTaskNow}
           initialOpenId={scheduledOpenId}
         />
-      ) : surface === "swarm" ? (
-        <SwarmView workspace={workspace || ""} onBack={() => setSurface("session")} />
       ) : surface === "skills" ? (
         <SkillsView />
       ) : surface === "knowledge" ? (
@@ -1577,6 +1579,16 @@ export function App() {
                 </button>
               </div>
             )}
+            {taskMode === "swarm" ? (
+              <div className="flex-1 min-h-0 flex overflow-hidden">
+                <SwarmView
+                  workspace={workspace || ""}
+                  onBack={() => setTaskMode("normal")}
+                  launch={swarmLaunch}
+                />
+              </div>
+            ) : (
+              <>
             <div className="main-scroll" ref={scrollRef} onScroll={handleScroll}>
               {idle ? (
                 agent === "cowork" ? (
@@ -1670,6 +1682,8 @@ export function App() {
                 </button>
               </div>
             )}
+              </>
+            )}
 
             <Composer
               mode={mode}
@@ -1681,7 +1695,13 @@ export function App() {
               modelReady={modelReady}
               onConnectModel={openModelSetup}
               onConfigureVoiceInput={() => openSettings("voice")}
-              onSend={send}
+              onSend={(text, attachments) => {
+                if (taskMode === "swarm") {
+                  setSwarmLaunch((s) => ({ text, seq: s.seq + 1 }));
+                  return;
+                }
+                send(text, attachments);
+              }}
               onSupplement={send}
               onInterrupt={interrupt}
               onModeChange={changeMode}
@@ -1691,8 +1711,12 @@ export function App() {
               onUnattendedChange={agent !== "chat" ? toggleUnattended : undefined}
               prefill={composerPrefill}
               resetKey={sessionId}
+              taskMode={taskMode}
+              onTaskModeChange={setTaskMode}
               placeholder={
-                agent === "code"
+                taskMode === "swarm"
+                  ? t("Describe a goal for the swarm to decompose and run…")
+                  : agent === "code"
                   ? t("Ask the coder to build, fix, or explain…  (drop or paste files)")
                   : agent === "chat"
                     ? t("Ask anything…  (drop or paste files)")

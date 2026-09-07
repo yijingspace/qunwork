@@ -214,7 +214,16 @@ function DAGDiagram({ tasks }: { tasks: TaskView[] }) {  const ROW = 64;
     </svg>
   );
 }
-export function SwarmView({ onBack, workspace }: { onBack: () => void; workspace?: string }) {
+export function SwarmView({
+  onBack,
+  workspace,
+  launch,
+}: {
+  onBack: () => void;
+  workspace?: string;
+  // 统一入口 (2026-09-07): 主会话 Composer 蜂群模式提交 → {text, seq} 递增触发。
+  launch?: { text: string; seq: number };
+}) {
   const t = useT();
   const [intent, setIntent] = useState("");
   // The swarm runs INSIDE this workspace — its workers' file/read/grep tools are
@@ -336,6 +345,15 @@ export function SwarmView({ onBack, workspace }: { onBack: () => void; workspace
     loadHistory();
   }, []);
 
+  // 统一入口: Composer 蜂群模式每次提交让 seq 递增 → 触发一次 run。
+  const lastLaunchSeq = useRef(0);
+  useEffect(() => {
+    if (!launch || launch.seq === lastLaunchSeq.current) return;
+    lastLaunchSeq.current = launch.seq;
+    if (launch.text.trim()) void run(launch.text.trim());
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [launch?.seq]);
+
   const saveTemplate = async () => {
     setSavingTpl(true);
     setTplError(null);
@@ -361,8 +379,8 @@ export function SwarmView({ onBack, workspace }: { onBack: () => void; workspace
 
   const pendingTmplRef = useRef<number | null>(null);
   const applyTemplate = (tmpl: SwarmTemplate) => {
-    setIntent(tmpl.intent);
     pendingTmplRef.current = tmpl.id; // reuse is tallied when the run finishes (5.2.1 track record)
+    void run(tmpl.intent); // 统一入口: 应用模板即开跑 (旧「填入输入框再按 Run」并一步)
   };
 
   const applySnapshot = (snap: OrchestrationRunSnapshot) => {
@@ -513,9 +531,19 @@ export function SwarmView({ onBack, workspace }: { onBack: () => void; workspace
     else setDeckError(res.error || "report failed");
   };
 
-  const run = async () => {
-    const goal = intent.trim();
-    if (!goal || busy) return;
+  const run = async (goalOverride?: string) => {
+    const goal = (goalOverride ?? intent).trim();
+    if (!goal) return;
+    // 统一入口后允许在上一 run 观察期内直接提交新任务: 先收尾旧轮询再重开。
+    if (pollRef.current) {
+      clearInterval(pollRef.current);
+      pollRef.current = null;
+    }
+    if (timerRef.current) {
+      clearInterval(timerRef.current);
+      timerRef.current = null;
+    }
+    if (goalOverride) setIntent(goal); // 模板保存等下游逻辑仍以 intent 为源
     setBusy(true);
     setError(null);
     setStale(false);
@@ -661,14 +689,7 @@ export function SwarmView({ onBack, workspace }: { onBack: () => void; workspace
       </div>
 
       <div className="px-5 py-4 border-b border-line shrink-0 min-w-0">
-        <textarea
-          className="w-full min-w-0 rounded-lg border border-line bg-paper px-3 py-2 text-[13px] outline-none focus:border-lineStrong resize-none break-words overflow-y-auto"
-          wrap="soft"
-          rows={3}
-          value={intent}
-          onChange={(e) => setIntent(e.target.value)}
-          placeholder={t("Describe the goal, e.g. Write a market report with research, draft and review steps…")}
-        />
+        {/* 任务意图输入已迁往主会话 Composer (蜂群模式即发起入口) — 这里只留运行参数。 */}
         {/* workspace: the swarm works INSIDE this folder — keep it pointed at the real project */}
         <label className="flex items-center gap-1.5 text-[12px] text-muted mt-2">
           {t("Workspace")}
@@ -716,18 +737,12 @@ export function SwarmView({ onBack, workspace }: { onBack: () => void; workspace
               className="w-16 rounded border border-line bg-paper px-1.5 py-0.5 text-[12px] outline-none"
             />
           </label>
-          <button
-            className={
-              "px-4 py-1.5 rounded-full text-[13px] transition-colors disabled:opacity-40 " +
-              (busy
-                ? "bg-accent text-white swarm-run-btn"
-                : "bg-accent text-white hover:bg-accent/85")
-            }
-            disabled={busy || !intent.trim()}
-            onClick={run}
-          >
-            {busy ? t("Swarm running…") : t("Run swarm")}
-          </button>
+          {/* 启动按钮已由主会话 Composer (蜂群模式) 取代 — 见 App.tsx launch 通路。 */}
+          {!intent.trim() && !busy && (
+            <span className="text-[12px] text-faint">
+              ✍️ {t("Type a goal in the chat box below to launch the swarm.")}
+            </span>
+          )}
           {status && (
             <span className={"text-[12px] " + (status === "completed" ? "text-ok" : status === "failed" ? "text-danger" : "text-muted")}>
               {t("Status")}: {status}

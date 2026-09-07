@@ -138,11 +138,8 @@ interface Props {
   onOpenPersona: (id: string) => void;
   onManagePersonas: () => void;
   onOpenScheduled: () => void;
-  // Multi-agent swarm panel.
-  onOpenSwarm: () => void;
   onOpenSkills: () => void;
   onOpenKnowledge: () => void;
-  swarmActive: boolean;
   skillsActive: boolean;
   knowledgeActive: boolean;
   // Scheduled-band row click: open the Automations surface ON that automation (UX-023).
@@ -1130,7 +1127,7 @@ export function Sidebar(props: Props) {
         <span className="text-[10px] font-semibold uppercase tracking-wider text-faint">{t("Team Swarm")}</span>
       </div>
       {navItem("🏢", t("Organization Home"), props.onOpenOrganization, props.organizationActive, "nav-organization")}
-      {navItem("🐝", t("Multi-agent swarm"), props.onOpenSwarm, props.swarmActive, "nav-swarm")}
+      {/* 多智能体蜂群入口已并入主会话 Composer 的「任务模式」下拉 (2026-09-07) — 左栏不再单列。 */}
       {navItem("📬", t("Inbox"), props.onOpenInbox, props.inboxActive, "nav-inbox-team", <AttnBadge n={totalAttention} />)}
       {navItem("👥", t("Members"), props.onOpenMembers, props.membersActive, "nav-members")}
       {navItem("🔐", t("Permissions"), props.onOpenPermissions, props.permissionsActive, "nav-permissions")}

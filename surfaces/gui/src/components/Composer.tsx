@@ -83,6 +83,10 @@ interface Props {
   resetKey?: string;
   // Surface-specific hint shown in the empty textarea.
   placeholder?: string;
+  // 统一入口 (2026-09-07): 任务模式下拉 — "normal"=普通会话, "swarm"=多智能体蜂群。
+  // 放在权限列 (ModeMenu) 旁边; App 据此把 onSend 路由到蜂群发起。
+  taskMode?: "normal" | "swarm";
+  onTaskModeChange?: (mode: "normal" | "swarm") => void;
 }
 
 export function Composer(props: Props) {
@@ -491,11 +495,24 @@ export function Composer(props: Props) {
               <span className="text-[12px] text-muted tabular-nums">{recordingTime}</span>
             </div>
           ) : props.workspace !== undefined ? (
-            <ModeMenu
-              mode={props.mode}
-              onModeChange={props.onModeChange}
-              unattended={props.unattended}
-              onUnattendedChange={props.onUnattendedChange}
+            <>
+              <ModeMenu
+                mode={props.mode}
+                onModeChange={props.onModeChange}
+                unattended={props.unattended}
+                onUnattendedChange={props.onUnattendedChange}
+              />
+              {props.onTaskModeChange && (
+                <TaskModeMenu
+                  taskMode={props.taskMode ?? "normal"}
+                  onChange={props.onTaskModeChange}
+                />
+              )}
+            </>
+          ) : props.onTaskModeChange ? (
+            <TaskModeMenu
+              taskMode={props.taskMode ?? "normal"}
+              onChange={props.onTaskModeChange}
             />
           ) : null}
 
@@ -595,6 +612,75 @@ export function Composer(props: Props) {
       <span className="sr-only" role="status" aria-live="polite">
         {dictation?.recording ? `Listening, ${recordingTime}` : dictationBusy || ""}
       </span>
+    </div>
+  );
+}
+
+// 任务模式下拉 (统一入口): 普通会话 ↔ 多智能体蜂群。选蜂群后, 中间栏换成蜂群页,
+// 本输入框发送即发起一次蜂群 run (见 App.tsx 的 onSend 路由 + SwarmView launch)。
+function TaskModeMenu({
+  taskMode,
+  onChange,
+}: {
+  taskMode: "normal" | "swarm";
+  onChange: (mode: "normal" | "swarm") => void;
+}) {
+  const t = useT();
+  const [open, setOpen] = useState(false);
+  const swarm = taskMode === "swarm";
+  return (
+    <div className="relative">
+      <button
+        className={
+          "inline-flex items-center gap-1 px-2 py-1 rounded-lg text-[12px] hover:bg-paper shrink-0 " +
+          (swarm ? "text-accent font-medium" : "text-muted hover:text-ink")
+        }
+        onClick={() => setOpen((v) => !v)}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-label={t("Task mode")}
+        title={swarm ? t("Swarm mode — a planner fans out to workers") : t("Normal chat mode")}
+        data-testid="task-mode-menu"
+      >
+        <span aria-hidden="true">{swarm ? "🐝" : "💬"}</span>
+        {swarm ? t("Swarm mode") : t("Normal mode")}
+        <Icon name="chevronDown" size={11} className="text-faint" />
+      </button>
+      {open && (
+        <>
+          <div className="fixed inset-0 z-30" onClick={() => setOpen(false)} />
+          <div
+            className="absolute z-40 bottom-full mb-1 left-0 w-[240px] rounded-xl border border-line bg-panel shadow-2xl p-1.5"
+            role="menu"
+            data-testid="task-mode-options"
+          >
+            {([
+              { value: "normal", icon: "💬", label: t("Normal mode"), desc: t("One assistant, one conversation turn.") },
+              { value: "swarm", icon: "🐝", label: t("Swarm mode"), desc: t("A planner decomposes; executors work; a reviewer validates.") },
+            ] as const).map((o) => (
+              <button
+                key={o.value}
+                className={
+                  "w-full flex items-start gap-2 px-2.5 py-1.5 rounded-lg text-left hover:bg-paper " +
+                  (taskMode === o.value ? "bg-accentSoft" : "")
+                }
+                role="menuitem"
+                onClick={() => {
+                  onChange(o.value);
+                  setOpen(false);
+                }}
+              >
+                <span className="shrink-0 text-[14px]" aria-hidden="true">{o.icon}</span>
+                <span className="min-w-0">
+                  <span className="block text-[12.5px] font-medium">{o.label}</span>
+                  <span className="block text-[11px] text-muted leading-snug">{o.desc}</span>
+                </span>
+                {taskMode === o.value && <span className="ml-auto text-accent shrink-0">✓</span>}
+              </button>
+            ))}
+          </div>
+        </>
+      )}
     </div>
   );
 }
