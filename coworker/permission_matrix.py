@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
@@ -279,19 +280,77 @@ def human_escalation_for(role: str) -> Optional[str]:
 # -- 金额参数检测 (审批卡合规标注用) -------------------------------------------
 _AMOUNT_KEYS = ("amount", "money", "price", "payment", "transfer", "金额", "数额")
 
+# 方案E: 中文金额表达 (60万 / 1.2亿元 / 500块 / ¥3,000)。乘数表 + 货币单位;
+# 纯数字无单位仅当 key 已是金额键才采信 (防 "第3万条评论" 误报)。
+_CN_MULT: dict[str, float] = {"亿": 1e8, "千万": 1e7, "百万": 1e6, "万": 1e4, "千": 1e3}
+_CN_AMOUNT_RE = re.compile(
+    r"([0-9][0-9,]*(?:\.[0-9]+)?)\s*(亿|千万|百万|万|千)?\s*(元|块钱|块|人民币|rmb)?",
+    re.IGNORECASE,
+)
+_CURRENCY_HINTS = ("¥", "￥", "元", "块", "人民币", "rmb", "cny", "$", "usd")
+
+
+def _parse_amount_value(value: Any, *, key_is_amount: bool) -> Optional[float]:
+    """Parse one candidate value into a monetary amount. Chinese numerics
+    (60万/1.2亿元) included. Unambiguous-free strings only count under an
+    amount key; elsewhere a currency symbol must appear in the text."""
+    if isinstance(value, bool):  # True/False 不是金额 (int 是 bool 子类)
+        return None
+    if isinstance(value, (int, float)) and value == value:
+        return float(value) if key_is_amount else None
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    normalized = text.replace(",", "")
+    has_currency = key_is_amount or any(h in normalized.lower() for h in _CURRENCY_HINTS)
+    if not has_currency:
+        return None
+    # 先试直接数字 (含 key 下 "60万" 这类中文乘数)
+    m = _CN_AMOUNT_RE.search(normalized)
+    if not m:
+        return None
+    try:
+        num = float(m.group(1))
+    except ValueError:
+        return None
+    mult = _CN_MULT.get(m.group(2) or "", 1.0)
+    return num * mult
+
 
 def detect_amount(arguments: Optional[dict]) -> Optional[float]:
     """Find a monetary amount in a tool-call's arguments (for approval-card tier
-    annotation). Returns the first parseable amount, or None."""
-    if not isinstance(arguments, dict):
+    annotation). 方案E 增强: 递归嵌套 dict/list (深度≤3, 审批参数常包在
+    payload/details 里) + 中文金额表达。Returns the first parseable amount."""
+    return _detect_amount_rec(arguments, depth=0)
+
+
+def _detect_amount_rec(node: Any, depth: int) -> Optional[float]:
+    if depth > 3 or node is None:
         return None
-    for key, value in arguments.items():
-        k = str(key).lower()
-        if any(tok in k for tok in _AMOUNT_KEYS):
-            try:
-                return float(value)
-            except (TypeError, ValueError):
-                continue
+    if isinstance(node, dict):
+        for key, value in node.items():
+            k = str(key).lower()
+            is_amount_key = any(tok in k for tok in _AMOUNT_KEYS)
+            if is_amount_key:
+                parsed = _parse_amount_value(value, key_is_amount=True)
+                if parsed is not None and parsed > 0:
+                    return parsed
+        for value in node.values():
+            if isinstance(value, (dict, list)):
+                found = _detect_amount_rec(value, depth + 1)
+                if found is not None:
+                    return found
+            elif isinstance(value, str):
+                parsed = _parse_amount_value(value, key_is_amount=False)
+                if parsed is not None and parsed > 0:
+                    return parsed
+    elif isinstance(node, list):
+        for item in node:
+            found = _detect_amount_rec(item, depth + 1)
+            if found is not None:
+                return found
     return None
 
 

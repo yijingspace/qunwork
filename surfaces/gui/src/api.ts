@@ -773,6 +773,48 @@ export async function listTeamAudit(opts: {
   return await res.json();
 }
 
+// -- 方案E: 组织脉搏 -----------------------------------------------------------
+export interface PulseEvent {
+  ts: number;
+  kind: "governance" | "sync" | string;
+  action: string;
+  actor: string;
+  target: string;
+  detail: Record<string, unknown>;
+}
+
+export interface PulseChain {
+  id: string;
+  goal: string;
+  state: string;
+  owner: { id: string; name: string; role: string } | null;
+  members: Array<{ id: string; name: string; role: string; status: string }>;
+  agent_count: number;
+  age: string;
+}
+
+export interface TeamPulse {
+  generated_at: number;
+  window_days: number;
+  timeline: PulseEvent[];
+  fund_flow: {
+    window_days: number;
+    blocked_total: number;
+    blocked_count: number;
+    by_role: Record<string, number>;
+    recent: Array<{ ts: number; amount: number; role: string; tool?: string }>;
+    capability_denies: number;
+  };
+  responsibility: PulseChain[];
+  roster: { total: number; online: number; invited: number; offline: number };
+  governance: { matrix_changes: number };
+}
+
+export async function getTeamPulse(windowDays = 30): Promise<TeamPulse> {
+  const res = await apiFetch(`${httpBase()}/v1/team/pulse?window_days=${windowDays}`);
+  return await res.json();
+}
+
 export async function exportSkill(name: string): Promise<{ ok: boolean; zip_base64?: string; error?: string }> {
   const res = await apiFetch(`${httpBase()}/v1/skills/export`, {
     method: "POST",

@@ -1929,6 +1929,11 @@ def create_app(manager: SessionManager) -> FastAPI:
             action=action or None, target=target or None,
         )
 
+    @app.get("/v1/team/pulse")
+    def team_pulse(window_days: float = 30.0) -> dict[str, Any]:
+        """组织脉搏 (方案E): 治理时间线 + 资金拦截流 + 蜂群责任链 + 名册概览。"""
+        return manager.team_pulse_view(window_days=window_days)
+
     @app.get("/v1/team/roles")
     def team_roles() -> dict[str, Any]:
         """单一角色注册表 (方案A): 团队校验/权限矩阵/GUI 下拉共用此定义。"""

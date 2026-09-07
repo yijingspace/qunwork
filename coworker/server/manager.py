@@ -5765,6 +5765,12 @@ class SessionManager:
             )
         }
 
+    def team_pulse_view(self, *, window_days: float = 30.0) -> dict[str, Any]:
+        """GET /v1/team/pulse — 组织脉搏 (方案E): 时间线/资金流/责任链/名册。"""
+        from ..team.pulse import collect_pulse
+
+        return collect_pulse(self.team_store, window_days=window_days)
+
     def team_permissions_view(self) -> dict[str, Any]:
         """GET /v1/team/members.../permissions — PermissionsView 页形状:
         覆盖网格 (生效矩阵) + thresholds + 覆盖层原貌 (override 角标)。"""

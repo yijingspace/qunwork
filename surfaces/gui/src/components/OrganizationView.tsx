@@ -6,6 +6,7 @@ import {
   getInbox,
   getOrchestrateHistory,
   getTeam,
+  getTeamPulse,
   listKnowledge,
   listMembers,
   listMemories,
@@ -19,7 +20,9 @@ import {
   type RhythmForecast,
   type TaskGroup,
   type TeamInfo,
+  type TeamPulse,
 } from "../api";
+import { AUDIT_ACTION_LABELS } from "./PermissionsView";
 import {
   OrgAssetsCard,
   RhythmCard,
@@ -195,6 +198,9 @@ export function OrganizationView() {
           </div>
         ))}
       </div>
+
+      {/* 方案E: 组织脉搏 — 时间线/资金流/责任链 */}
+      <OrgPulseCard />
 
       {/* Active Swarms — interactive */}
       <div className="rounded-xl2 border border-line bg-panel p-4 mb-4">
@@ -377,6 +383,147 @@ export function OrganizationRuns({ items }: { items: OrchestrationHistoryItem[] 
             </span>
           </div>
         ))}
+      </div>
+    </div>
+  );
+}
+
+// -- 方案E: 组织脉搏卡 ----------------------------------------------------------
+
+function relTimeAgo(ts: number, now: number): string {
+  const d = Math.max(0, now - ts);
+  if (d < 60) return "just now";
+  if (d < 3600) return `${Math.floor(d / 60)}m ago`;
+  if (d < 86400) return `${Math.floor(d / 3600)}h ago`;
+  return `${Math.floor(d / 86400)}d ago`;
+}
+
+function OrgPulseCard() {
+  const t = useT();
+  const [pulse, setPulse] = useState<TeamPulse | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    getTeamPulse().then((p) => { if (alive && p?.timeline) setPulse(p); }).catch(() => {});
+    return () => { alive = false; };
+  }, []);
+
+  // 组织尚无任何留痕 (纯单机未用团队) 时不打扰 — 有活动才出卡。
+  if (!pulse) return null;
+  const empty = pulse.timeline.length === 0 && pulse.roster.total <= 1 && pulse.responsibility.length === 0;
+  if (empty) return null;
+
+  const now = pulse.generated_at;
+  const stateColor: Record<string, string> = {
+    active: "bg-ok/15 text-ok",
+    reviewing: "bg-warnSoft text-warnInk",
+    forming: "bg-accentSoft text-accent",
+    dissolved: "bg-line/40 text-faint",
+  };
+
+  return (
+    <div className="rounded-xl2 border border-line bg-panel p-4 mb-4" data-testid="org-pulse">
+      <div className="text-[14px] font-semibold mb-3 flex items-center gap-2">
+        <span>🫀</span> {t("Organization Pulse")}
+        <span className="ml-auto text-[11px] font-normal text-faint">
+          {t("last {n} days", { n: String(pulse.window_days) })}
+        </span>
+      </div>
+
+      {/* 指标行 */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 mb-3.5">
+        <div className="rounded-lg border border-line px-3 py-2">
+          <div className={"text-[15px] font-semibold leading-tight " + (pulse.fund_flow.blocked_count > 0 ? "text-danger" : "")}>
+            ¥{pulse.fund_flow.blocked_total.toLocaleString()}
+          </div>
+          <div className="text-[10.5px] text-faint">
+            {t("fund blocked")} · {pulse.fund_flow.blocked_count} {t("actions")}
+          </div>
+        </div>
+        <div className="rounded-lg border border-line px-3 py-2">
+          <div className="text-[15px] font-semibold leading-tight">{pulse.governance.matrix_changes}</div>
+          <div className="text-[10.5px] text-faint">
+            {t("matrix changes")} · {pulse.fund_flow.capability_denies} {t("gate denials")}
+          </div>
+        </div>
+        <div className="rounded-lg border border-line px-3 py-2">
+          <div className="text-[15px] font-semibold leading-tight">
+            {pulse.roster.online}/{pulse.roster.total}
+          </div>
+          <div className="text-[10.5px] text-faint">
+            {t("Online")}
+            {pulse.roster.invited > 0 && <span className="text-accent"> · {pulse.roster.invited} {t("invited")}</span>}
+          </div>
+        </div>
+        <div className="rounded-lg border border-line px-3 py-2">
+          <div className="text-[15px] font-semibold leading-tight">{pulse.responsibility.length}</div>
+          <div className="text-[10.5px] text-faint">{t("responsibility chains")}</div>
+        </div>
+      </div>
+
+      <div className="grid md:grid-cols-2 gap-4">
+        {/* 时间线 */}
+        <div>
+          <div className="text-[12px] font-medium text-muted mb-1.5">{t("Governance timeline")}</div>
+          {pulse.timeline.length === 0 ? (
+            <div className="text-[12px] text-faint">{t("No events yet.")}</div>
+          ) : (
+            <div className="space-y-1">
+              {pulse.timeline.slice(0, 10).map((e, i) => {
+                const deny = e.action.startsWith("org_gate.");
+                const sync = e.kind === "sync";
+                return (
+                  <div key={i} className="flex items-baseline gap-2 text-[11.5px] leading-relaxed">
+                    <span className={"shrink-0 rounded px-1.5 py-px text-[10.5px] border " + (
+                      deny ? "border-danger/40 text-danger" : sync ? "border-line text-faint" : "border-accent/40 text-accent"
+                    )}>
+                      {sync ? e.action : (AUDIT_ACTION_LABELS[e.action] ?? e.action)}
+                    </span>
+                    <span className="text-ink truncate" title={`${e.actor} → ${e.target}`}>
+                      {e.target.length > 16 ? `${e.target.slice(0, 8)}…${e.target.slice(-5)}` : t(e.target)}
+                    </span>
+                    <span className="ml-auto text-faint shrink-0 font-mono text-[10px]">{relTimeAgo(e.ts, now)}</span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        {/* 责任链 */}
+        <div>
+          <div className="text-[12px] font-medium text-muted mb-1.5">{t("Responsibility chains")}</div>
+          {pulse.responsibility.length === 0 ? (
+            <div className="text-[12px] text-faint">{t("No active swarms.")}</div>
+          ) : (
+            <div className="space-y-2">
+              {pulse.responsibility.slice(0, 5).map((c) => (
+                <div key={c.id} className="rounded-lg border border-line px-2.5 py-2">
+                  <div className="flex items-center gap-2 text-[11.5px]">
+                    <span className={"shrink-0 px-1.5 py-px rounded text-[10px] " + (stateColor[c.state] ?? "bg-line/40 text-faint")}>
+                      {t(c.state)}
+                    </span>
+                    <span className="truncate text-ink" title={c.goal}>{c.goal}</span>
+                    <span className="ml-auto text-faint shrink-0 font-mono text-[10px]">{c.agent_count}🤖 · {c.age}</span>
+                  </div>
+                  <div className="mt-1 flex items-center gap-1 flex-wrap text-[10.5px] text-muted">
+                    {c.owner && (
+                      <span className="rounded bg-accent/10 text-accent px-1.5 py-px">
+                        {c.owner.name}·{t(c.owner.role)}
+                      </span>
+                    )}
+                    {c.owner && c.members.length > 1 && <span className="text-faint">→</span>}
+                    {c.members.filter((m) => !c.owner || m.id !== c.owner.id).slice(0, 4).map((m) => (
+                      <span key={m.id} className={"rounded border border-line px-1.5 py-px " + (m.status === "invited" ? "text-accent" : "")}>
+                        {m.name}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );

@@ -518,6 +518,18 @@ class TeamStore:
             for r in rows
         ]
 
+    def recent_sync_changes(self, limit: int = 30) -> list[dict]:
+        """方案E 脉搏: 最近变更 (倒序, 不带 payload 大字段)。"""
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT ts,entity_type,entity_id,op,author FROM sync_changes ORDER BY ts DESC LIMIT ?",
+                (max(1, min(int(limit), 200)),),
+            ).fetchall()
+        return [
+            {"ts": r[0], "entity_type": r[1], "entity_id": r[2], "op": r[3], "author": r[4]}
+            for r in rows
+        ]
+
     def ingest_sync_change(self, change: dict) -> bool:
         """Idempotent insert of an incoming change (dedup by change_id)."""
         cid = str(change.get("change_id") or "")

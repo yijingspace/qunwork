@@ -231,7 +231,7 @@ export function PermissionsView() {
 
 // -- 方案D 治理审计日志面板 ---------------------------------------------------
 
-const AUDIT_ACTION_LABELS: Record<string, string> = {
+export const AUDIT_ACTION_LABELS: Record<string, string> = {
   "matrix.grant": "矩阵授权",
   "matrix.revoke": "矩阵回收",
   "matrix.reset": "矩阵重置",
