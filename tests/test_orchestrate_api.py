@@ -159,6 +159,55 @@ def test_orchestrate_accepts_timeout_and_max_parallel(tmp_path, monkeypatch):
         assert r.json()["ok"] is True and r.json()["status"] == "completed"
 
 
+def test_parse_swarm_timeout_semantics():
+    """0 / 负数 / null → 两层超时全部 None (不限制); 缺省/正数 → 有限 + 单任务 240s。"""
+    from coworker.server.app import _parse_swarm_timeout as p
+
+    assert p({}) == (300, 240)                       # 缺省: 旧行为不变
+    assert p({"timeout_seconds": 120}) == (120, 240)  # 有限整轮 + 默认单任务
+    assert p({"timeout_seconds": "600"}) == (600, 240)  # 字符串数字 (GUI JSON 可能带引号)
+    assert p({"timeout_seconds": 0}) == (None, None)   # 显式 0 = 不限制
+    assert p({"timeout_seconds": None}) == (None, None)
+    assert p({"timeout_seconds": -1}) == (None, None)  # 负数按不限制处理
+    assert p({"timeout_seconds": "abc"}) == (300, 240)  # 非法值回退缺省
+
+
+def test_orchestrate_no_timeout_runs_to_completion(tmp_path, monkeypatch):
+    """timeout_seconds: 0 (不限制) 被端点接受并正常跑完 (旧代码会把 0 吞成 300)。"""
+    from coworker.server.manager import SessionManager
+
+    from coworker.server.app import create_app
+
+    monkeypatch.setenv("COWORKER_STATE_DIR", str(tmp_path / "state"))
+    ws = tmp_path / "ws"
+    ws.mkdir()
+
+    class P(ProviderClient):
+        def __init__(self):
+            self.turns = [
+                AssistantTurn(text='[{"id":"t0","description":"Write a report","deps":[]}]'),
+                AssistantTurn(text="report draft " + "x" * 120, finish_reason="stop"),
+                AssistantTurn(text='{"accepted":true,"confidence":0.9,"reason":"ok","needs_human":false}'),
+            ]
+
+        def complete(self, *, model, messages, tools=None, **settings):
+            assert self.turns
+            return self.turns.pop(0)
+
+        def capabilities(self, model):
+            return ModelCapabilities()
+
+    manager = SessionManager(data_dir=tmp_path / "data", provider=P(), workspace=str(ws))
+    from fastapi.testclient import TestClient
+
+    with TestClient(create_app(manager)) as client:
+        r = client.post(
+            "/v1/orchestrate",
+            json={"intent": "Write a report", "sync": True, "timeout_seconds": 0},
+        )
+        assert r.json()["ok"] is True and r.json()["status"] == "completed"
+
+
 def test_run_store_heartbeat_updates_updated_at(tmp_path):
     """Appending an event refreshes the run's updated_at (live vs orphaned)."""
     from coworker.orchestrator.run_store import OrchestrationRunStore

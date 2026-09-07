@@ -1007,6 +1007,8 @@ export const zh: Messages = {
   "Swarm is working on your task…": "蜂群正在处理你的任务…",
   "The planner is splitting the goal into tasks…": "规划者正在把目标拆解为任务…",
   "Running {n} tasks — see progress below.": "正在执行 {n} 个任务 — 进展见下方。",
+  // 不限制超时开关 (用户 2026-09-07)
+  "No timeout": "不限制超时",
   "Current task": "当前任务",
   "Agent Pool": "Agent 实例池",
   "No Agent instances. Agent pool will be available in Phase 1.": "暂无 Agent 实例。Agent 状态池将在 Phase 1 上线。",

@@ -177,6 +177,29 @@ def _extract_parent_id(intent: str) -> Optional[int]:
     return None
 
 
+def _parse_swarm_timeout(body: dict) -> "tuple[Optional[int], Optional[int]]":
+    """Resolve the two swarm timeout layers from a /v1/orchestrate body.
+
+    - 整轮软预算 (timeout_seconds): 缺省 300s；显式 0 / 负数 / null → None（不限制）。
+    - 单任务硬超时 (task_timeout_seconds): 有限预算下沿用默认 240s；不限制时 → None
+      （asyncio.wait_for(None) 即跑到底）。
+
+    用户 2026-09-07 诉求：复杂任务不该被腰斩。旧端点把 0/null 当假值吞成 300，且从
+    不传 task_timeout（恒 240），前端也无"无限"入口——Orchestrator 本就支持 None=无限。
+    """
+    raw = body.get("timeout_seconds", 300)
+    if raw is None:
+        whole = 0
+    else:
+        try:
+            whole = int(raw)
+        except (TypeError, ValueError):
+            whole = 300
+    if whole <= 0:
+        return None, None
+    return whole, 240
+
+
 def create_app(manager: SessionManager) -> FastAPI:
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
@@ -549,6 +572,8 @@ def create_app(manager: SessionManager) -> FastAPI:
             from ..orchestrator.harness import HarnessStore
 
             _harness = HarnessStore(Path(workspace) / ".qunwork")
+            # 超时语义 (用户 2026-09-07 诉求): 见 _parse_swarm_timeout。
+            _sw_timeout, _sw_task_timeout = _parse_swarm_timeout(body)
             orch = Orchestrator(
                 provider=manager.provider,
                 model=body.get("model") or manager.model,
@@ -557,11 +582,9 @@ def create_app(manager: SessionManager) -> FastAPI:
                 # Auto-approve worker writes: running the swarm is the authorization.
                 # (Inbox gating would deadlock headless workers waiting for clicks.)
                 max_parallel=int(body.get("max_parallel") or 4),
-                timeout_seconds=(
-                    int(body["timeout_seconds"])
-                    if body.get("timeout_seconds")
-                    else 300
-                ),
+                timeout_seconds=_sw_timeout,
+                # 不限制时单任务超时也一并放开 (否则复杂 worker 仍会在 240s 被砍)。
+                task_timeout_seconds=_sw_task_timeout,
                 memory_scope=body.get("memory_scope") or str(workspace),
                 # Interconnect: thread the team memory store + unified knowledge
                 # DB into every worker engine (asset loop — Phase 1).

@@ -235,6 +235,8 @@ export function SwarmView({
   const [workspacePath, setWorkspacePath] = useState(workspace ?? "");
   const [maxParallel, setMaxParallel] = useState(4);
   const [timeoutSeconds, setTimeoutSeconds] = useState(300);
+  // 不限制超时 (用户 2026-09-07): 勾选 → 发 0, 后端取消整轮+单任务两层超时。
+  const [noTimeout, setNoTimeout] = useState(false);
   const [executorAgent, setExecutorAgent] = useState<"cowork" | "code">("cowork");
   const [busy, setBusy] = useState(false);
   const [runId, setRunId] = useState<string | null>(null);
@@ -572,7 +574,7 @@ export function SwarmView({
       const res = await orchestrate(goal, {
         workspace: ws || undefined,
         maxParallel,
-        timeoutSeconds,
+        timeoutSeconds: noTimeout ? 0 : timeoutSeconds,
         executorAgent,
         templateId: pendingTmplRef.current ?? undefined,
       });
@@ -590,7 +592,9 @@ export function SwarmView({
       // background task lost on server restart — is detected and reported).
       // Poll budget must cover the relaxed stale window: consolidation tasks can
       // run well past the nominal budget (soft-budget deadline + task timeout).
-      const maxPolls = Math.ceil((Math.max(timeoutSeconds * 3, 600) + 90) / 1);
+      const maxPolls = noTimeout
+        ? Infinity // 不限制: 不靠次数掐断, 只靠 status 离开 running 或心跳失联收敛
+        : Math.ceil((Math.max(timeoutSeconds * 3, 600) + 90) / 1);
       let polls = 0;
       let lastActivity = Date.now();
       pollRef.current = setInterval(async () => {
@@ -603,8 +607,11 @@ export function SwarmView({
           if (upd > lastActivity) lastActivity = upd;
           // Stale detection: long tool chains (consolidation tasks) can legitimately
           // go quiet for minutes; require max(10min, 3× the run budget) without a
-          // heartbeat before declaring the run orphaned.
-          const dead = upd > 0 && Date.now() - upd > Math.max(600, timeoutSeconds * 3) * 1000;
+          // heartbeat before declaring the run orphaned. Unlimited runs use a
+          // generous 30-min silence window (only a lost background task stalls that long).
+          const dead =
+            upd > 0 &&
+            Date.now() - upd > (noTimeout ? 1800 : Math.max(600, timeoutSeconds * 3)) * 1000;
           if (snap.status !== "running" || polls > maxPolls || dead) {
             if (pollRef.current) clearInterval(pollRef.current);
             if (timerRef.current) clearInterval(timerRef.current);
@@ -736,12 +743,27 @@ export function SwarmView({
             <input
               type="number"
               min={60}
-              max={900}
+              max={7200}
               step={30}
               value={timeoutSeconds}
-              onChange={(e) => setTimeoutSeconds(Math.max(60, Math.min(900, Number(e.target.value) || 300)))}
-              className="w-16 rounded border border-line bg-paper px-1.5 py-0.5 text-[12px] outline-none"
+              disabled={noTimeout}
+              onChange={(e) => setTimeoutSeconds(Math.max(60, Math.min(7200, Number(e.target.value) || 300)))}
+              className={
+                "w-16 rounded border border-line bg-paper px-1.5 py-0.5 text-[12px] outline-none " +
+                (noTimeout ? "opacity-40 line-through" : "")
+              }
             />
+          </label>
+          {/* 不限制超时 (用户 2026-09-07): 复杂任务不被腰斩。勾选 = 整轮+单任务双层
+              超时全部关闭 (后端 timeout_seconds/task_timeout_seconds 均置 None)。 */}
+          <label className="flex items-center gap-1.5 text-[12px] text-muted cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={noTimeout}
+              onChange={(e) => setNoTimeout(e.target.checked)}
+              data-testid="swarm-no-timeout"
+            />
+            <span className={noTimeout ? "text-accent" : ""}>{t("No timeout")}</span>
           </label>
           {/* 启动按钮已由主会话 Composer (蜂群模式) 取代 — 见 App.tsx launch 通路。 */}
           {!intent.trim() && !busy && (
