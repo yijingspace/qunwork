@@ -307,6 +307,15 @@ export function SwarmView({
     };
   }, []);
 
+  // 统一入口的时序坑 (用户 2026-09-08): workspacePath 只在挂载瞬间从 prop 取一次,
+  // 而会话的 scratch 工作区是服务端连上后经 WS `ready` 才回填到 App.workspace 的。
+  // 若用户在此之前切进蜂群模式, prop 当时为空 → 蜂群会带着空 workspace 发起, 被
+  // 后端 "no workspace configured" 守卫挡下。这里让 workspacePath 跟随 prop 补齐
+  // (仅当用户还没手动改过、当前为空时), 修好这个空窗。
+  useEffect(() => {
+    if (workspace) setWorkspacePath((cur) => cur || workspace);
+  }, [workspace]);
+
   const loadTemplates = () => {
     listSwarmTemplates()
       .then((r) => mounted.current && setTemplates(r.templates ?? []))
@@ -570,7 +579,8 @@ export function SwarmView({
       if (mounted.current) setElapsed((Date.now() - startRef.current) / 1000);
     }, 1000);
     try {
-      const ws = workspacePath?.trim() || (await defaultWorkspaceHint());
+      const ws =
+        workspacePath?.trim() || workspace?.trim() || (await defaultWorkspaceHint());
       const res = await orchestrate(goal, {
         workspace: ws || undefined,
         maxParallel,
