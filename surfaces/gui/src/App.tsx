@@ -1585,6 +1585,7 @@ export function App() {
                   workspace={workspace || ""}
                   onBack={() => setTaskMode("normal")}
                   launch={swarmLaunch}
+                  onRunActivity={() => setBrowserRefreshKey((k) => k + 1)}
                 />
               </div>
             ) : (

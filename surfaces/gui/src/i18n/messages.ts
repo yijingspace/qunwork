@@ -1003,6 +1003,10 @@ export const zh: Messages = {
   "A planner decomposes; executors work; a reviewer validates.": "规划器拆解 · 执行器干活 · 评审器把关。",
   "Describe a goal for the swarm to decompose and run…": "描述目标, 交给蜂群拆解执行…  (Enter 发起)",
   "Type a goal in the chat box below to launch the swarm.": "在下方输入框下达目标即可发起蜂群。",
+  // 蜂群进行中横幅 (用户反馈 2026-09-07)
+  "Swarm is working on your task…": "蜂群正在处理你的任务…",
+  "The planner is splitting the goal into tasks…": "规划者正在把目标拆解为任务…",
+  "Running {n} tasks — see progress below.": "正在执行 {n} 个任务 — 进展见下方。",
   "Current task": "当前任务",
   "Agent Pool": "Agent 实例池",
   "No Agent instances. Agent pool will be available in Phase 1.": "暂无 Agent 实例。Agent 状态池将在 Phase 1 上线。",

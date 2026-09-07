@@ -28,7 +28,8 @@ from ..tools.git import git_tools
 from ..tools.search import search_tools
 
 _PLANNER_MAX_ITERATIONS = 8
-_EXECUTOR_MAX_ITERATIONS = 24
+_EXECUTOR_MAX_ITERATIONS = 36  # 2026-09-07: 24 在"读代码再写文档"类任务上会被
+# 核对阶段耗尽 (一次实测 6 任务全"完成"却零落盘), 上调给草稿+就地修正留余量。
 _REVIEWER_MAX_ITERATIONS = 8
 
 PLANNER_INSTRUCTIONS = """You are the planning agent of a multi-agent swarm. \
@@ -57,6 +58,11 @@ available tools (files, search, shell, web).
 
 - WRITE FIRST, VERIFY LATER: start producing the deliverable immediately from your \
 knowledge. Only after the draft is written may you verify a few key figures online.
+"核对/verify each line" style asks = draft FIRST then correct IN PLACE, never \
+investigate-then-write: for any task that reads code/docs before producing a file, \
+your FIRST tool call writes a complete draft with write_file (mark unverified specifics \
+\"[待核]\"), then every later read/grep only edits that file via replace_in_file. Never \
+spend the whole turn reading without having written the file at least once.
 - DELIVER AND STOP: once you have produced the deliverable and (when asked) written it \
 to a file, STOP immediately and report the result. Do not keep re-reading files, \
 re-searching, or polishing — extra turns just burn the task budget and the timeout \

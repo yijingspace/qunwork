@@ -218,11 +218,14 @@ export function SwarmView({
   onBack,
   workspace,
   launch,
+  onRunActivity,
 }: {
   onBack: () => void;
   workspace?: string;
   // 统一入口 (2026-09-07): 主会话 Composer 蜂群模式提交 → {text, seq} 递增触发。
   launch?: { text: string; seq: number };
+  // run 起/止时通知外层 (App 借此刷新右栏产物面板 — 蜂群写进工作区的文件才能浮现)。
+  onRunActivity?: () => void;
 }) {
   const t = useT();
   const [intent, setIntent] = useState("");
@@ -251,7 +254,6 @@ export function SwarmView({
   const [finalReport, setFinalReport] = useState<string>("");
   const [reportPath, setReportPath] = useState<string>("");
   const [elapsed, setElapsed] = useState(0);
-  const [startedAt, setStartedAt] = useState<number | null>(null);
   const [stale, setStale] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [history, setHistory] = useState<OrchestrationHistoryItem[]>([]);
@@ -290,6 +292,9 @@ export function SwarmView({
   const mounted = useRef(true);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // elapsed 计时的真值源 — 不能用 startedAt state (setInterval 闭包捕获的是旧值,
+  // 首跑为 null → 每 tick 都算出 0, 就是"耗时 0 秒"的根因)。
+  const startRef = useRef(0);
 
   useEffect(() => {
     mounted.current = true;
@@ -556,10 +561,11 @@ export function SwarmView({
     setConvergence(null);
     setDegradations([]);
     setFinalReport("");
-    setStartedAt(Date.now());
+    startRef.current = Date.now();
     setElapsed(0);
+    onRunActivity?.(); // 发起即刷新一次右栏 (蜂群若秒产文件也能及时可见)。
     timerRef.current = setInterval(() => {
-      if (mounted.current) setElapsed((Date.now() - (startedAt ?? Date.now())) / 1000);
+      if (mounted.current) setElapsed((Date.now() - startRef.current) / 1000);
     }, 1000);
     try {
       const ws = workspacePath?.trim() || (await defaultWorkspaceHint());
@@ -607,9 +613,10 @@ export function SwarmView({
               setStale(true);
               setError(t("Run seems unresponsive (server restarted?). Try again."));
             } else {
-              setElapsed((Date.now() - (startedAt ?? Date.now())) / 1000);
+              setElapsed((Date.now() - startRef.current) / 1000);
             }
             setBusy(false);
+            onRunActivity?.(); // run 结束 → 刷新右栏, 蜂群落盘的交付物即时可见。
             loadHistory();
             // Template track record is now tallied server-side on completion
             // (asset loop) — here we only refresh the cards.
@@ -639,7 +646,6 @@ export function SwarmView({
     setStale(false);
     setRunId(rid);
     setStatus("running");
-    setStartedAt(Date.now());    // jump the content view back to the top so the loaded run is immediately visible
     requestAnimationFrame(() => {
       document.querySelector(".swarm-scroll")?.scrollTo({ top: 0 });
     });
@@ -911,6 +917,34 @@ export function SwarmView({
           <p className="text-[13px] text-faint">
             {t("Send a goal above — the swarm will split it into tasks, run them, validate and converge.")}
           </p>
+        )}
+
+        {/* 进行中提示 (用户反馈 2026-09-07): 撤掉 Run 按钮后, 蜂群 busy 期间页面
+            一度毫无动静 (尤其 planner 拆解阶段还没有任务), 误以为失败。这里给一条
+            始终可见的运行横幅, 并区分"规划中"与"执行中"。 */}
+        {busy && status === "running" && (
+          <div
+            className="mb-4 rounded-xl border border-accent/40 bg-accent/5 px-4 py-3 flex items-center gap-3"
+            data-testid="swarm-running-banner"
+          >
+            <span
+              className="w-4 h-4 shrink-0 rounded-full border-2 border-accent/30 border-t-accent animate-spin"
+              aria-hidden="true"
+            />
+            <div className="min-w-0">
+              <div className="text-[13.5px] font-medium text-accent">
+                {t("Swarm is working on your task…")}
+              </div>
+              <div className="text-[11.5px] text-muted">
+                {tasks.length === 0
+                  ? t("The planner is splitting the goal into tasks…")
+                  : t("Running {n} tasks — see progress below.", { n: String(tasks.length) })}
+              </div>
+            </div>
+            <span className="ml-auto text-[11px] text-faint font-mono shrink-0 tabular-nums">
+              {fmtDuration(elapsed, t)}
+            </span>
+          </div>
         )}
 
         {/* DAG + stats */}
