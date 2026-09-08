@@ -1467,9 +1467,33 @@ class SessionManager:
     def browser_close(self) -> dict[str, Any]:
         return browser_close_session()
 
+    def _artifact_workspace(self, session_id: str, record) -> Optional[str]:
+        """Effective workspace for artifact discovery (list / read / reveal).
+
+        A per-conversation Cowork session provisions its scratch directory at
+        connect time but only persists a `sessions` row on the first real chat
+        turn. A user who goes straight to Swarm mode therefore has NO record for
+        the active session_id, so the old `record.workspace if record else
+        default_workspace` fell back to the wrong tree and the Artifacts panel
+        never showed the swarm's deliverables (write target = the scratch, read
+        target = default_workspace). Recover the scratch server-side from the
+        session_id — never trusted from the client, and guarded against traversal
+        (session_id must be a single safe path component)."""
+        if record is not None and getattr(record, "workspace", None):
+            return record.workspace
+        sid = (session_id or "").strip()
+        if sid and "/" not in sid and "\\" not in sid and ".." not in sid:
+            cand = self.scratch_base() / sid
+            try:
+                if cand.is_dir():
+                    return str(cand.resolve())
+            except OSError:
+                pass
+        return self.default_workspace
+
     def list_artifacts(self, session_id: str) -> list[dict[str, Any]]:
         record = self.session_store.load(session_id)
-        workspace = record.workspace if record else self.default_workspace
+        workspace = self._artifact_workspace(session_id, record)
         roots: list[Path] = []
         if workspace:
             ws_root = Path(workspace).expanduser().resolve()
@@ -1578,18 +1602,14 @@ class SessionManager:
 
     MAX_BINARY_PREVIEW = 25 * 1024 * 1024  # base64-over-JSON gets heavy past this
 
-    def _artifact_roots(self, record) -> list[Path]:
+    def _artifact_roots(self, record, session_id: str = "") -> list[Path]:
         """The roots an artifact may live in: the session workspace, its parent
         (merged workspace layouts), the default/primary workspace, and any
         extra roots the user granted this session. Absolute artifact paths are
         allowed ONLY inside these roots (M3: arbitrary file read was possible
         via /v1/sessions/{id}/artifacts/read?path=C:\\...)."""
         roots: list[Path] = []
-        for raw in (
-            [getattr(record, "workspace", None)]
-            if record is not None
-            else [self.default_workspace]
-        ):
+        for raw in [self._artifact_workspace(session_id, record)]:
             if raw:
                 p = Path(raw).expanduser().resolve()
                 roots.append(p)
@@ -1631,8 +1651,8 @@ class SessionManager:
         from urllib.parse import unquote
 
         record = self.session_store.load(session_id)
-        workspace = record.workspace if record else self.default_workspace
-        roots = self._artifact_roots(record)
+        workspace = self._artifact_workspace(session_id, record)
+        roots = self._artifact_roots(record, session_id)
 
         def _inside_roots(candidate: Path) -> bool:
             try:

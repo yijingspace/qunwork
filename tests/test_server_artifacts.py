@@ -417,3 +417,63 @@ def test_benchmark_templates_idempotent_seed(tmp_path):
     n = len(mgr.session_store.list_swarm_templates())
     mgr._seed_benchmark_templates()
     assert len(mgr.session_store.list_swarm_templates()) == n
+
+
+def test_list_artifacts_recovers_scratch_when_no_session_row(tmp_path):
+    """Swarm-mode regression (user 2026-09-08): a Cowork session provisions its scratch
+    dir at connect but only persists a `sessions` row after the first chat turn. A user
+    who goes straight to Swarm mode has NO record for the active session_id — the swarm
+    writes to the scratch (`scratch_base()/session_id`), but the old workspace resolution
+    fell back to `default_workspace` (a different tree), so the Artifacts panel stayed
+    empty forever. The server must recover the scratch from the session_id itself."""
+    from coworker.server.manager import SessionManager
+
+    scratch_base = tmp_path / "QunWork"
+    session_id = "3f4c0321-a71"
+    scratch_ws = scratch_base / session_id  # exactly where the swarm wrote
+    (scratch_ws / "docs" / "swarm-manual").mkdir(parents=True)
+    (scratch_ws / "docs" / "swarm-manual" / "README.md").write_text("index", encoding="utf-8")
+    (scratch_ws / "docs" / "swarm-manual" / "02-蜂群操作.md").write_text("op", encoding="utf-8")
+
+    # default_workspace is a DIFFERENT tree — without the scratch recovery, listing
+    # would scan here and miss the swarm deliverables entirely.
+    elsewhere = tmp_path / "repo"
+    elsewhere.mkdir()
+    (elsewhere / "unrelated.md").write_text("x", encoding="utf-8")
+
+    mgr = SessionManager.__new__(SessionManager)
+    mgr.default_workspace = str(elsewhere)
+    mgr.scratch_base = lambda: scratch_base
+    # No session record at all (load → None), matching the never-chatted scratch session.
+    mgr.session_store = type("S", (), {"load": staticmethod(lambda sid: None)})()
+
+    paths = [a["path"] for a in mgr.list_artifacts(session_id)]
+    assert any(p.endswith("README.md") for p in paths), paths
+    assert any("02-蜂群操作.md" in p for p in paths), paths
+
+    # A relative deliverable inside the recovered scratch must also READ (reveal/open).
+    t, err = mgr._artifact_target(session_id, "docs/swarm-manual/README.md")
+    assert err is None and t is not None and t.name == "README.md"
+
+
+def test_artifact_workspace_recovers_scratch_only_for_safe_session_id(tmp_path):
+    """The scratch recovery is server-side and must not let a crafted session_id
+    (path separators / traversal) escape scratch_base to point at an arbitrary dir."""
+    from coworker.server.manager import SessionManager
+
+    scratch_base = tmp_path / "QunWork"
+    scratch_base.mkdir()
+    outside = tmp_path / "secret-target"
+    outside.mkdir()
+
+    mgr = SessionManager.__new__(SessionManager)
+    mgr.default_workspace = str(scratch_base)  # neutral fallback
+    mgr.scratch_base = lambda: scratch_base
+    mgr.session_store = type("S", (), {"load": staticmethod(lambda sid: None)})()
+
+    # Traversal-ish ids never resolve to the outside dir; they fall back to default.
+    for evil in ("..", "../../secret-target", "a\\b", "x/y"):
+        assert mgr._artifact_workspace(evil, None) == str(scratch_base), evil
+    # A real id whose scratch dir exists recovers it.
+    (scratch_base / "good-id").mkdir()
+    assert mgr._artifact_workspace("good-id", None) == str((scratch_base / "good-id").resolve())
