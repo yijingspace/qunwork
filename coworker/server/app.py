@@ -647,14 +647,18 @@ def create_app(manager: SessionManager) -> FastAPI:
         async def _finalize(orch: "Orchestrator") -> dict[str, Any]:
             try:
                 result = await orch.run(intent)
-                # final = the consolidation task's full output (the finished report)
-                # when available, else the assembled task summary.
-                last_done = [t for t in result.plan.tasks if t.done]
-                final_report = (
-                    last_done[-1].result
-                    if last_done and last_done[-1].result
-                    else result.summary
-                )
+                # Use the SAME deliverable assembly the chat-tool path uses
+                # (models.OrchestrationResult.final_report): prefer a real
+                # consolidation output, otherwise stitch the per-task product
+                # fragments and filter process text. The previous shortcut —
+                # "last done task's raw result, verbatim" — shipped a timed-out
+                # worker's mid-process sentence as the whole run report (observed
+                # orch_979d7531f514: status=completed but `final` was a lone
+                # 115-char thought fragment "The link names printed wrong…",
+                # because the consolidation task never ran and the task finishing
+                # last happened to be a timed-out chapter). `summary` is only the
+                # fallback when nothing real was assembled (empty/failed plan).
+                final_report = result.final_report() or result.summary
                 store.update_status(run_id, result.status, final=final_report)
                 if result.status == "completed":
                     _auto_write_coordination_report(run_id)

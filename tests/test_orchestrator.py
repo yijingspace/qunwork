@@ -1023,3 +1023,46 @@ def test_final_report_unsectioned_falls_back(tmp_path):
     result = OrchestrationResult(intent="probe", plan=plan, status="completed")
     report = result.final_report()
     assert "内容一" in report and "内容二" in report
+
+
+def test_final_report_drops_stray_timed_out_thoughts_when_no_consolidator():
+    """Regression for orch_979d7531f514 (Task C): the soft whole-run timeout
+    dropped the consolidation task, so no task carries the full report and the
+    last *done* task happened to be a timed-out chapter whose stored result is a
+    stray mid-process thought ("The link names printed wrong — fixing the check
+    script"). final_report() must ship the real chapter deliverables (t2 + t3)
+    and must NOT surface the stranded thought or the other timed-out fragments."""
+    from coworker.orchestrator.models import Plan, Task, OrchestrationResult
+
+    stray_t4 = (
+        "The link names printed wrong \u2014 fixing the extraction in the check script "
+        "(the files do exist; it's a script bug).\n\n"
+    )
+    plan = Plan(
+        goal="quickstart-c",
+        tasks=[
+            # t0/t1 timed out: stored result = last thought (< 200, no marker).
+            Task(id="t0", description="\u6982\u89c8", status="done",
+                 result="Overview finished. Numbers moved twice on recount; could not reconcile.",
+                 confidence=0.4),
+            Task(id="t1", description="\u4e0a\u624b", status="done",
+                 result="The glob matched a sibling file, so both counters read the wrong path.",
+                 confidence=0.4),
+            Task(id="t2", description="FAQ", status="done",
+                 result="## 02 \u5e38\u89c1\u95ee\u9898\n\n" + ("\u95ee\uff1a\u5982\u4f55\u521d\u59cb\u5316\uff1f\u7b54\uff1a\u8fd0\u884c\u5b89\u88c5\u547d\u4ee4\u3002" * 40),
+                 confidence=0.86),
+            Task(id="t3", description="\u672f\u8bed\u8868", status="done",
+                 result="## 03 \u672f\u8bed\u8868\n\n" + ("| \u8702\u7fa4 | \u591a\u667a\u4f53\u7f16\u6392 |" * 40),
+                 confidence=0.72),
+            Task(id="t4", description="\u7d22\u5f15", status="done", result=stray_t4, confidence=0.4),
+            # t5 = consolidation: never started.
+            Task(id="t5", description="\u603b\u6821\u9a8c", status="pending", result="", confidence=0.0),
+        ],
+    )
+    result = OrchestrationResult(intent="quickstart-c", plan=plan, status="paused")
+    report = result.final_report()
+    assert "\u5982\u4f55\u521d\u59cb\u5316" in report  # t2 real deliverable shipped
+    assert "\u8702\u7fa4" in report and "\u591a\u667a\u4f53\u7f16\u6392" in report  # t3 real deliverable shipped
+    assert "printed wrong" not in report  # stray timed-out thought NOT surfaced
+    assert "sibling" not in report  # t1 fragment excluded
+    assert len(report) >= 200

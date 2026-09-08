@@ -241,7 +241,11 @@ class OrchestrationResult:
         last = products[-1]
         if len(last.result) >= 200:
             return clean_deliverable(last.result)
-        return clean_deliverable("\n\n".join(t.result for t in products))
+        # A timed-out task's trailing thought (short, non-deliverable) must not be
+        # stitched in alongside the real chapter bodies. Keep the substantial
+        # products; fall back to everything only if none clears the bar.
+        substantial = [t for t in products if len((t.result or "").strip()) >= 200]
+        return clean_deliverable("\n\n".join(t.result for t in (substantial or products)))
 
     def task_report(self) -> str:
         lines = [f"Goal: {self.plan.goal}"]
