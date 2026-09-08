@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import os
 import queue
+import re
 import shutil
 import signal
 import subprocess
@@ -86,6 +87,40 @@ def _fragile_inline(command: str) -> bool:
     if '"' in command or "`" in command:
         return True
     return False
+
+
+# A command the model wrapped in its own shell spawn: `[& ]path\pwsh|powershell[.exe]
+# <flags> -Command "<inner>"`. Only matches when the line *begins* with the shell exe.
+_NESTED_SHELL_RE = re.compile(
+    r"^\s*(?:&\s+|call\s+)?"
+    r"[\"']?[\w.\\/:@ \-]*?(?:pwsh|powershell)(?:\.exe)?[\"']?"
+    r"\s+.*?-(?:Command|c)(?::\w+)?\s+"
+    r"(?P<payload>.+?)\s*$",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _unwrap_nested_shell(command: str) -> Optional[str]:
+    """Rewrite a self-nested ``powershell -Command "<script>"`` (or pwsh) into the
+    inner ``<script>``, so it runs once in the REPL instead of re-parsing through a
+    *second* shell.
+
+    Models emit this shape from old "inline escaping breaks" folklore — and often
+    with cmd-style ``\\"`` which PowerShell does not use (it escapes with a backtick).
+    The outer spawn then hands the still-escaped inner text to a nested legacy
+    ``powershell.exe`` (5.1, not even pwsh 7), whose parser splits it into stray
+    background jobs / ParserErrors. Handing ``_fragile_inline``/``_as_script`` the
+    *raw inner command* lets one UTF-8 ``.ps1`` pass handle it correctly. Returns
+    None when the command isn't a shell-wrapped ``-Command`` (leave it untouched)."""
+    m = _NESTED_SHELL_RE.match(command)
+    if not m:
+        return None
+    payload = m.group("payload").strip()
+    if len(payload) >= 2 and payload[0] == '"' and payload[-1] == '"':
+        payload = payload[1:-1].replace('\\"', '"')
+    elif len(payload) >= 2 and payload[0] == "'" and payload[-1] == "'":
+        payload = payload[1:-1].replace("''", "'")
+    return payload or None
 
 
 class Executor(ABC):
@@ -319,9 +354,14 @@ class LocalExecutor(Executor):
         # blocks / `$`-expansions when they're fed inline, and piping non-ASCII
         # races the console code page. A BOM'd file is parsed whole as UTF-8 every
         # time; stdin only ever carries the ASCII `& 'path'`.
+        # A model that hand-wrapped its command in `powershell -Command "..."` would
+        # re-parse it through a *nested* shell (splitting `$()`/`\\"` into jobs);
+        # unwrap to the inner script first so it runs once, in this REPL.
+        if self._is_windows:
+            command = _unwrap_nested_shell(command) or command
         if self._is_windows and _fragile_inline(command):
             command = self._as_script(command)
-        # Run the command, then emit a marker line with exit code + cwd.
+        # Run the (possibly rewritten) command, then emit a marker line with exit code + cwd.
         self._proc.stdin.write(command + "\n")
         self._proc.stdin.write(self._trailer())
         self._proc.stdin.flush()

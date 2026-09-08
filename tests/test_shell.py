@@ -226,3 +226,43 @@ def test_simple_command_stays_inline(executor):
     assert r["exit_code"] == 0
     assert ".ps1" not in r["command"]
     assert "plain" in r["output"]
+
+
+# -- self-nested shell unwrapping -------------------------------------------------
+# Task D (orch_83251fc258bc): a worker sent `powershell -NoProfile -ExecutionPolicy
+# Bypass -Command "Write-Output \"批次D…\""` — its OWN nested shell spawn, with
+# cmd-style `\"` that PowerShell doesn't use. My file-routing ran the *outer*
+# command, but the inner script re-parsed through a *second* powershell.exe (5.1)
+# whose parser split the `$()` subexpression into background jobs → still mangled.
+# run() now unwraps the inner script and runs it once in this REPL.
+
+def test_unwrap_nested_shell_predicate():
+    from coworker.tools.shell import _unwrap_nested_shell
+
+    # The exact Task-D #125 shape (cmd-style escaped double quotes) → inner script.
+    assert _unwrap_nested_shell(
+        r'powershell -NoProfile -ExecutionPolicy Bypass -Command "Write-Output \"hi there\""'
+    ) == 'Write-Output "hi there"'
+    # pwsh + single-quoted payload + `-c` short form also unwrap.
+    assert _unwrap_nested_shell("pwsh -Command 'Get-Date'") == "Get-Date"
+    assert _unwrap_nested_shell('& powershell.exe -c "1+1"') == "1+1"
+    # Not a self-nested shell → leave untouched (None), so normal commands are safe.
+    assert _unwrap_nested_shell("git status") is None
+    assert _unwrap_nested_shell("Write-Output 'plain'") is None
+    assert _unwrap_nested_shell('python -c "print(1)"') is None
+    # Full path to a pwsh exe still unwraps.
+    assert _unwrap_nested_shell(
+        r'C:\Program Files\PowerShell\7\pwsh.exe -NoProfile -Command "Write-Output \"x\""'
+    ) == 'Write-Output "x"'
+
+
+@pytest.mark.skipif(not _WIN, reason="nested-shell unwrap is Windows-REPL-specific")
+def test_self_nested_shell_command_runs_cleanly(executor):
+    # A model that wraps its own command in `powershell -Command "…"` must get a
+    # clean single-line result, not a split background-job / ParserError.
+    cmd = r'powershell -NoProfile -ExecutionPolicy Bypass -Command "Write-Output \"unwrapped ok\""'
+    r = executor.run(cmd)
+    assert r["exit_code"] == 0
+    assert "unwrapped ok" in r["output"]
+    assert "ParserError" not in r["output"]
+    assert "Job" not in r["output"]  # no background-job spillover from the double parse
