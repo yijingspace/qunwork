@@ -181,3 +181,48 @@ def test_background_unknown_task_errors(executor):
     assert (
         "unknown task" in reg.execute("shell_task_kill", {"task_id": "bg-99"})["error"]
     )
+
+
+# -- inline-escaping / script-file routing ---------------------------------------
+# Windows swarm workers kept tripping the persistent REPL's inline parser on
+# all-ASCII commands with nested quotes / multi-line blocks / `-f` format strings
+# (2026-09-08 orchestrate run: t1/t4/t5 all fell back to writing helper scripts by
+# hand). The fix routes anything "fragile for inline parsing" — not just non-ASCII —
+# through a UTF-8 .ps1 file. These tests lock the predicate and the end-to-end route.
+
+def test_fragile_inline_predicate():
+    from coworker.tools.shell import _fragile_inline
+
+    # Simple, quote-free, single-line → stay inline (faster, keep session state).
+    assert not _fragile_inline("cd sub")
+    assert not _fragile_inline("git status -s")
+    assert _fragile_inline("$env:X='y'") is False  # single quotes only → safe
+    assert not _fragile_inline("echo $PWD")
+    assert not _fragile_inline("pytest -q")
+    # The classes that kept breaking inline → route to a file.
+    assert _fragile_inline('python -c "import os; print(1)"')  # double quote
+    assert _fragile_inline('foreach ($i in 1..3) { "x$i" }')   # nested quotes
+    assert _fragile_inline("Write-Output a\nWrite-Output b")    # multi-line
+    assert _fragile_inline("Write-Output `tTabbed")             # backtick escape
+    assert _fragile_inline("echo 中文")                          # non-ASCII (legacy)
+
+
+@pytest.mark.skipif(not _WIN, reason="script-file routing is Windows-REPL-specific")
+def test_fragile_command_is_routed_through_script_file(executor):
+    # Multi-line + a nested double-quoted string: historically mangled when fed
+    # inline to the REPL. Must run correctly AND prove the .ps1 route fired.
+    cmd = "$x = 'there'\nWrite-Output \"hi $x\""
+    r = executor.run(cmd)
+    assert r["exit_code"] == 0
+    assert ".ps1" in r["command"]            # routed through the file, not inline
+    assert "hi there" in r["output"]
+
+
+@pytest.mark.skipif(not _WIN, reason="script-file routing is Windows-REPL-specific")
+def test_simple_command_stays_inline(executor):
+    # A quote-free single-line command must NOT pay the temp-file cost and must
+    # still persist state through the REPL (cwd carried by the inline path).
+    r = executor.run("Write-Output plain")
+    assert r["exit_code"] == 0
+    assert ".ps1" not in r["command"]
+    assert "plain" in r["output"]

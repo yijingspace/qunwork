@@ -5,9 +5,12 @@ etc. persist across `run_shell` calls (unlike a per-call `subprocess.run`). The 
 interface is the hedge for a future `ContainerExecutor`/`VMExecutor` (sandboxing) without
 touching the engine.
 
-The shell is OS-native: `/bin/bash` on POSIX, `powershell.exe` (`-Command -` REPL) on
-Windows. Each backend has its own marker/exit-code protocol and interrupt mechanism, but
-the `Executor` contract (and the parsed `{marker} {exit_code} {cwd}` trailer) is identical.
+The shell is OS-native: `/bin/bash` on POSIX, PowerShell (`pwsh` when present, else
+`powershell.exe`, driven as a `-Command -` stdin REPL) on Windows. Fragile commands
+(non-ASCII, multi-line, or quote/backtick-heavy) are routed through a UTF-8 `.ps1`
+file rather than fed inline, where the REPL's parser mangles them. Each backend has
+its own marker/exit-code protocol and interrupt mechanism, but the `Executor` contract
+(and the parsed `{marker} {exit_code} {cwd}` trailer) is identical.
 
 Safety here is permission-gating (high-risk tool → approval) + per-command timeout +
 best-effort non-interactive enforcement. A timed-out command is interrupted (SIGINT to the
@@ -58,6 +61,33 @@ _NONINTERACTIVE_ENV = {
 }
 
 
+def _fragile_inline(command: str) -> bool:
+    """True when a PowerShell command is safer to run from a UTF-8 ``.ps1`` FILE than
+    fed inline to the persistent REPL's stdin.
+
+    The REPL parses whatever it reads, so a handful of all-ASCII forms keep tripping
+    pwsh's own quoting even though the shell itself is PowerShell 7 — observed in
+    swarm-worker logs (``python -c "..."``, ``-f '{0}'`` format strings, ``&{ ... }``
+    script blocks, regex/`$` expansions):
+
+      * **non-ASCII** — piping Chinese over stdin races the console code page (mojibake);
+      * **multi-line** — a ``{``/``}`` block split across REPL reads desyncs the parser;
+      * **a double-quote or backtick** — nested/escaped quotes and pwsh's `` ` `` escape
+        are the classic inline-mangling culprits.
+
+    A file is parsed whole, as UTF-8, every time — so those go through ``_as_script``.
+    Simple single-line, quote-free commands (``cd sub``, ``git status``,
+    ``$env:X='y'``, ``pytest -q``) stay inline: faster, and they preserve session state
+    (cwd/env), which the ``& 'file'`` child-scope route does not."""
+    if any(ord(ch) > 127 for ch in command):
+        return True
+    if "\n" in command:
+        return True
+    if '"' in command or "`" in command:
+        return True
+    return False
+
+
 class Executor(ABC):
     @abstractmethod
     def run(self, command: str, timeout: Optional[float] = None) -> dict[str, Any]: ...
@@ -86,7 +116,11 @@ class _BackgroundTask:
         self.id = task_id
         self.command = command
         if _IS_WINDOWS:
-            argv = ["powershell.exe", "-NoProfile", "-Command", command]
+            # Prefer PowerShell 7 (pwsh, native UTF-8 argv) when present; 5.1 decodes
+            # non-ASCII command text with the ANSI codepage (mojibake). Parity with the
+            # foreground REPL's shell choice (LocalExecutor.__init__).
+            shell_path = shutil.which("pwsh") or "powershell.exe"
+            argv = [shell_path, "-NoProfile", "-Command", command]
             spawn_kwargs: dict[str, Any] = {
                 "creationflags": subprocess.CREATE_NEW_PROCESS_GROUP
             }
@@ -280,12 +314,12 @@ class LocalExecutor(Executor):
 
         timeout = timeout or self.default_timeout
         self._abort.clear()
-        # Non-ASCII commands on Windows go through a UTF-8-BOM .ps1 file: piping
-        # Chinese text over stdin races the console code page (ANSI/GBK even
-        # after chcp 65001 — observed intermittently on PowerShell 7.6.4 cold
-        # start), corrupting the command. A BOM'd file decodes as UTF-8
-        # deterministically; stdin only ever carries the ASCII `& 'path'`.
-        if self._is_windows and any(ord(ch) > 127 for ch in command):
+        # Fragile commands on Windows go through a UTF-8-BOM .ps1 file (see
+        # _fragile_inline): the persistent REPL mangles nested quotes / multi-line
+        # blocks / `$`-expansions when they're fed inline, and piping non-ASCII
+        # races the console code page. A BOM'd file is parsed whole as UTF-8 every
+        # time; stdin only ever carries the ASCII `& 'path'`.
+        if self._is_windows and _fragile_inline(command):
             command = self._as_script(command)
         # Run the command, then emit a marker line with exit code + cwd.
         self._proc.stdin.write(command + "\n")
@@ -411,9 +445,10 @@ class LocalExecutor(Executor):
         }
 
     def _as_script(self, command: str) -> str:
-        """Wrap a non-ASCII command in a UTF-8-BOM .ps1 file and return the
+        """Wrap a fragile command in a UTF-8-BOM .ps1 file and return the
         `& 'path'` invocation. BOM forces UTF-8 decoding regardless of the
-        console code page race; the temp file is left for the OS to reap."""
+        console code page race, and the file is parsed whole (nested quotes /
+        multi-line blocks survive intact); the temp file is left for the OS to reap."""
         import tempfile as _tempfile
 
         script = (
