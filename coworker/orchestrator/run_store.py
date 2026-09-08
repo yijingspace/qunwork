@@ -113,6 +113,81 @@ class OrchestrationRunStore:
             self._db.commit()
             return cur.rowcount > 0
 
+    def reap_orphaned_runs(
+        self, *, older_than: float = 120.0, active_run_ids: Optional[set[str]] = None
+    ) -> int:
+        """Flip runs the GUI still shows as 'running' but that are actually dead.
+
+        A sidecar restart kills the in-process orchestration task, but the DB row
+        keeps status='running' forever — SwarmView then spins a live run that will
+        never finish (the tech-debt this closes). `append_event` bumps updated_at as
+        a heartbeat, so a row silent for `older_than` seconds is orphaned. Run ids in
+        `active_run_ids` (the manager's live controls) are always spared. Returns the
+        count reaped. Mirrors automation's `reap_stale_runs` (status → 'failed')."""
+        active = active_run_ids or set()
+        cutoff = time.time() - older_than
+        placeholders = ",".join("?" * len(active)) if active else ""
+        q = "SELECT run_id FROM orchestration_runs WHERE status = 'running' AND updated_at < ?"
+        params: list[Any] = [cutoff]
+        if active:
+            q += f" AND run_id NOT IN ({placeholders})"
+            params += list(active)
+        with self._lock:
+            ids = [r[0] for r in self._db.execute(q, params).fetchall()]
+            for rid in ids:
+                self._db.execute(
+                    "UPDATE orchestration_runs SET status = 'failed', updated_at = ?, "
+                    "final = COALESCE(final, ?) WHERE run_id = ?",
+                    (
+                        time.time(),
+                        "⚠ 服务重启导致该蜂群运行中断（无心跳，已回收）。可稍后重新发起。",
+                        rid,
+                    ),
+                )
+            self._db.commit()
+        return len(ids)
+
+    def prune_events(self, *, keep_runs: int = 100) -> int:
+        """Delete event rows for all but the most recent `keep_runs` finished runs.
+
+        Each run streams hundreds of worker_thought / decision_trace rows that are
+        only useful while watching it; history keeps the run summary + `final`, so
+        the raw stream can go. Currently-running runs and the most recent
+        `keep_runs` by created_at are preserved. Returns the number of rows deleted.
+        Best-effort VACUUMs to reclaim disk."""
+        with self._lock:
+            keep = self._db.execute(
+                "SELECT run_id FROM orchestration_runs WHERE status = 'running' "
+                "UNION "
+                "SELECT run_id FROM ( "
+                "  SELECT run_id FROM orchestration_runs "
+                "  ORDER BY created_at DESC LIMIT ? "
+                ")",
+                (max(1, int(keep_runs)),),
+            ).fetchall()
+            keep_ids = {r[0] for r in keep}
+            all_ids = {
+                r[0]
+                for r in self._db.execute(
+                    "SELECT DISTINCT run_id FROM orchestration_events"
+                ).fetchall()
+            }
+            doomed = all_ids - keep_ids
+            deleted = 0
+            if doomed:
+                ph = ",".join("?" * len(doomed))
+                cur = self._db.execute(
+                    f"DELETE FROM orchestration_events WHERE run_id IN ({ph})",
+                    list(doomed),
+                )
+                deleted = cur.rowcount or 0
+                self._db.commit()
+                try:
+                    self._db.execute("VACUUM")  # reclaim disk after bulk delete
+                except sqlite3.OperationalError:
+                    pass  # VACUUM cannot run inside a transaction / is locked — skip
+        return deleted
+
     # -- events -------------------------------------------------------------
     def append_event(self, run_id: str, kind: str, payload: dict[str, Any]) -> int:
         with self._lock:

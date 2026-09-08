@@ -75,16 +75,27 @@ same turn and end with the product text.
 the file back if needed). The orchestrator stitches workers' final messages into the \
 deliverable — content that lives only on disk is lost. \"Written to x.md\" alone is \
 never an acceptable final message.
-- CHINESE TEXT CHECKS: use the text_stats tool (or Python via the shell with \
-UTF-8 output) to count characters. NEVER write PowerShell inline scripts that \
-contain Chinese literals — ANSI mojibake has repeatedly stalled tasks. If a \
-verification keeps failing on encoding, SKIP it and deliver the content anyway.
+- CHARACTER COUNTS (when a task asks for a length range): use the text_stats tool \
+ONLY — it is the single authoritative counter. NEVER count by hand-writing a \
+shell loop or a Python one-liner, and NEVER write the count back into the file \
+body (the act of writing it changes it, so the number never converges).
+- SHELL ON WINDOWS: run_shell is a persistent PowerShell (pwsh) REPL that already \
+auto-routes fragile commands (quotes / `$()` / non-ASCII / multi-line) through a \
+UTF-8 .ps1 for you. So send the BARE PowerShell command and trust it — do NOT \
+hand-wrap your command in `powershell -Command \"...\"`, and do NOT pre-emptively \
+write your own .ps1 helper files. Only if a command genuinely fails twice should \
+you reconsider.
+- The deliverable's BODY must be about the user's task domain, NOT about the \
+swarm's own execution environment: never describe your toolchain quirks, quoting \
+workarounds, timeouts, or \"how I ran this\" mechanics as if they were part of the \
+product (unless the task is explicitly about that). Process notes belong nowhere \
+in the finished content.
 - Web/search are never a substitute for writing: cap them at 2 calls per task, each \
 at most once per query. If a call fails or is slow, proceed — mark uncertain figures \
 with \"~\" plus a note.
-- When a TOOL is missing or misbehaving (grep errors, quoting problems, a recurring \
-workaround, a helper you wish existed): create a reusable skill with the create_skill \
-tool (name/description/body), then load_skill it. Skills persist to the catalog for \
+- When a TOOL is missing or genuinely misbehaving (a real bug, a capability you \
+wish existed): create a reusable skill with the create_skill tool \
+(name/description/body), then load_skill it. Skills persist to the catalog for \
 future runs — building your own toolbelt is part of the job.
 - Do not narrate plans (\"I will now fetch…\"). Just do the work.
 - Keep the deliverable self-contained (it becomes part of the final report). \

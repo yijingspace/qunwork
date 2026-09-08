@@ -2747,6 +2747,25 @@ class SessionManager:
                 logger.info("reaped %d stale automation run(s) left running by restart", reaped)
         except Exception:
             logger.exception("reap_stale_runs failed")
+        # Same class for swarm runs: a sidecar restart kills the in-process
+        # orchestration task but leaves its DB row 'running' → the GUI spins a live
+        # run that never finishes. Reap orphans (everything not in the live-control
+        # map and heartbeat-silent), then prune the per-run event stream so the
+        # store stops growing across many runs.
+        try:
+            orphans = self.orchestration_store.reap_orphaned_runs(
+                active_run_ids=set(self.active_orchestration_controls)
+            )
+            if orphans:
+                logger.info("reaped %d orphaned swarm run(s) left running by restart", orphans)
+        except Exception:
+            logger.exception("reap_orphaned_runs failed")
+        try:
+            pruned = self.orchestration_store.prune_events()
+            if pruned:
+                logger.info("pruned %d orchestration event row(s) (history trim)", pruned)
+        except Exception:
+            logger.exception("prune_events failed")
         self.scheduler.start()  # tick scheduler for automations (independent of connectors)
         return await self._build_and_start_gateway()
 
