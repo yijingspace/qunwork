@@ -732,7 +732,9 @@ def create_app(manager: SessionManager) -> FastAPI:
 
     @app.get("/v1/orchestrate/history")
     def orchestrate_history() -> dict[str, Any]:
-        return {"runs": manager.orchestration_store.list_runs(limit=50)}
+        # 只读聚合: 面板全局库 + 各工作区 .qunwork/orchestration.db (chat-tool 的 run),
+        # 让 GUI 历史也列出会话内 orchestrate() 的蜂群运行 (零迁移、只读)。
+        return {"runs": manager.orchestration_history_merged(limit=50)}
 
     @app.post("/v1/orchestrate/{run_id}/dissolve")
     def orchestrate_dissolve(run_id: str) -> dict[str, Any]:
@@ -764,7 +766,7 @@ def create_app(manager: SessionManager) -> FastAPI:
             render_coordination_report,
         )
 
-        run = manager.orchestration_store.get_run(run_id)
+        run = manager.orchestration_get_run(run_id)
         if not run:
             return {"ok": False, "error": "run not found"}
         md = render_coordination_report(run)
@@ -787,7 +789,7 @@ def create_app(manager: SessionManager) -> FastAPI:
 
     @app.get("/v1/orchestrate/{run_id}")
     def orchestrate_run(run_id: str) -> dict[str, Any]:
-        run = manager.orchestration_store.get_run(run_id)
+        run = manager.orchestration_get_run(run_id)
         if not run:
             return {"ok": False, "error": "run not found"}
         return {"ok": True, **run}

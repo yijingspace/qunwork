@@ -96,3 +96,88 @@ def test_prune_events_is_safe_on_empty_store(tmp_path):
     store = OrchestrationRunStore(tmp_path / "orch.db")
     assert store.prune_events(keep_runs=100) == 0
     store.close()
+
+
+# -- read-only cross-store aggregation (双 orchestration.db) -------------------
+import sqlite3
+
+from coworker.orchestrator.run_store import read_only_get_run, read_only_list_runs
+
+
+def test_read_only_list_runs_and_get_run(tmp_path):
+    src = OrchestrationRunStore(tmp_path / "orchestration.db")
+    rid = src.create_run("chat-tool goal")
+    src.append_event(rid, "worker_thought", {"text": "hi"})
+    src.update_status(rid, "completed", final="the deliverable")
+    src.close()
+
+    db = tmp_path / "orchestration.db"
+    rows = read_only_list_runs(db, limit=50)
+    assert len(rows) == 1 and rows[0]["run_id"] == rid
+    assert rows[0]["status"] == "completed"
+    run = read_only_get_run(db, rid)
+    assert run and run["final"] == "the deliverable"
+    assert any(e["kind"] == "worker_thought" for e in run["events"])
+
+
+def test_read_only_list_runs_never_creates_a_missing_db(tmp_path):
+    # THE safety property: scanning a workspace with no store must NOT create one
+    # (OrchestrationRunStore.__init__ would; the read-only helper must not).
+    ghost = tmp_path / "nope" / "orchestration.db"
+    assert read_only_list_runs(ghost, limit=50) == []
+    assert read_only_get_run(ghost, "orch_x") is None
+    assert not ghost.exists()
+    assert not (tmp_path / "nope").exists()
+
+
+def test_read_only_handles_non_orchestration_db(tmp_path):
+    # An existing sqlite file without the runs table → [], None (never raises).
+    other = tmp_path / "other.db"
+    conn = sqlite3.connect(other)
+    conn.execute("CREATE TABLE z(x)")
+    conn.commit()
+    conn.close()
+    assert read_only_list_runs(other) == []
+    assert read_only_get_run(other, "orch_x") is None
+
+
+def test_read_only_does_not_write(tmp_path):
+    src = OrchestrationRunStore(tmp_path / "orchestration.db")
+    src.create_run("x")
+    src.close()
+    db = tmp_path / "orchestration.db"
+    before = db.read_bytes()
+    read_only_list_runs(db, limit=50)
+    read_only_get_run(db, "orch_whatever")
+    assert db.read_bytes() == before  # mode=ro: byte-identical after reads
+
+
+def test_manager_merges_panel_and_workspace_history(tmp_path):
+    """GUI history must list chat-tool swarm runs (per-workspace .qunwork/ store)
+    alongside panel runs, and detail/report must resolve across both stores — read-only."""
+    from coworker.server.manager import SessionManager
+
+    ws = tmp_path / "proj"
+    ws.mkdir()
+    mgr = SessionManager(data_dir=tmp_path / "data", workspace=str(ws))
+    mgr.default_workspace = str(ws)
+
+    panel_run = mgr.orchestration_store.create_run("panel goal")
+    mgr.orchestration_store.update_status(panel_run, "completed")
+
+    chat_db = ws / ".qunwork" / "orchestration.db"
+    chat_store = OrchestrationRunStore(chat_db)
+    chat_run = chat_store.create_run("chat goal")
+    chat_store.update_status(chat_run, "completed", final="chat deliverable")
+    chat_store.close()
+
+    hist = mgr.orchestration_history_merged(limit=50)
+    srcs = {h["run_id"]: h.get("source") for h in hist}
+    assert srcs.get(panel_run) == "panel"
+    assert srcs.get(chat_run) == "workspace"  # was INVISIBLE before this change
+    assert chat_run not in {r["run_id"] for r in mgr.orchestration_store.list_runs(limit=50)}
+
+    # detail resolves the chat-tool run across stores (else history rows would 404)
+    got = mgr.orchestration_get_run(chat_run)
+    assert got and got["final"] == "chat deliverable"
+    assert mgr.orchestration_get_run("orch_does_not_exist") is None

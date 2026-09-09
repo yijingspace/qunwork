@@ -559,6 +559,74 @@ class SessionManager:
             out.append({"path": path, "name": p.name, "exists": p.is_dir()})
         return out
 
+    def _orchestration_store_paths(self) -> list[Path]:
+        """Per-workspace orchestration.db paths (where the chat `orchestrate()` tool
+        writes), global store excluded. Bounded to the default + recently-opened
+        workspaces so we never scan arbitrary directories."""
+        cands: list[Path] = []
+        if self.default_workspace:
+            cands.append(Path(self.default_workspace))
+        for w in self.recent_workspaces():
+            try:
+                cands.append(Path(w["path"]))
+            except (KeyError, TypeError):
+                continue
+        seen: set[str] = set()
+        out: list[Path] = []
+        for p in cands:
+            db = p / ".qunwork" / "orchestration.db"
+            key = str(db).lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(db)
+        return out
+
+    def orchestration_history_merged(self, *, limit: int = 50) -> list[dict[str, Any]]:
+        """Swarm history = the panel (global) store PLUS the read-only per-workspace
+        chat-tool stores, deduped by run_id (global wins) and newest-first.
+
+        只读聚合 (双 orchestration.db, 技术债): the GUI panel store and the per-workspace
+        `.qunwork/orchestration.db` (chat `orchestrate()`) are two files with identical
+        schema; panel-only history hides chat-tool swarm runs. This lists BOTH without
+        any migration or writes — the workspace DBs are opened via
+        `run_store.read_only_list_runs` (mode=ro), so scanning a workspace can never
+        create/clobber its store. Each row gains `source` (panel|workspace) [+ `workspace`]
+        for a future provenance badge."""
+        from ..orchestrator.run_store import read_only_list_runs
+
+        rows: list[dict[str, Any]] = []
+        for r in self.orchestration_store.list_runs(limit=limit):
+            r["source"] = "panel"
+            rows.append(r)
+        for db in self._orchestration_store_paths():
+            for r in read_only_list_runs(db, limit=limit):
+                r["source"] = "workspace"
+                r["workspace"] = str(db.parent.parent)
+                rows.append(r)
+        by_id: dict[str, dict[str, Any]] = {}
+        for r in rows:
+            prev = by_id.get(r.get("run_id"))
+            if prev is None or (prev.get("source") != "panel" and r.get("source") == "panel"):
+                by_id[r.get("run_id")] = r
+        merged = sorted(by_id.values(), key=lambda x: x.get("created_at") or 0, reverse=True)
+        return merged[:limit]
+
+    def orchestration_get_run(self, run_id: str) -> Optional[dict[str, Any]]:
+        """Resolve a run across the panel store and (read-only) the workspace stores,
+        so a chat-tool run surfaced in merged history can also be opened for detail
+        and its coordination report — otherwise history would show rows that 404."""
+        run = self.orchestration_store.get_run(run_id)
+        if run is not None:
+            return run
+        from ..orchestrator.run_store import read_only_get_run
+
+        for db in self._orchestration_store_paths():
+            found = read_only_get_run(db, run_id)
+            if found is not None:
+                return found
+        return None
+
     DEFAULT_SCRATCH_BASE = "~/QunWork"
 
     def scratch_base(self) -> Path:

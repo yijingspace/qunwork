@@ -328,3 +328,100 @@ class OrchestrationRunStore:
             self._db.close()
         except Exception:
             logger.debug("run store close failed", exc_info=True)
+
+
+# -- read-only accessors (双 orchestration.db 只读聚合) -------------------------
+# A per-workspace store lives at <workspace>/.qunwork/orchestration.db (the chat
+# `orchestrate()` tool writes there); the GUI panel store is the global one. These
+# let the history list surface BOTH without any writes — unlike OrchestrationRunStore
+# (whose __init__ mkdirs + CREATE TABLE + ALTER), which would CLOBBER every scanned
+# workspace by creating an empty DB. Here we open `mode=ro` URIs, never create a
+# file, and swallow every error (missing file / missing table / locked) as "nothing".
+_READ_COLS = (
+    "run_id, intent, status, created_at, updated_at, parent_run_id, value_tag"
+)
+
+
+def _ro_connect(db_path: str | Path) -> Optional[sqlite3.Connection]:
+    p = Path(db_path)
+    if not p.is_file():
+        return None  # mode=ro would NOT create it; skip cleanly
+    try:
+        # as_uri() → file:///E:/.../orchestration.db (Windows-safe, absolute);
+        # append mode=ro so sqlite opens it read-only (no write lock, no create).
+        return sqlite3.connect(p.resolve().as_uri() + "?mode=ro", uri=True, timeout=0.5)
+    except sqlite3.Error:
+        return None
+
+
+def read_only_list_runs(db_path: str | Path, limit: int = 50) -> list[dict[str, Any]]:
+    """List runs from another orchestration.db strictly read-only. Returns [] on any
+    problem (absent file, no table yet, locked). Adds no writes to the target."""
+    conn = _ro_connect(db_path)
+    if conn is None:
+        return []
+    try:
+        rows = conn.execute(
+            f"SELECT {_READ_COLS} FROM orchestration_runs "
+            "ORDER BY created_at DESC LIMIT ?",
+            (int(limit),),
+        ).fetchall()
+    except sqlite3.Error:
+        return []
+    finally:
+        try:
+            conn.close()
+        except sqlite3.Error:
+            pass
+    return [
+        {
+            "run_id": r[0],
+            "intent": r[1],
+            "status": r[2],
+            "created_at": r[3],
+            "updated_at": r[4],
+            "parent_run_id": r[5],
+            "value_tag": r[6],
+        }
+        for r in rows
+    ]
+
+
+def read_only_get_run(db_path: str | Path, run_id: str) -> Optional[dict[str, Any]]:
+    """Fetch one run (+ its event stream) from another orchestration.db, read-only."""
+    conn = _ro_connect(db_path)
+    if conn is None:
+        return None
+    try:
+        row = conn.execute(
+            f"SELECT {_READ_COLS}, final FROM orchestration_runs WHERE run_id = ?",
+            (run_id,),
+        ).fetchone()
+        if not row:
+            return None
+        try:
+            events = conn.execute(
+                "SELECT kind, payload FROM orchestration_events WHERE run_id = ? "
+                "ORDER BY seq",
+                (run_id,),
+            ).fetchall()
+        except sqlite3.Error:
+            events = []
+    except sqlite3.Error:
+        return None
+    finally:
+        try:
+            conn.close()
+        except sqlite3.Error:
+            pass
+    return {
+        "run_id": row[0],
+        "intent": row[1],
+        "status": row[2],
+        "created_at": row[3],
+        "updated_at": row[4],
+        "parent_run_id": row[5],
+        "value_tag": row[6],
+        "final": row[7],
+        "events": [{"kind": k, "payload": json.loads(p)} for k, p in events],
+    }
