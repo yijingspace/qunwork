@@ -36,6 +36,30 @@ class RunController:
         # Loop bound on the first orchestrator-side await (the loop that owns
         # the Event/Queue/Future). Cross-thread callers route through it.
         self._loop: Optional[asyncio.AbstractEventLoop] = None
+        # Optional Inbox bridge for requeue approvals (attended async GUI runs).
+        # When attached, a reviewer rejection surfaces a durable Inbox approval so
+        # an AWAY user is actually asked — instead of the command-deck timeout
+        # silently degrading the task. Set via attach_inbox_bridge(); the deck
+        # remains a second, equally-valid answer surface (first responder wins).
+        self._inbox: Any = None
+        self._inbox_session_id: Optional[str] = None
+        self._inbox_run_id: Optional[str] = None
+        self._inbox_hold_seconds: float = 3600.0
+        self._requeue_inbox_ids: dict[str, str] = {}
+
+    def attach_inbox_bridge(
+        self,
+        inbox: Any,
+        *,
+        session_id: str,
+        run_id: str,
+        hold_seconds: float = 3600.0,
+    ) -> None:
+        """Enable durable Inbox requeue approvals for this run (see __init__)."""
+        self._inbox = inbox
+        self._inbox_session_id = session_id
+        self._inbox_run_id = run_id
+        self._inbox_hold_seconds = max(1.0, float(hold_seconds))
 
     def _bind_loop(self) -> None:
         if self._loop is None:
@@ -151,22 +175,77 @@ class RunController:
     async def await_requeue(
         self, task_id: str, meta: dict[str, Any], timeout: float = 120.0
     ) -> bool:
-        """Block until the deck approves (True) or rejects/times out (False).
+        """Block until the operator approves (True) or rejects/times out (False).
 
-        The orchestrator emits a `task_requeue_waiting` event before calling so
-        the deck can show the approval card.
+        The orchestrator emits a `task_requeue_waiting` event before calling so the
+        deck can show the approval card. When an Inbox bridge is attached (attended
+        GUI runs), the decision is ALSO surfaced as a durable Inbox approval and we
+        PARK up to `_inbox_hold_seconds` instead of the deck's short timeout — so an
+        away user gets a real chance to answer rather than the task being silently
+        degraded. The deck and the Inbox both resolve the same future; first writer
+        wins (`approve_requeue`/`reject_requeue` and the inbox waiter are all
+        future-done guarded), and the loser is cleaned up in `finally`.
         """
         self._bind_loop()
         fut: "asyncio.Future[bool]" = asyncio.get_running_loop().create_future()
         self._requeue[task_id] = fut
         self._requeue_meta[task_id] = dict(meta)
+        inbox_task = None
         try:
-            return await asyncio.wait_for(fut, timeout=timeout)
+            if self._inbox is not None:
+                inbox_task = asyncio.create_task(
+                    self._await_requeue_inbox(task_id, dict(meta), fut)
+                )
+                hold = self._inbox_hold_seconds
+            else:
+                hold = timeout
+            # shield() so a timeout cancels the OUTER await, not our shared `fut`
+            # (the deck / inbox may still resolve it; and on timeout we set False
+            # ourselves rather than re-raising the future's CancelledError).
+            return await asyncio.wait_for(asyncio.shield(fut), timeout=hold)
         except asyncio.TimeoutError:
+            # Nobody answered in the window → decline (accept current result, degraded).
+            if not fut.done():
+                fut.set_result(False)
             return False
         finally:
             self._requeue.pop(task_id, None)
             self._requeue_meta.pop(task_id, None)
+            if inbox_task is not None:
+                inbox_task.cancel()
+            self._close_requeue_inbox(task_id)
+
+    async def _await_requeue_inbox(
+        self, task_id: str, meta: dict[str, Any], fut: "asyncio.Future[bool]"
+    ) -> None:
+        """Open the durable Inbox approval and resolve `fut` when answered."""
+        item = self._inbox.add_approval(
+            self._inbox_session_id,
+            title=f"蜂群任务 {task_id} 评审否决 — 重跑还是接受当前结果？",
+            body=str(meta.get("reason") or ""),
+            data={
+                "run_id": self._inbox_run_id,
+                "task_id": task_id,
+                "attempt": meta.get("attempt"),
+                "swarm_requeue": True,
+            },
+        )
+        self._requeue_inbox_ids[task_id] = item.id
+        resolution = await self._inbox.wait(item.id)
+        # Deck may have answered first; only act if still unresolved.
+        if not fut.done():
+            fut.set_result(resolution in ("allow", "allow_deliver"))
+
+    def _close_requeue_inbox(self, task_id: str) -> None:
+        """Best-effort: clear a still-pending Inbox card once the decision is made
+        by another surface (the deck) or the window closed. Idempotent (InboxStore
+        ignores a second resolve)."""
+        item_id = self._requeue_inbox_ids.pop(task_id, None)
+        if item_id and self._inbox is not None:
+            try:
+                self._inbox.resolve(item_id, "deny")  # neutral close; fut already decided
+            except Exception:
+                pass
 
     def approve_requeue(self, task_id: str) -> bool:
         def _do() -> bool:

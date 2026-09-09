@@ -500,6 +500,23 @@ def create_app(manager: SessionManager) -> FastAPI:
 
         controller = RunController()
         manager.active_orchestration_controls[run_id] = controller
+        # requeue→Inbox: for attended ASYNC runs, a reviewer rejection is surfaced as
+        # a durable Inbox approval so an away user is actually asked (instead of the
+        # 30s command-deck timeout silently degrading the task). Sync/in-chat runs
+        # keep the deck-only path (the caller is already watching). Both surfaces
+        # resolve the same future; first responder wins.
+        if not sync and getattr(manager, "inbox", None) is not None:
+            try:
+                controller.attach_inbox_bridge(
+                    manager.inbox,
+                    session_id=session_id,
+                    run_id=run_id,
+                    hold_seconds=float(
+                        body.get("requeue_inbox_hold_seconds") or 3600.0
+                    ),
+                )
+            except Exception:
+                pass  # bridge is best-effort; the deck-only path still works
 
         # Phase 3 governance feedback: reusing a template with a poor track
         # record warns before the run starts (the asset's own history pre-judges
