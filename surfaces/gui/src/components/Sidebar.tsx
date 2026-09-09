@@ -462,8 +462,13 @@ export function Sidebar(props: Props) {
     const a = s.attention || 0;
     if (a > 0) {
       attnByPersona.set(s.agent, (attnByPersona.get(s.agent) || 0) + a);
-      totalAttention += a;
     }
+    // The footer/nav Inbox badge counts ONLY what the Inbox PAGE shows (inbox-visibility),
+    // NOT `attention` (which also holds attended `inline` prompts answered in-context on the
+    // conversation) — otherwise attended prompts park a permanent "N pending" over an empty
+    // "Nothing pending" page (the badge ⊃ the page). Falls back to `attention` for an older
+    // server that predates `inbox_attention`.
+    totalAttention += s.inbox_attention ?? a;
     if (s.liveness === "working") liveByPersona.set(s.agent, "working");
     else if (s.liveness === "sleeping" && liveByPersona.get(s.agent) !== "working")
       liveByPersona.set(s.agent, "sleeping");

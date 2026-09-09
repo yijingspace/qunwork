@@ -75,7 +75,12 @@ export interface SessionInfo {
   pinned?: boolean;
   archived?: boolean;
   // Inbox items awaiting this session (the amber attention count that bubbles up the sidebar).
+  // All pending (inline + inbox) — drives the per-session/persona dots, since opening that
+  // session shows its in-context card.
   attention?: number;
+  // Subset of `attention` that the cross-session Inbox PAGE lists (inbox-visibility /
+  // unattended only) — drives the footer/nav Inbox badge so it never over-promises vs the page.
+  inbox_attention?: number;
   // working = in-flight turn; sleeping = a self-wake is pending; idle = neither. A count-less dot.
   liveness?: "working" | "sleeping" | "idle";
   // Channels this session listens to (inbound subscriptions).

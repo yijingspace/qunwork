@@ -26,7 +26,7 @@ from ..connections import (
     SessionConnectionStore,
     effective as effective_connections,
 )
-from ..inbox import InboxStore, args_preview
+from ..inbox import VIS_INBOX, InboxStore, args_preview
 from ..inbox_routing import InboxRouting
 from ..personas import PersonaRegistry
 from ..personas.registry import set_registry as set_persona_registry
@@ -4660,36 +4660,58 @@ class SessionManager:
     # -- read models ------------------------------------------------------------
     def list_sessions(self, workspace: Optional[str] = None) -> list[dict[str, Any]]:
         ws = self.resolve_workspace(workspace) if workspace else None
-        return [
-            {
-                "session_id": r.session_id,
-                "title": r.title or "New task",
-                "workspace": r.workspace,
-                "agent": r.agent,
-                "model": r.model,
-                "mode": r.mode,
-                "updated_at": r.updated_at,
-                "messages": r.message_count,
-                "pinned": r.pinned,
-                "archived": r.archived,
-                # §31: non-user origin ("slack") + display label — drives the sidebar's
-                # "From Slack" group and the row's platform icon.
-                "origin": r.origin,
-                "origin_label": r.origin_label,
-                # Attention = Inbox items awaiting this session (the amber count that bubbles
-                # session → persona → footer Inbox). Liveness = working (in-flight turn) /
-                # sleeping (a self-wake is pending) / idle — a count-less dot that never bubbles.
-                "attention": len(self.inbox.pending(session_id=r.session_id)),
-                "liveness": self._session_liveness(r.session_id),
-                # Channels this session listens to (inbound subscriptions) — drives the per-session
-                # "connections" indicator.
-                "subscriptions": [
-                    s.channel for s in self.subscriptions.for_session(r.session_id)
-                ],
-            }
-            for r in self.session_store.list(workspace=ws)
-            if not r.session_id.startswith("__")  # hide internal threads
-        ]
+        # Bucket the Inbox's PENDING items once, split by visibility.
+        #   attention         = all pending (inline + inbox): "this session needs you" — the
+        #                       amber dot on the session row and the persona rollup.
+        #   inbox_attention   = pending whose visibility is `inbox` (unattended): exactly what
+        #                       the cross-session Inbox PAGE lists (GET /v1/inbox filters to
+        #                       VIS_INBOX when no session_id is given). The footer Inbox badge
+        #                       drives off THIS, so the count never promises items the page
+        #                       hides — attended prompts parked `inline` are answered in-context
+        #                       on the conversation, not in the Inbox. (Bug: badge summed
+        #                       attention → a permanent "N pending" over an empty "Nothing
+        #                       pending" page; the orphan-closer only touches listed items, so
+        #                       inline never cleared it.)
+        pending = self.inbox.pending()
+        attention: dict[str, int] = {}
+        inbox_attention: dict[str, int] = {}
+        for it in pending:
+            attention[it.session_id] = attention.get(it.session_id, 0) + 1
+            if it.visibility == VIS_INBOX:
+                inbox_attention[it.session_id] = inbox_attention.get(it.session_id, 0) + 1
+        out: list[dict[str, Any]] = []
+        for r in self.session_store.list(workspace=ws):
+            if r.session_id.startswith("__"):  # hide internal threads
+                continue
+            out.append(
+                {
+                    "session_id": r.session_id,
+                    "title": r.title or "New task",
+                    "workspace": r.workspace,
+                    "agent": r.agent,
+                    "model": r.model,
+                    "mode": r.mode,
+                    "updated_at": r.updated_at,
+                    "messages": r.message_count,
+                    "pinned": r.pinned,
+                    "archived": r.archived,
+                    # §31: non-user origin ("slack") + display label — drives the sidebar's
+                    # "From Slack" group and the row's platform icon.
+                    "origin": r.origin,
+                    "origin_label": r.origin_label,
+                    # Attention = all pending Inbox items (row + persona dot); liveness =
+                    # working (in-flight) / sleeping (self-wake pending) / idle (dot, no count).
+                    "attention": attention.get(r.session_id, 0),
+                    "inbox_attention": inbox_attention.get(r.session_id, 0),
+                    "liveness": self._session_liveness(r.session_id),
+                    # Channels this session listens to (inbound subscriptions) — drives the
+                    # per-session "connections" indicator.
+                    "subscriptions": [
+                        s.channel for s in self.subscriptions.for_session(r.session_id)
+                    ],
+                }
+            )
+        return out
 
     def _session_liveness(self, session_id: str) -> str:
         if self.is_running(session_id):
