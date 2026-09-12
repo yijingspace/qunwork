@@ -341,12 +341,16 @@ function TaskDetail({
       .catch(() => {});
   useEffect(() => {
     setSeenMark(null);
-    refresh();
-    // Opening the detail IS reading it: advance the seen mark and nudge the
-    // sidebar so the badge clears immediately (UX-023).
-    markAutomationSeen(id)
-      .then(() => announceAutomationsChanged())
-      .catch(() => {});
+    // Ordering matters: capture the PRE-OPEN seen mark before advancing the stored one. Firing
+    // mark-seen in parallel could win the race, so refresh() would read back the already-advanced
+    // mark and every "new" pill would silently vanish (flaky: run-new sometimes never rendered).
+    void refresh().then(() =>
+      // Opening the detail IS reading it: advance the seen mark and nudge the
+      // sidebar so the badge clears immediately (UX-023).
+      markAutomationSeen(id)
+        .then(() => announceAutomationsChanged())
+        .catch(() => {}),
+    );
   }, [id]);
 
   if (!task)

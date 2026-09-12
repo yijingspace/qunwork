@@ -18,6 +18,26 @@ import { Icon } from "./Icon";
 
 const FIELD_LABEL = "text-[12.5px] font-medium text-ink";
 
+// Field-level degradation for the cache-warm card: the render path reads `warm.week.calls`,
+// `warm.min_hit_rate` and friends unguarded, so a partial/older payload (or a body that isn't
+// the expected shape at all) used to throw through the ErrorBoundary and blank the whole
+// Settings page. Normalizing here keeps a bad payload from becoming a dead page.
+function normalizeWarm(w: Partial<CacheWarmStatus> | null | undefined): CacheWarmStatus {
+  return {
+    enabled: w?.enabled ?? false,
+    min_hit_rate: w?.min_hit_rate ?? 0.5,
+    max_items: w?.max_items ?? 20,
+    interval_hours: w?.interval_hours ?? 6,
+    last_warm_at: w?.last_warm_at ?? 0,
+    week: {
+      prompt_tokens: w?.week?.prompt_tokens ?? 0,
+      cached_tokens: w?.week?.cached_tokens ?? 0,
+      calls: w?.week?.calls ?? 0,
+    },
+    org_hit_rate: w?.org_hit_rate ?? 0,
+  };
+}
+
 interface UsageAgg {
   prompt_tokens: number;
   completion_tokens: number;
@@ -110,7 +130,9 @@ export function UsageTab() {
 
   useEffect(() => {
     reload();
-    getCacheWarmStatus().then(setWarm).catch(() => setWarm(null));
+    getCacheWarmStatus()
+      .then((w) => setWarm(normalizeWarm(w)))
+      .catch(() => setWarm(null));
     pollRef.current = window.setInterval(reload, 10_000);
     const onVisible = () => { if (document.visibilityState === "visible") reload(); };
     document.addEventListener("visibilitychange", onVisible);
@@ -143,7 +165,9 @@ export function UsageTab() {
             })
           : t("Warm-up skipped: {reason}", { reason: (r as any).reason ?? (r as any).error ?? "?" })
       );
-      getCacheWarmStatus().then(setWarm).catch(() => {});
+      getCacheWarmStatus()
+        .then((w) => setWarm(normalizeWarm(w)))
+        .catch(() => {});
     } catch {
       setWarmNote(t("Warm-up failed."));
     } finally {

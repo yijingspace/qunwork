@@ -140,7 +140,11 @@ export function ConnectorsList({
 function statusLine(c: Connector, t?: (k: string, v?: Record<string, string | number>) => string): string {
   if (c.name === "slack" && c.mode === "relay") {
     const n = c.workspaces?.length ?? 0;
-    return t ? t("{n} workspace(s) · relay", { n }) : `${n} workspace${n === 1 ? "" : "s"} · relay`;
+    if (!t) return `${n} workspace${n === 1 ? "" : "s"} · relay`;
+    // Keys ARE the English source strings, so a count-agnostic "{n} workspace(s)" key would be
+    // rendered verbatim for English (the identity fallback) and leak the "(s)" into the UI.
+    // Pick the singular/plural key by count instead — each language then reads naturally.
+    return n === 1 ? t("1 workspace · relay") : t("{n} workspaces · relay", { n });
   }
   if ((c.accounts?.length ?? 0) > 1) return t ? t("{n} accounts", { n: c.accounts!.length }) : `${c.accounts!.length} accounts`;
   if ((c.portals?.length ?? 0) > 1) return t ? t("{n} portals", { n: c.portals!.length }) : `${c.portals!.length} portals`;

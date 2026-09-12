@@ -1002,12 +1002,22 @@ export function RhythmCard() {
   const [recs, setRecs] = useState<RhythmRecommendations | null>(null);
 
   useEffect(() => {
+    // Field-level degradation: the card dereferences these arrays directly, so a partial or
+    // older payload used to throw through the ErrorBoundary and take the WHOLE Settings page
+    // down with it. Normalize at the boundary instead — a missing field degrades this card.
     rhythmForecast()
-      .then(setData)
+      .then((d) =>
+        setData({
+          period_days: d?.period_days ?? 0,
+          rhythm: d?.rhythm ?? "irregular",
+          upcoming: d?.upcoming ?? [],
+          generated_at: d?.generated_at ?? 0,
+        }),
+      )
       .catch((e) => setErr(String(e)));
     // P0 建议4: per-automation best trigger times (run-history valleys).
     rhythmRecommendations()
-      .then(setRecs)
+      .then((r) => setRecs({ ...r, recommendations: r?.recommendations ?? [] }))
       .catch(() => setRecs(null));
   }, []);
 

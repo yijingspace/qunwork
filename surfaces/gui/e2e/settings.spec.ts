@@ -119,3 +119,33 @@ test("Settings: Token savings card edits PDF fallback and thresholds", async ({ 
   ]);
   expect(req2.postDataJSON()).toEqual({ pdf_max_pages: 30 });
 });
+
+// Regression: the rhythm + cache-warm cards dereference response fields directly, so a partial or
+// older payload used to throw through the ErrorBoundary and blank the WHOLE Settings page (that
+// crash masked 30 unrelated specs' failures). Field-level normalization must keep the page alive
+// with degraded values instead.
+test("malformed rhythm/cache-warm payloads degrade, never blank the page", async ({ page }) => {
+  await page.route("**/v1/rhythm/forecast", (route) =>
+    route.fulfill({ contentType: "application/json", body: "{}" }),
+  );
+  await page.route("**/v1/rhythm/recommendations", (route) =>
+    route.fulfill({ contentType: "application/json", body: "{}" }),
+  );
+  await page.route("**/v1/cache/warm", (route) =>
+    route.fulfill({ contentType: "application/json", body: "{}" }),
+  );
+  await page.goto("/");
+  await page.getByTestId("account-row").click();
+  await page.getByRole("button", { name: "Settings", exact: true }).click();
+
+  // General still renders — the rhythm card degrades to "nothing yet" instead of exploding.
+  await expect(page.getByRole("heading", { name: "General" })).toBeVisible();
+  await expect(page.getByText("Something went wrong rendering this panel")).toHaveCount(0);
+  await expect(page.getByTestId("rhythm-card")).toBeVisible();
+  await expect(page.getByText("No period detected yet")).toBeVisible();
+
+  // Usage too: the cache-warm card renders zeroed counts rather than taking the page down.
+  await page.getByRole("button", { name: "Usage", exact: true }).click();
+  await expect(page.getByTestId("cache-warm-card")).toBeVisible();
+  await expect(page.getByText("Something went wrong rendering this panel")).toHaveCount(0);
+});
