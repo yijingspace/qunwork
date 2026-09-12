@@ -1,5 +1,5 @@
-// Cold-boot fixes (owner-hit 2026-07-23): the splash wears the real QunWork mark
-// (6-point star SVG, not the ✦ text glyph that read as another product's logo), and the
+// Cold-boot fixes (owner-hit 2026-07-23): the splash wears the real QunWork mark (the brand
+// PNG lockup mark, not the ✦ text glyph that read as another product's logo), and the
 // model picker recovers when the mount-time settings fetch loses the race against the
 // sidecar boot — previously "Loading models…" stuck until the user visited Settings.
 import { expect } from "@playwright/test";
@@ -14,7 +14,7 @@ test("boot splash shows the QunWork star, not the sparkle glyph", async ({ page 
   await page.goto("/");
   const mark = page.locator(".boot-mark");
   await expect(mark).toBeVisible();
-  await expect(mark.locator("svg")).toBeVisible(); // the Icon logo, not a text glyph
+  await expect(mark.locator("img.boot-mark-img")).toBeVisible(); // the brand mark image, not a text glyph
   await expect(mark).not.toContainText("✦");
   await expect(page.getByText(/Starting QunWork|Restoring your session/)).toBeVisible();
 });

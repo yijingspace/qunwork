@@ -15,7 +15,7 @@ test("connected connectors come first with status + health chip", async ({ page 
   await openConnectors(page);
 
   const slack = page.getByTestId("connector-slack");
-  await expect(slack).toContainText("2 workspaces · relay");
+  await expect(slack).toContainText("2 workspace(s) · relay");
   // signed out + relay mode → the honest chip is the actionable one
   await expect(slack).toContainText("Sign-in needed");
   // available section renders the not-connected connectors with a Connect pill
@@ -29,7 +29,7 @@ test("row navigates to the detail subpage; breadcrumb returns", async ({ page })
   await page.getByTestId("connector-slack").click();
   await expect(page.getByTestId("slack-workspaces")).toBeVisible();
   await page.getByTestId("connectors-breadcrumb").click();
-  await expect(page.getByTestId("connector-slack")).toContainText("2 workspaces · relay");
+  await expect(page.getByTestId("connector-slack")).toContainText("2 workspace(s) · relay");
 });
 
 test("generic detail page: tools + two-way blocks + disconnect for telegram-alikes", async ({

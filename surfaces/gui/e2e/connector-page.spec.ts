@@ -17,7 +17,7 @@ test("list row status + navigation to the Slack page", async ({ page }) => {
   await page.getByRole("button", { name: "Connectors", exact: true }).click();
 
   const row = page.getByTestId("connector-slack");
-  await expect(row).toContainText("2 workspaces · relay");
+  await expect(row).toContainText("2 workspace(s) · relay");
   await row.click();
   await expect(page.getByTestId("slack-workspaces")).toBeVisible();
   // signed out (fixture default) → the status line leads with the actionable layer

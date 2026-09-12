@@ -857,6 +857,74 @@ export async function mockApi(page: import("@playwright/test").Page) {
       }
       return json({ templates: taskTemplates });
     }
+    // Organizational rhythm (Settings ▸ General "Organizational rhythm" card). The card
+    // dereferences `upcoming` / `recommendations` directly, so the catch-all empty body
+    // would crash the whole Settings page — shapes mirrored from manager.rhythm_forecast()
+    // and manager.rhythm_recommendations().
+    if (p.endsWith("/v1/rhythm/forecast")) {
+      return json({
+        period_days: 7,
+        rhythm: "weekly",
+        upcoming: [
+          { id: AUTOMATION.id, title: AUTOMATION.title, next_run: AUTOMATION.next_run, cron: "40 17 * * *" },
+        ],
+        generated_at: Math.floor(Date.now() / 1000),
+      });
+    }
+    if (p.endsWith("/v1/rhythm/recommendations")) {
+      return json({
+        period_days: 7,
+        rhythm: "weekly",
+        recommendations: [
+          {
+            task_id: AUTOMATION.id,
+            title: AUTOMATION.title,
+            priority: "normal",
+            cron: "40 17 * * *",
+            current_hour: 17,
+            recommended_hour: 3,
+            valley_share: 0.75,
+            runs: 12,
+            reason: "12 runs — fewest at 03:00 (share 25%)",
+          },
+        ],
+      });
+    }
+    // Prompt-cache warm-up status (Settings ▸ Usage). UsageTab reads `week.calls`
+    // unguarded, so the catch-all empty body would crash the section.
+    if (p.endsWith("/v1/cache/warm")) {
+      if (m === "POST") return json({ ok: true, warmed: 3, prompt_tokens: 1200 });
+      return json({
+        enabled: true,
+        min_hit_rate: 0.5,
+        max_items: 20,
+        interval_hours: 6,
+        last_warm_at: Math.floor(Date.now() / 1000) - 3600,
+        week: { prompt_tokens: 12000, cached_tokens: 9000, calls: 42 },
+        org_hit_rate: 0.72,
+      });
+    }
+    if (p.endsWith("/v1/cache/warm/toggle") && m === "POST") {
+      return json({ ok: true, enabled: !!req.postDataJSON()?.enabled });
+    }
+    // Usage summary (Settings ▸ Usage) — shapes mirrored from UsageTab's api types.
+    if (p.startsWith("/v1/usage")) {
+      return json({
+        totals: {
+          total_tokens: 120000,
+          prompt_tokens: 90000,
+          completion_tokens: 30000,
+          cached_tokens: 54000,
+          cache_hit_rate: 0.6,
+          turns: 48,
+        },
+        steady: { prompt_tokens: 90000, cached_tokens: 54000, turns: 48, cache_hit_rate: 0.6 },
+        by_day: [],
+        by_session: [],
+      });
+    }
+    if (p.endsWith("/v1/workspaces/trusted")) return json({ workspaces: [] });
+    if (p.endsWith("/v1/memory")) return json({ memory: [] });
     // must precede the /v1/personas/{id} catch-all (install matches it too)
     if (p.endsWith("/v1/personas/install") && m === "POST") {
       const b = req.postDataJSON();

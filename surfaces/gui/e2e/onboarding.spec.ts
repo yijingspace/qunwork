@@ -120,7 +120,7 @@ test("tools page: sign-in morphs the page into the connector gallery; a card con
   // (zero layout shift), and every row grows its Connect pill.
   await page.getByTestId("ob-cloud-signin").click();
   await expect(page.getByTestId("ob-tools-signedin")).toBeVisible({ timeout: 10_000 });
-  await expect(page.getByTestId("ob-tools-signedin")).toContainText("You’re signed in");
+  await expect(page.getByTestId("ob-tools-signedin")).toContainText("You're signed in");
   await expect(
     page.getByTestId("ob-tool-attio").getByRole("button", { name: "Connect" }),
   ).toBeVisible();

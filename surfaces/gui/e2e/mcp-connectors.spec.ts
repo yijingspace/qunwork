@@ -41,8 +41,10 @@ test("jira: two modes — MCP one-click pane plus the manual token form", async 
   page,
 }) => {
   await openConnectors(page);
-  // jira sits past the available-list fold.
-  await page.getByRole("button", { name: "show all" }).click();
+  // jira sits past the available-list fold when the fold is present (AVAILABLE_FOLD = 12);
+  // with a shorter catalog every row is already rendered, so expand only if offered.
+  const showAll = page.getByRole("button", { name: "show all" });
+  if (await showAll.count()) await showAll.click();
   await page
     .getByTestId("connector-jira")
     .getByRole("button", { name: "Connect" })
