@@ -738,50 +738,76 @@ button.btn.danger { color: var(--accent); }
 .addfolder-write { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); cursor: pointer; }
 .addfolder-actions .spacer { flex: 1; }
 
-/* Cowork session start panel */
-.intro { max-width: 640px; margin: 0 auto; padding: 40px 20px 24px; }
-.intro .greeting { font-size: 26px; font-weight: 600; display: flex; align-items: center; gap: 10px; }
+/* Cowork session start panel (§27, redesigned as a card grid) */
+.intro { max-width: 660px; margin: 0 auto; padding: 40px 20px 24px; }
+.intro .greeting { font-size: 28px; font-weight: 600; display: flex; align-items: center; gap: 10px; }
 .intro .greeting .mark { color: var(--accent); }
-.intro-lede { color: var(--muted); font-size: 14px; line-height: 1.5; margin: 8px 0 0; }
+.intro-lede { color: var(--muted); font-size: 14px; line-height: 1.5; margin: 10px 0 0; }
 
-/* Complete brand lockup (Q+swarm mark + 群沃客 wordmark) centered above the
-   greeting — the full brand image, kept proportional. */
+/* Complete brand lockup (Q+swarm mark + 群沃客 wordmark) centered above the greeting —
+   transparent-ink variants; data-theme picks light (navy) or dark (lifted blue) so the
+   lockup never renders as a white slab in dark mode. */
 .intro-brand {
   display: flex;
   justify-content: center;
-  margin: 0 0 20px;
+  margin: 0 0 22px;
 }
-.intro-brand-img { width: 170px; height: auto; object-fit: contain; }
+.intro-brand-img { width: 170px; height: auto; }
+.intro-brand-dark { display: none; }
+html[data-theme="dark"] .intro-brand-light { display: none; }
+html[data-theme="dark"] .intro-brand-dark { display: block; }
 
-/* Template tasks on the Cowork start screen (§27): flat hairline rows, no icon tiles — the
-   title is the row. Connector dots on the sub-line (brand color = live for this session,
-   grayscale = not; §23's vocabulary); sub-line copy is the task's OUTCOME, never connection
-   state. Ready row: hover colors the title and reveals the action. Gated row: "Configure ›"
-   stays visible at rest — the setup action IS the row's meaning. Staggered entrance. */
-.intro-tasks { margin-top: 30px; display: flex; flex-direction: column; }
+/* small uppercase group label above each card grid */
+.intro-section-label {
+  margin: 26px 0 0;
+  font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase;
+  color: var(--faint);
+}
+
+/* Template tasks on the Cowork start screen (§27, card-grid edition): soft panel cards on a
+   responsive 2-up grid — the title is the card. Connector dots on the sub-line (brand color =
+   live for this session, grayscale = not; §23's vocabulary); sub-line copy is the task's
+   OUTCOME, never connection state. Ready card: hover lifts it, colors the title and reveals
+   the action. Gated card: dashed border + "Configure ›" stays visible at rest — the setup
+   action IS the card's meaning. Staggered entrance; motion-free under reduced motion. */
+.task-grid {
+  margin-top: 10px;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 10px;
+}
 .task-card {
   display: flex; align-items: center; gap: 14px;
-  width: 100%; text-align: left; cursor: pointer;
-  padding: 13px 6px;
-  background: none; border: none; border-top: 1px solid var(--line);
+  text-align: left; cursor: pointer;
+  padding: 14px 16px;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
   font: inherit; color: var(--ink);
   opacity: 0; transform: translateY(4px);
   animation: task-rise 0.35s ease forwards;
+  transition: border-color 0.12s, box-shadow 0.12s, transform 0.12s;
 }
-.task-card:nth-of-type(1) { animation-delay: 0.10s; }
-.task-card:nth-of-type(2) { animation-delay: 0.22s; }
-.task-card:nth-of-type(3) { animation-delay: 0.34s; }
+.task-card:nth-child(1) { animation-delay: 0.08s; }
+.task-card:nth-child(2) { animation-delay: 0.16s; }
+.task-card:nth-child(3) { animation-delay: 0.24s; }
+.task-card:nth-child(4) { animation-delay: 0.32s; }
+.task-card:nth-child(n + 5) { animation-delay: 0.40s; }
 @keyframes task-rise { to { opacity: 1; transform: none; } }
+.task-card:hover {
+  border-color: var(--accent);
+  transform: translateY(-1px);
+  box-shadow: 0 3px 10px rgba(23, 25, 28, 0.06);
+}
+html[data-theme="dark"] .task-card:hover { box-shadow: 0 3px 10px rgba(0, 0, 0, 0.35); }
 @media (prefers-reduced-motion: reduce) {
   .task-card { animation: none; opacity: 1; transform: none; }
+  .task-card:hover { transform: none; }
 }
-.task-card:first-child { border-top: none; }
 .task-card-body { flex: 1; min-width: 0; }
-.task-card-title { display: block; font-size: 14.5px; transition: color 0.12s; }
+.task-card-title { display: block; font-size: 14.5px; font-weight: 500; transition: color 0.12s; }
 .task-card:hover .task-card-title { color: var(--accent); }
 .task-card-sub {
   display: flex; align-items: center; gap: 7px;
-  font-size: 12.5px; color: var(--faint); margin-top: 3px;
+  font-size: 12.5px; color: var(--faint); margin-top: 4px;
 }
 .task-dot {
   width: 18px; height: 18px; border-radius: 50%; flex: none;
@@ -795,7 +821,54 @@ button.btn.danger { color: var(--accent); }
   opacity: 0; transition: opacity 0.12s;
 }
 .task-card:hover .task-card-act { opacity: 1; color: var(--accent); }
+.task-card.gated { border-style: dashed; }
 .task-card.gated .task-card-act { opacity: 1; color: var(--accent); }
+
+/* the ghost "＋ Custom template" cell — an invitation, not a task: dashed, no panel fill */
+.task-card-add { position: relative; background: transparent; border-style: dashed; }
+.task-card-add:hover { box-shadow: none; }
+.task-card-add .task-card-title { color: var(--muted); }
+.task-card-add:hover .task-card-title { color: var(--accent); }
+
+/* user-defined template cards: a real <button> body with a SIBLING delete button (never an
+   interactive element nested in another — the old × span inside <button> was invalid HTML) */
+.task-card-main {
+  flex: 1; min-width: 0;
+  display: flex; align-items: center; gap: 14px;
+  text-align: left; cursor: pointer;
+  padding: 0; background: none; border: none;
+  font: inherit; color: inherit;
+}
+.task-card-main:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 8px; }
+.task-card-del {
+  position: absolute; top: 6px; right: 8px;
+  width: 20px; height: 20px; display: grid; place-items: center;
+  color: var(--faint); font-size: 15px; line-height: 1; cursor: pointer;
+  background: none; border: none; padding: 0;
+  border-radius: 6px; opacity: 0; transition: opacity 0.12s, color 0.12s, background 0.12s;
+}
+.task-card:hover .task-card-del { opacity: 1; }
+.task-card-del:hover { color: var(--danger, #dc2626); background: var(--paper); }
+.task-card-del:focus-visible { opacity: 1; outline: 2px solid var(--accent); outline-offset: 1px; }
+
+/* inline forms (add-folder / new template) open in one full-width panel below the grids */
+.intro-form-panel {
+  margin-top: 10px; padding: 12px 14px;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+}
+
+.brand-slogan {
+  font-size: 11px; color: var(--faint); margin-top: 1px;
+  letter-spacing: 0.02em;
+}
+.intro-template-form { display: flex; flex-direction: column; gap: 8px; }
+.intro-tmpl-input {
+  font: inherit; font-size: 13px; color: var(--ink);
+  background: var(--paper); border: 1px solid var(--line); border-radius: 8px;
+  padding: 7px 9px; outline: none; resize: vertical;
+}
+.intro-tmpl-input:focus { border-color: var(--accent); }
+.intro-tmpl-prompt { font-size: 12.5px; }
 
 /* Topbar "Artifacts (N)" affordance, shown when the side panel is hidden */
 .topbar-artifacts-btn {
@@ -810,33 +883,6 @@ button.btn.danger { color: var(--accent); }
   min-width: 17px; padding: 0 5px; border-radius: 9px;
   background: var(--accent); color: #fff; font-size: 11px; font-weight: 600; text-align: center;
 }
-/* the inline add-folder form sits under the "Analyze the files in a directory" task row */
-.intro-addfolder { padding: 4px 6px 14px 6px; border-top: 1px solid var(--line); }
-
-.brand-slogan {
-  font-size: 11px; color: var(--faint); margin-top: 1px;
-  letter-spacing: 0.02em;
-}
-/* user-defined task templates on the home screen */
-.task-card { position: relative; }
-.task-card-add .task-card-title { color: var(--muted); }
-.task-card-add:hover .task-card-title { color: var(--accent); }
-.task-card-del {
-  position: absolute; top: 6px; right: 8px;
-  width: 20px; height: 20px; display: grid; place-items: center;
-  color: var(--faint); font-size: 15px; line-height: 1; cursor: pointer;
-  border-radius: 6px; opacity: 0; transition: opacity 0.12s, color 0.12s, background 0.12s;
-}
-.task-card:hover .task-card-del { opacity: 1; }
-.task-card-del:hover { color: var(--danger, #dc2626); background: var(--panel); }
-.intro-template-form { display: flex; flex-direction: column; gap: 8px; }
-.intro-tmpl-input {
-  font: inherit; font-size: 13px; color: var(--ink);
-  background: var(--paper); border: 1px solid var(--line); border-radius: 8px;
-  padding: 7px 9px; outline: none; resize: vertical;
-}
-.intro-tmpl-input:focus { border-color: var(--accent); }
-.intro-tmpl-prompt { font-size: 12.5px; }
 
 /* request_directory prompt (agent-initiated) */
 .dirreq-card {

@@ -694,6 +694,8 @@ export const zh: Messages = {
   "Meeting notes & transcripts — sign in with your Granola account.": "会议记录与转写——使用你的 Granola 账号登录。",
   "What task can I help you solve?": "有什么任务需要我帮你解决?",
   "Tell me what you need done — I'll plan it, do the work, and save the result. Or pick a task below.": "告诉我你需要解决什么——我会规划、执行并保存结果。也可以从下面的任务开始。",
+  "Quick start": "快速开始",
+  "My templates": "我的模板",
   "New task": "新建任务",
   "Start with a task": "从一个任务开始",
   "Working on your task...": "正在处理你的任务…",

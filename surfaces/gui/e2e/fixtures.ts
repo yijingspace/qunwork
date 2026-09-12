@@ -544,6 +544,12 @@ export async function mockApi(page: import("@playwright/test").Page) {
   // Per-session unattended flag — mutable so the composer's "Send to Inbox" toggle persists and
   // the app reads it back (which is what gates parking approvals to the Inbox vs an inline card).
   const unattended: Record<string, boolean> = {};
+  // Task templates (session-intro "My templates" cards) — per-test state so the intro's
+  // add/delete flows round-trip through the real UI. Seeded with one so the group renders.
+  const taskTemplates: any[] = [
+    { id: 101, title: "Weekly digest", prompt: "Write a weekly digest of my team's activity." },
+  ];
+  let nextTemplateId = 1000;
 
   // Fresh cloud sign-in state per test (module state outlives a page).
   Object.assign(CLOUD_STATE, {
@@ -833,6 +839,23 @@ export async function mockApi(page: import("@playwright/test").Page) {
     if (p.endsWith("/v1/workspaces/open") && m === "POST") {
       const b = req.postDataJSON();
       return json({ ok: true, path: b.path, git_branch: "main" });
+    }
+    // task templates (session-intro custom cards) — CRUD held in per-test state
+    if (/\/v1\/task-templates\/\d+$/.test(p) && m === "DELETE") {
+      const id = Number(p.split("/").pop());
+      const i = taskTemplates.findIndex((t) => t.id === id);
+      if (i >= 0) taskTemplates.splice(i, 1);
+      return json({ ok: true });
+    }
+    if (p.endsWith("/v1/task-templates")) {
+      if (m === "POST") {
+        const b = req.postDataJSON();
+        if (!b?.title || !b?.prompt) return json({ ok: false, error: "title and prompt required" }, 400);
+        const tmpl = { id: nextTemplateId++, title: String(b.title), prompt: String(b.prompt) };
+        taskTemplates.push(tmpl);
+        return json({ ok: true, template: tmpl });
+      }
+      return json({ templates: taskTemplates });
     }
     // must precede the /v1/personas/{id} catch-all (install matches it too)
     if (p.endsWith("/v1/personas/install") && m === "POST") {

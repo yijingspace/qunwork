@@ -2,19 +2,23 @@ import { useEffect, useState } from "react";
 import { getConnectors, getSessionConnections, listTaskTemplates, addTaskTemplate, deleteTaskTemplate, type TaskTemplate } from "../api";
 import type { Attachment } from "../types";
 import brandLogo from "../assets/brand-logo.webp";
+import brandLogoDark from "../assets/brand-logo-dark.webp";
 import { ConnectorIcon } from "../connectors/ConnectorIcon";
 import { indexConnectors, visualFor, type ConnectorMap } from "../connectors/visuals";
 import { useRoots } from "../useRoots";
 import { AddFolderForm } from "./AddFolderForm";
 import { useT } from "../i18n";
 
-// Empty-state for a fresh Cowork session (§27): a greeting, exactly three concrete template
-// tasks, and the composer — nothing else. Each task carries its own setup: no icon tiles (the
-// title is the row), connector dots on the sub-line (brand color = connected and enabled for
-// this session, grayscale = not — §23's vocabulary), and sub-line copy that is always the task's
-// OUTCOME, never connection state. Sources ready → "Start →" on hover, click prefills the
-// composer. Not ready → "Configure ›" always visible (for a gated row the setup action IS the
-// row's meaning), opening the §23 Session settings drawer — no second setup surface here.
+// Empty-state for a fresh Cowork session (§27, redesigned as a card grid): a greeting, exactly
+// three concrete template tasks plus the "custom template" ghost cell, and the composer —
+// nothing else. Each task carries its own setup: connector dots on the sub-line (brand color =
+// connected and enabled for this session, grayscale = not — §23's vocabulary), and sub-line copy
+// that is always the task's OUTCOME, never connection state. Sources ready → "Start →" on hover,
+// click prefills the composer. Not ready → "Configure ›" always visible (for a gated card the
+// setup action IS the card's meaning), opening the §23 Session settings drawer. Custom templates
+// live in their own labeled group; each card is a real <button> with a SIBLING delete button —
+// never an interactive element nested inside another (the old × span inside <button> was invalid
+// HTML). Inline forms (add-folder / new template) open in one full-width panel below the grids.
 
 const FOLDER_PROMPT = "Analyze the files in this folder and summarize what matters.";
 const HUBSPOT_PROMPT =
@@ -28,7 +32,7 @@ export function SessionIntro({
   onPrefill,
 }: {
   sessionId: string;
-  // Opens the §23 Session settings drawer (sources section) — the gated rows' Configure target.
+  // Opens the §23 Session settings drawer (sources section) — the gated cards' Configure target.
   onOpenSessionSettings: () => void;
   onPrefill: (text: string, attachments?: Attachment[]) => void;
 }) {
@@ -96,9 +100,12 @@ export function SessionIntro({
 
   return (
     <div className="intro">
-      {/* Complete brand lockup (Q+swarm mark + 群沃客 wordmark), centered above the greeting. */}
+      {/* Complete brand lockup (Q+swarm mark + 群沃客 wordmark), centered above the greeting.
+          Two transparent-ink variants — data-theme picks the one with contrast on the paper —
+          so the lockup never renders as a white slab in dark mode. */}
       <div className="intro-brand" data-testid="intro-brand">
-        <img src={brandLogo} alt="群沃客" className="intro-brand-img" />
+        <img src={brandLogo} alt="群沃客" className="intro-brand-img intro-brand-light" />
+        <img src={brandLogoDark} alt="" aria-hidden="true" className="intro-brand-img intro-brand-dark" />
       </div>
       <h1 className="greeting">
         <span className="mark">✦</span> {t("What task can I help you solve?")}
@@ -107,7 +114,8 @@ export function SessionIntro({
         {t("Tell me what you need done — I'll plan it, do the work, and save the result. Or pick a task below.")}
       </p>
 
-      <div className="intro-tasks">
+      <div className="intro-section-label">{t("Quick start")}</div>
+      <div className="task-grid">
         <button className="task-card" data-testid="intro-task-folder" onClick={pickFolder}>
           <span className="task-card-body">
             <span className="task-card-title">{t("Analyze the files in a directory")}</span>
@@ -115,21 +123,6 @@ export function SessionIntro({
           </span>
           <span className="task-card-act">{t("Pick a folder →")}</span>
         </button>
-        {addingFolder && (
-          <div className="intro-addfolder">
-            <AddFolderForm
-              startOpen
-              busy={busy}
-              onAdd={async (path, writable) => {
-                const ok = await addRoot(path, writable);
-                if (ok !== false) onPrefill(t(FOLDER_PROMPT));
-                return ok;
-              }}
-              onDismiss={() => setAddingFolder(false)}
-            />
-            {error && <div className="roots-err">{error}</div>}
-          </div>
-        )}
 
         <button
           className={"task-card" + (hubspotReady ? "" : " gated")}
@@ -162,67 +155,84 @@ export function SessionIntro({
           <span className="task-card-act">{ghSlackReady ? t("Start →") : t("Configure ›")}</span>
         </button>
 
-        {templates.map((tmpl) => (
-          <button
-            key={tmpl.id}
-            className="task-card"
-            data-testid={`intro-task-custom-${tmpl.id}`}
-            onClick={() => onPrefill(tmpl.prompt)}
-          >
-            <span className="task-card-body">
-              <span className="task-card-title">{tmpl.title}</span>
-              <span className="task-card-sub">{tmpl.prompt}</span>
-            </span>
-            <span className="task-card-act">{t("Start →")}</span>
-            <span
-              className="task-card-del"
-              role="button"
-              aria-label={t("Delete template")}
-              title={t("Delete template")}
-              onClick={(e) => {
-                e.stopPropagation();
-                void removeTemplate(tmpl.id);
-              }}
-            >
-              ×
-            </span>
-          </button>
-        ))}
-
         <button className="task-card task-card-add" data-testid="intro-task-add" onClick={() => setAddingTemplate((v) => !v)}>
           <span className="task-card-body">
             <span className="task-card-title">{addingTemplate ? t("Cancel") : "＋ " + t("Custom template")}</span>
             <span className="task-card-sub">{t("Save a task you run often — click to fill the composer")}</span>
           </span>
         </button>
-        {addingTemplate && (
-          <div className="intro-addfolder intro-template-form">
-            <input
-              className="intro-tmpl-input"
-              placeholder={t("Template title")}
-              value={tmplTitle}
-              onChange={(e) => setTmplTitle(e.target.value)}
-              autoFocus
-            />
-            <textarea
-              className="intro-tmpl-input intro-tmpl-prompt"
-              placeholder={t("The task prompt")}
-              value={tmplPrompt}
-              onChange={(e) => setTmplPrompt(e.target.value)}
-              rows={3}
-            />
-            {tmplError && <div className="roots-err">{tmplError}</div>}
-            <div className="flex gap-2">
-              <button className="btn" disabled={tmplBusy || !tmplTitle.trim() || !tmplPrompt.trim()} onClick={() => void saveTemplate()}>
-                {tmplBusy ? t("Saving…") : t("Save template")}
-              </button>
-              <button className="btn quiet" onClick={() => setAddingTemplate(false)}>
-                {t("Cancel")}
-              </button>
-            </div>
-          </div>
-        )}
       </div>
+
+      {addingFolder && (
+        <div className="intro-form-panel">
+          <AddFolderForm
+            startOpen
+            busy={busy}
+            onAdd={async (path, writable) => {
+              const ok = await addRoot(path, writable);
+              if (ok !== false) onPrefill(t(FOLDER_PROMPT));
+              return ok;
+            }}
+            onDismiss={() => setAddingFolder(false)}
+          />
+          {error && <div className="roots-err">{error}</div>}
+        </div>
+      )}
+
+      {addingTemplate && (
+        <div className="intro-form-panel intro-template-form">
+          <input
+            className="intro-tmpl-input"
+            placeholder={t("Template title")}
+            value={tmplTitle}
+            onChange={(e) => setTmplTitle(e.target.value)}
+            autoFocus
+          />
+          <textarea
+            className="intro-tmpl-input intro-tmpl-prompt"
+            placeholder={t("The task prompt")}
+            value={tmplPrompt}
+            onChange={(e) => setTmplPrompt(e.target.value)}
+            rows={3}
+          />
+          {tmplError && <div className="roots-err">{tmplError}</div>}
+          <div className="flex gap-2">
+            <button className="btn" disabled={tmplBusy || !tmplTitle.trim() || !tmplPrompt.trim()} onClick={() => void saveTemplate()}>
+              {tmplBusy ? t("Saving…") : t("Save template")}
+            </button>
+            <button className="btn quiet" onClick={() => setAddingTemplate(false)}>
+              {t("Cancel")}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {templates.length > 0 && (
+        <>
+          <div className="intro-section-label">{t("My templates")}</div>
+          <div className="task-grid">
+            {templates.map((tmpl) => (
+              <div className="task-card" data-testid={`intro-task-custom-${tmpl.id}`} key={tmpl.id}>
+                <button className="task-card-main" onClick={() => onPrefill(tmpl.prompt)}>
+                  <span className="task-card-body">
+                    <span className="task-card-title">{tmpl.title}</span>
+                    <span className="task-card-sub">{tmpl.prompt}</span>
+                  </span>
+                  <span className="task-card-act">{t("Start →")}</span>
+                </button>
+                <button
+                  className="task-card-del"
+                  aria-label={t("Delete template")}
+                  title={t("Delete template")}
+                  onClick={() => void removeTemplate(tmpl.id)}
+                >
+                  ×
+                </button>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
     </div>
   );
 }
