@@ -132,5 +132,8 @@ def test_pheromone_status_api(tmp_path, monkeypatch):
     client = TestClient(create_app(manager))
     manager.pheromone.deposit("cowork", 1.0)
     r = client.get("/v1/pheromone")
-    assert r.json()["levels"]["cowork"] == pytest.approx(1.0)
-    assert r.json()["total_load"] == pytest.approx(1.0)
+    # 真实时钟 + 60s 半衰期: 这条走完整 SessionManager/TestClient, 慢 runner 上
+    # deposit→GET 之间能过去 ~0.2s, 蒸发 ~0.2%(GitHub CI run #16 实测 0.998)。
+    # abs 容差容忍 ~2s 的调度停顿, 但仍能抓住真问题(丢失/错键/重度衰减)。
+    assert r.json()["levels"]["cowork"] == pytest.approx(1.0, abs=0.02)
+    assert r.json()["total_load"] == pytest.approx(1.0, abs=0.02)
