@@ -67,6 +67,10 @@ class GovernanceCommand:
     reason: str = ""
     metrics: dict[str, float] = field(default_factory=dict)
     escalate: bool = False  # PAUSE/WARN with human escalation
+    # True only when a configured safety keyword matched (the tripwire behind PAUSE).
+    # Explicit so consumers never have to string-match the reason to tell a red-line
+    # halt apart from any other PAUSE (SwarmView's governance metric cards).
+    red_line: bool = False
 
 
 def _cosine(a: list[float], b: list[float]) -> float:
@@ -186,7 +190,11 @@ class Governance:
 
         if self.red_line_hit(plan):
             return GovernanceCommand(
-                PAUSE, reason="red-line keyword matched in pending tasks", metrics=metrics, escalate=True
+                PAUSE,
+                reason="red-line keyword matched in pending tasks",
+                metrics=metrics,
+                escalate=True,
+                red_line=True,
             )
         if len(self.warnings) >= self.config.max_warnings:
             return GovernanceCommand(

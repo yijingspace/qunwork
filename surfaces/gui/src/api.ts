@@ -1346,10 +1346,16 @@ export interface CoordinationReport {
   duration_s?: number;
   markdown?: string;
   report_path?: string;
+  /** True when the body went through the publishable-sample redaction pass (G5). */
+  redacted?: boolean;
 }
 
-export async function getCoordinationReport(runId: string): Promise<CoordinationReport> {
-  const res = await apiFetch(`${httpBase()}/v1/orchestrate/${runId}/report`);
+export async function getCoordinationReport(
+  runId: string,
+  opts?: { redact?: boolean },
+): Promise<CoordinationReport> {
+  const q = opts?.redact ? "?redact=1" : "";
+  const res = await apiFetch(`${httpBase()}/v1/orchestrate/${runId}/report${q}`);
   return await res.json();
 }
 

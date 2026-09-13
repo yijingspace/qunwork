@@ -8,6 +8,7 @@ deliverable. This is the P0/P1 showcase artifact for the three benchmark cases
 
 from __future__ import annotations
 
+import re
 import time
 from typing import Any, Optional
 
@@ -203,3 +204,59 @@ def coordination_report_summary(run: dict[str, Any]) -> dict[str, Any]:
         "duration_s": max(0.0, t_finished - t_started),
         "event_count": len(events),
     }
+
+
+# -- Public-sample redaction ---------------------------------------------------------------
+# A report is deeply personal: workspace paths, home directories, mail addresses, ticket
+# links and the occasional key that leaked into a task result. Publishing a sample must not
+# publish any of that, so the export runs the body through a fixed rule set and says so.
+
+_REDACT_NOTE = "> 本样例已脱敏：路径、邮箱、URL 凭据与疑似密钥均已替换。"
+_EMAIL_RE = re.compile(r"\b[\w.+-]+@[\w-]+\.[\w.-]+\b")
+_USER_DIR_RE = re.compile(r"(?:[A-Za-z]:\\Users\\|/Users/|/home/)([^\\/\s\"'`]+)")
+# Key-prefixed credentials (OpenAI/Slack/GitHub/Google/AWS) — keep the prefix, mask the body.
+_KEY_RE = re.compile(
+    r"\b(?:sk|xoxb|xoxp|xapp|ghp|gho|github_pat_|glpat|AKIA|AIza|hf)[-_A-Za-z0-9]{8,}\b"
+)
+# A long unbroken token is presumed secret unless it is obviously a path or a slug.
+_OPAQUE_RE = re.compile(r"\b(?![A-Za-z0-9_-]*\.(?:md|py|json|ts|tsx|js|html|txt)\b)[A-Za-z0-9_\-]{32,}\b")
+
+
+def redact_report(
+    markdown: str,
+    *,
+    workspace: Optional[str] = None,
+    home: Optional[str] = None,
+) -> str:
+    """Return a publishable copy of a coordination report.
+
+    Rule order matters. The run's own workspace goes first (so ``<workspace>/notes.md`` keeps
+    its useful tail while hiding the project path), then ANY remaining per-user prefix
+    (``/Users/<name>``, ``/home/<name>``, ``C:\\Users\\<name>``) collapses to ``~``, then the
+    configured home — which may live somewhere else entirely. After that come emails, URL
+    credentials, key-shaped tokens and long opaque tokens. Prose and relative paths are left
+    alone: the point is a real sample, not a rewrite.
+    """
+    from ..audit import _redact_url_secrets
+
+    if not markdown:
+        return markdown
+
+    def _swap(text: str, root: Optional[str], token: str) -> str:
+        if not root:
+            return text
+        for variant in {root, root.replace("\\", "/"), root.replace("/", "\\")}:
+            if variant:
+                text = text.replace(variant, token)
+        return text
+
+    text = _swap(markdown, workspace, "<workspace>")
+    # Windows profile dirs must be handled before the bare `/Users/` forms, otherwise a
+    # leftover drive prefix (`C:~\…`) survives.
+    text = _USER_DIR_RE.sub("~", text)
+    text = _swap(text, home, "~")
+    text = _EMAIL_RE.sub("<email>", text)
+    text = _KEY_RE.sub("<redacted>", text)
+    text = _OPAQUE_RE.sub("<redacted>", text)
+    text = _redact_url_secrets(text)
+    return f"{_REDACT_NOTE}\n\n{text}"

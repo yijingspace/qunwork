@@ -758,11 +758,18 @@ def create_app(manager: SessionManager) -> FastAPI:
         return {"ok": True, "run_id": run_id}
 
     @app.get("/v1/orchestrate/{run_id}/report")
-    def orchestrate_report(run_id: str) -> dict[str, Any]:
+    def orchestrate_report(run_id: str, redact: int = 0) -> dict[str, Any]:
         """Coordination report (benchmark showcase): render the run's event stream
-        into a 'swarm narrative' Markdown deliverable."""
+        into a 'swarm narrative' Markdown deliverable.
+
+        ``?redact=1`` returns the PUBLISHABLE copy: workspace paths, home dirs, emails,
+        URL credentials and key-shaped tokens masked — the shape a public sample needs
+        (website /swarm page). The redacted copy is written as its own file so the raw
+        report is never overwritten by the sanitized one.
+        """
         from ..orchestrator.coordination_report import (
             coordination_report_summary,
+            redact_report,
             render_coordination_report,
         )
 
@@ -770,22 +777,29 @@ def create_app(manager: SessionManager) -> FastAPI:
         if not run:
             return {"ok": False, "error": "run not found"}
         md = render_coordination_report(run)
+        publishable = bool(redact)
+        if publishable:
+            md = redact_report(
+                md,
+                workspace=(run.get("workspace") or manager.default_workspace),
+                home=str(Path.home()),
+            )
         # persist alongside the run's own deliverable so it survives restarts and
         # is openable from the Artifacts panel (session workspace / parent).
         try:
-            from pathlib import Path
-
             base = Path(manager.default_workspace or ".")
             base.mkdir(parents=True, exist_ok=True)
-            out = base / f"coordination-report-{run_id}.md"
+            suffix = "-redacted" if publishable else ""
+            out = base / f"coordination-report-{run_id}{suffix}.md"
             out.write_text(md, encoding="utf-8")
             return {
                 **coordination_report_summary(run),
                 "markdown": md,
                 "report_path": str(out),
+                "redacted": publishable,
             }
         except OSError as exc:
-            return {**coordination_report_summary(run), "markdown": md, "error": str(exc)}
+            return {**coordination_report_summary(run), "markdown": md, "redacted": publishable, "error": str(exc)}
 
     @app.get("/v1/orchestrate/{run_id}")
     def orchestrate_run(run_id: str) -> dict[str, Any]:

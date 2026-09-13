@@ -68,6 +68,26 @@ def test_orchestrate_requires_intent(client):
     assert "intent" in r.json()["error"]
 
 
+def test_orchestrate_report_redacted_export(client):
+    """`?redact=1` returns the PUBLISHABLE copy (masking rules themselves are unit-tested in
+    test_coordination_report.py): flagged, written under its own filename, note prepended."""
+    client.post("/v1/orchestrate", json={"intent": "Write a report", "sync": True})
+    run_id = client.get("/v1/orchestrate/history").json()["runs"][0]["run_id"]
+
+    raw = client.get(f"/v1/orchestrate/{run_id}/report").json()
+    assert raw["ok"] is True
+    assert raw["redacted"] is False
+    assert "已脱敏" not in raw["markdown"]
+    assert raw["report_path"].endswith(f"coordination-report-{run_id}.md")
+
+    red = client.get(f"/v1/orchestrate/{run_id}/report?redact=1").json()
+    assert red["ok"] is True
+    assert red["redacted"] is True
+    assert red["markdown"].startswith("> 本样例已脱敏")
+    # Its own file: the raw report is never overwritten by the sanitized copy.
+    assert red["report_path"].endswith(f"coordination-report-{run_id}-redacted.md")
+
+
 def test_orchestrate_async_poll_and_history(tmp_path, monkeypatch):
     """Async POST returns a run_id; progress events + final state are pollable."""
     from coworker.server.manager import SessionManager

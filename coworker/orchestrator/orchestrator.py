@@ -1313,7 +1313,26 @@ class Orchestrator:
             if len(gov.steps) % gov.config.check_every == 0:
                 cmd = gov.inspect(plan, current_task=ready[0] if ready else None)
                 gov_log.append(f"[step {self._runs}] {cmd.action}: {cmd.reason} {cmd.metrics}")
-                self._emit("governance", {"step": self._runs, "action": cmd.action, "reason": cmd.reason, "metrics": cmd.metrics})
+                # The live governance event carries everything a UI needs to render honest
+                # metric cards: the measured values AND the thresholds they are judged
+                # against (read from config, so the panel can never drift from the engine),
+                # plus the explicit red-line flag.
+                self._emit(
+                    "governance",
+                    {
+                        "step": self._runs,
+                        "action": cmd.action,
+                        "reason": cmd.reason,
+                        "metrics": cmd.metrics,
+                        "red_line": bool(cmd.red_line),
+                        "thresholds": {
+                            "viscosity_mid": gov.config.viscosity_mid,
+                            "viscosity_high": gov.config.viscosity_high,
+                            "drift": gov.config.drift_threshold,
+                            "max_warnings": gov.config.max_warnings,
+                        },
+                    },
+                )
                 # S10 治理信号链加固: 治理命令写入持久化审计 (audit log 完整性,
                 # 安全干预可追溯)。best-effort — 审计失败不阻断治理。
                 if self.audit_sink is not None:

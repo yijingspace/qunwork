@@ -324,6 +324,87 @@ const AUTOMATION_RUNS = [
 const PRIMARY_ROOT = { path: "/Users/test/QunWork/launch-note", writable: true, label: "scratch", primary: true, exists: true };
 const baseName = (p: string) => p.split("/").filter(Boolean).pop() || p;
 
+// -- Swarm (orchestrate) surface -----------------------------------------------------------
+// One completed run with its FULL event log, so the swarm panel renders end-to-end: a 3-task
+// plan with a dependency chain, per-task worker thoughts (the DAG's hover detail), two
+// governance checks whose SECOND one trips the red line (the metric cards), a convergence
+// report and a saved report. Shapes mirror the real /v1/orchestrate payloads.
+const SWARM_RUN_ID = "run-swarm-1";
+const SWARM_INTENT = "Draft the launch note from the repo state";
+const SWARM_THRESHOLDS = { viscosity_mid: 0.4, viscosity_high: 0.66, drift: 0.8, max_warnings: 3 };
+const SWARM_EVENTS = [
+  { kind: "run_started", payload: { intent: SWARM_INTENT } },
+  {
+    kind: "plan_ready",
+    payload: {
+      tasks: [
+        { id: "t1", description: "Collect the repo state (README + recent commits)", deps: [], agent: "cowork" },
+        { id: "t2", description: "Draft the launch note", deps: ["t1"], agent: "cowork" },
+        { id: "t3", description: "Cross-check every claim against the diff", deps: ["t2"], agent: "code" },
+      ],
+    },
+  },
+  { kind: "task_started", payload: { id: "t1" } },
+  { kind: "worker_thought", payload: { worker: "w1", task_id: "t1", text: "Reading the README and the last 20 commits to ground the note." } },
+  { kind: "task_done", payload: { id: "t1", status: "done", confidence: 0.9 } },
+  {
+    kind: "governance",
+    payload: { step: 1, action: "NOP", reason: "nominal", metrics: { viscosity: 0.12, drift: 0.18, autonomy: 0.83, steps: 1 }, red_line: false, thresholds: SWARM_THRESHOLDS },
+  },
+  { kind: "task_started", payload: { id: "t2" } },
+  { kind: "worker_thought", payload: { worker: "w2", task_id: "t2", text: "Outlining: what shipped, what it changes, what to watch." } },
+  { kind: "task_done", payload: { id: "t2", status: "done", confidence: 0.86 } },
+  { kind: "task_started", payload: { id: "t3" } },
+  { kind: "worker_thought", payload: { worker: "w3", task_id: "t3", text: "Cross-checking each claim against the diff before accepting." } },
+  {
+    kind: "governance",
+    payload: { step: 3, action: "PAUSE", reason: "red-line keyword matched in pending tasks", metrics: { viscosity: 0.44, drift: 0.72, autonomy: 0.66, steps: 3 }, red_line: true, thresholds: SWARM_THRESHOLDS },
+  },
+  { kind: "task_done", payload: { id: "t3", status: "needs_human", confidence: 0.4 } },
+  {
+    kind: "convergence_report",
+    payload: { gap: 0.03, theoretical_rounds: 12, iterations: 9, convergence_curve: [0.9, 0.7, 0.5, 0.3, 0.12, 0.05], final_convergence: 0.05, converged: true, stalled: false },
+  },
+  { kind: "run_completed", payload: { status: "needs_human", runs: 3 } },
+];
+const SWARM_SNAPSHOT = {
+  ok: true,
+  run_id: SWARM_RUN_ID,
+  intent: SWARM_INTENT,
+  status: "completed",
+  final: "Draft ready — one claim needs a human call.",
+  created_at: Math.floor(Date.now() / 1000) - 600,
+  updated_at: Math.floor(Date.now() / 1000) - 540,
+  events: SWARM_EVENTS,
+  degradations: [],
+};
+const SWARM_HISTORY = {
+  runs: [
+    { run_id: SWARM_RUN_ID, intent: SWARM_INTENT, status: "completed", created_at: SWARM_SNAPSHOT.created_at, updated_at: SWARM_SNAPSHOT.updated_at, parent_run_id: null },
+  ],
+};
+// A coordination report body — deliberately contains a host path + an email so the redacted
+// export (G5) has something real to scrub.
+const SWARM_REPORT_MD = [
+  "# Coordination report",
+  "",
+  "## 1. Plan",
+  "| id | description | deps | status | confidence |",
+  "|---|---|---|---|---|",
+  "| `t1` | Collect the repo state | — | done | 0.90 |",
+  "",
+  "## 2. Execution & thought chains",
+  "",
+  "### `t1` — Collect the repo state",
+  "- **思维链节选**:",
+  "  - Read /Users/test/QunWork/launch-note/README.md and mailed rohit@openworker.com",
+  "",
+  "## 3. Governance",
+  "| step | action | reason | metrics |",
+  "|---|---|---|---|",
+  "| 1 | NOP | nominal | viscosity 0.12 / drift 0.18 |",
+].join("\n");
+
 const PROVIDERS = [
   // openai: configured + used (drives the "Last used" sub-line and the status dot).
   { name: "openai", title: "OpenAI", needs_key: true, fields: [{ key: "api_key", label: "OpenAI API key", secret: true, required: true, help: "", placeholder: "sk-…" }], configured: true, values: {}, suggested_models: ["gpt-5.5"], key_set_at: "2026-06-12", last_used_at: Math.floor(Date.now() / 1000) - 7200 },
@@ -840,6 +921,46 @@ export async function mockApi(page: import("@playwright/test").Page) {
       const b = req.postDataJSON();
       return json({ ok: true, path: b.path, git_branch: "main" });
     }
+    // Swarm / orchestrate surface. `/history` and the sub-resources are matched before the
+    // run-id catch-all (which would otherwise swallow them as a run id).
+    if (p.endsWith("/v1/orchestrate/history")) return json(SWARM_HISTORY);
+    if (/\/v1\/orchestrate\/[^/]+\/control$/.test(p)) return json({ ok: true });
+    if (/\/v1\/orchestrate\/[^/]+\/dissolve$/.test(p)) return json({ ok: true });
+    if (/\/v1\/orchestrate\/[^/]+\/tag$/.test(p)) return json({ ok: true });
+    if (/\/v1\/orchestrate\/[^/]+\/report$/.test(p)) {
+      // `?redact=1` mirrors the real endpoint's publishable copy (its masking rules are
+      // unit-tested in Python; here the route only has to honor the flag + the file suffix).
+      const redact = new URL(req.url()).searchParams.get("redact") === "1";
+      const md = redact
+        ? SWARM_REPORT_MD.replace("/Users/test/QunWork/launch-note/README.md", "<workspace>/README.md").replace("rohit@openworker.com", "<email>")
+        : SWARM_REPORT_MD;
+      return json({
+        ok: true,
+        run_id: SWARM_RUN_ID,
+        status: SWARM_SNAPSHOT.status,
+        intent: SWARM_INTENT,
+        duration_s: 60,
+        markdown: md,
+        report_path: `/Users/test/QunWork/launch-note/coordination-report-${SWARM_RUN_ID}${redact ? "-redacted" : ""}.md`,
+        redacted: redact,
+      });
+    }
+    if (/\/v1\/orchestrate\/[^/]+$/.test(p)) return json(SWARM_SNAPSHOT);
+    if (p.endsWith("/v1/orchestrate") && m === "POST") {
+      return json({ ok: true, run_id: SWARM_RUN_ID });
+    }
+    if (p.endsWith("/v1/swarm-templates")) {
+      if (m === "POST") {
+        const b = (req.postDataJSON() ?? {}) as Record<string, unknown>;
+        return json({
+          ok: true,
+          template: { id: 1, title: String(b.title ?? "Swarm run"), intent: String(b.intent ?? ""), plan: b.plan ?? null, uses: 0, last_used_at: null },
+        });
+      }
+      return json({ templates: [] });
+    }
+    if (p.endsWith("/v1/swarm-lessons")) return json({ lessons: [] });
+
     // task templates (session-intro custom cards) — CRUD held in per-test state
     if (/\/v1\/task-templates\/\d+$/.test(p) && m === "DELETE") {
       const id = Number(p.split("/").pop());
