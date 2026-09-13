@@ -1,0 +1,866 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>QunWork 群沃客 — 一份任务，一群 AI 同事，交付成品</title>
+<meta name="description" content="QunWork 群沃客：常驻桌面的开源 AI 同事团队。规划、并行执行、交叉校验，交付成品而非聊天。本地优先，自带模型 Key，行动前先询问。">
+<meta name="theme-color" content="#f5f6f7">
+<script>
+  // pre-paint theme: follows system, persisted choice wins
+  (function () {
+    try {
+      var saved = localStorage.getItem("qw-theme");
+      var sys = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+      document.documentElement.dataset.theme = saved || sys;
+    } catch (e) {}
+  })();
+</script>
+<style>
+  @font-face {
+    font-family: "Manrope";
+    src: url("assets/fonts/manrope-700.woff2") format("woff2");
+    font-weight: 700;
+    font-display: swap;
+  }
+
+  :root {
+    --paper: #f5f6f7;
+    --panel: #ffffff;
+    --ink: #17191c;
+    --muted: #5b616b;
+    --faint: #9aa1aa;
+    --line: #e8eaed;
+    --line-strong: #d8dce1;
+    --accent: #2563eb;
+    --accent-soft: #e9f0fd;
+    --ok: #2f7d57;
+    --ok-soft: #eef6f0;
+    --ok-dot: #3f9c5a;
+    --warn-ink: #b45309;
+    --warn-soft: #fef3c7;
+    --danger: #b91c1c;
+    --shadow-hover: 0 3px 10px rgba(0, 0, 0, 0.08);
+    --radius-card: 12px;
+    --radius-btn: 8px;
+    --font-cn: "PingFang SC", "Microsoft YaHei UI", "Noto Sans SC", sans-serif;
+    --font-en: "Manrope", var(--font-cn);
+    --font-mono: ui-monospace, "Cascadia Mono", "Consolas", monospace;
+  }
+  html[data-theme="dark"] {
+    --paper: #131417;
+    --panel: #1c1e22;
+    --ink: #e6e8eb;
+    --muted: #9aa1ab;
+    --faint: #62686f;
+    --line: #2a2d33;
+    --line-strong: #3a3e46;
+    --accent: #4c8dff;
+    --accent-soft: #1c2a44;
+    --ok-soft: #1a2b21;
+    --warn-soft: #36280f;
+    --shadow-hover: 0 3px 10px rgba(0, 0, 0, 0.35);
+    color-scheme: dark;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html { scroll-behavior: smooth; }
+  body {
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--font-cn);
+    font-size: 16px;
+    line-height: 1.75;
+    -webkit-font-smoothing: antialiased;
+  }
+  ::selection { background: var(--accent-soft); }
+  a { color: inherit; text-decoration: none; }
+  button { font-family: inherit; cursor: pointer; }
+  img { display: block; }
+  .wrap { max-width: 1120px; margin: 0 auto; padding: 0 24px; }
+  section { scroll-margin-top: 88px; }
+  .sec-pad { padding-block: clamp(72px, 9vw, 120px); }
+
+  h1, h2, h3 { font-weight: 700; line-height: 1.2; letter-spacing: 0.01em; }
+  .h1 { font-family: var(--font-en); font-size: clamp(34px, 4.6vw, 56px); line-height: 1.15; }
+  .h2 { font-family: var(--font-en); font-size: clamp(26px, 3.2vw, 40px); }
+  .h3 { font-size: 22px; }
+  .lede { color: var(--muted); max-width: 46ch; }
+  .kicker {
+    display: inline-flex; align-items: center; gap: 8px;
+    font-size: 13px; font-weight: 500; color: var(--accent);
+    background: var(--accent-soft); border: 1px solid transparent;
+    padding: 4px 12px; border-radius: 999px; margin-bottom: 20px;
+  }
+  .sec-head { margin-bottom: 40px; }
+  .sec-head p.lede { margin-top: 12px; }
+
+  /* ---------- buttons ---------- */
+  .btn {
+    display: inline-flex; align-items: center; gap: 8px;
+    border-radius: var(--radius-btn); border: 1px solid transparent;
+    font-size: 15px; font-weight: 500; padding: 10px 20px;
+    transition: box-shadow 0.2s, transform 0.2s, background 0.2s, border-color 0.2s;
+  }
+  .btn-primary { background: var(--accent); color: #fff; }
+  .btn-primary:hover { box-shadow: var(--shadow-hover); transform: translateY(-1px); }
+  .btn-ghost { border-color: var(--line-strong); color: var(--ink); background: var(--panel); }
+  .btn-ghost:hover { border-color: var(--faint); box-shadow: var(--shadow-hover); }
+  .btn-sm { padding: 7px 14px; font-size: 14px; }
+  .link { color: var(--accent); font-weight: 500; }
+  .link:hover { text-decoration: underline; }
+  :is(a, button):focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 6px; }
+
+  /* ---------- S1 nav ---------- */
+  .nav {
+    position: sticky; top: 0; z-index: 50;
+    background: color-mix(in srgb, var(--paper) 82%, transparent);
+    backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+    border-bottom: 1px solid transparent;
+    transition: border-color 0.25s;
+  }
+  .nav.scrolled { border-bottom-color: var(--line); }
+  .nav-in { display: flex; align-items: center; gap: 28px; height: 72px; }
+  .brand { display: flex; align-items: center; gap: 10px; }
+  .brand img { width: 28px; height: 28px; border-radius: 7px; }
+  .brand b { font-family: var(--font-en); font-size: 17px; letter-spacing: 0.01em; }
+  .brand span { color: var(--muted); font-size: 14px; border-left: 1px solid var(--line-strong); padding-left: 10px; }
+  .nav-links { display: flex; gap: 22px; margin-left: 8px; }
+  .nav-links a { font-size: 14.5px; color: var(--muted); font-weight: 500; }
+  .nav-links a:hover { color: var(--ink); }
+  .nav-cta { margin-left: auto; display: flex; align-items: center; gap: 10px; }
+  .icon-btn {
+    width: 34px; height: 34px; display: grid; place-items: center;
+    border: 1px solid var(--line); border-radius: var(--radius-btn);
+    background: var(--panel); color: var(--muted); font-size: 15px;
+  }
+  .icon-btn:hover { color: var(--ink); border-color: var(--line-strong); }
+
+  /* ---------- S2 hero ---------- */
+  .hero { padding-block: clamp(48px, 7vw, 96px) clamp(56px, 8vw, 110px); }
+  .hero-grid { display: grid; grid-template-columns: 1.05fr 1fr; gap: 56px; align-items: center; }
+  .hero-badge {
+    display: inline-flex; align-items: center; gap: 8px;
+    font-size: 13px; font-weight: 500; color: var(--muted);
+    border: 1px solid var(--line-strong); border-radius: 999px;
+    padding: 5px 14px; margin-bottom: 24px; background: var(--panel);
+  }
+  .hero-badge em { font-style: normal; color: var(--accent); }
+  .hero .lede { font-size: 18px; margin-top: 20px; }
+  .hero-cta { display: flex; align-items: center; gap: 14px; margin-top: 32px; flex-wrap: wrap; }
+  .hero-trust { display: flex; gap: 18px; flex-wrap: wrap; margin-top: 22px; color: var(--faint); font-size: 14px; }
+  .hero-trust span::before { content: "✓ "; color: var(--ok-dot); }
+
+  /* hero visual: product window mock */
+  .window {
+    background: var(--panel); border: 1px solid var(--line-strong);
+    border-radius: 16px; box-shadow: 0 24px 60px -30px rgba(23, 25, 28, 0.35);
+    overflow: hidden; font-size: 13px;
+  }
+  .win-bar {
+    display: flex; align-items: center; gap: 6px;
+    padding: 10px 14px; border-bottom: 1px solid var(--line); background: var(--panel);
+  }
+  .win-bar i { width: 10px; height: 10px; border-radius: 50%; background: var(--line-strong); }
+  .win-bar i:nth-child(1) { background: #f07067; }
+  .win-bar i:nth-child(2) { background: #eab308; }
+  .win-bar i:nth-child(3) { background: #3f9c5a; }
+  .win-bar b { margin-left: 8px; font-weight: 500; color: var(--faint); font-size: 12px; }
+  .win-body { display: grid; grid-template-columns: 1.1fr 1fr; min-height: 320px; }
+  .win-chat { padding: 16px; border-right: 1px solid var(--line); display: flex; flex-direction: column; gap: 10px; }
+  .bubble { max-width: 92%; padding: 8px 12px; border-radius: 12px; line-height: 1.55; }
+  .bubble.user { background: var(--line); align-self: flex-end; border-bottom-right-radius: 4px; }
+  html[data-theme="dark"] .bubble.user { background: #2e3138; }
+  .plan-card {
+    border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px;
+    display: flex; flex-direction: column; gap: 6px; background: var(--paper);
+  }
+  .plan-card b { font-size: 12px; color: var(--muted); font-weight: 500; }
+  .plan-card li { list-style: none; display: flex; gap: 8px; align-items: baseline; color: var(--muted); }
+  .plan-card li::before { content: "○"; color: var(--faint); font-size: 11px; }
+  .plan-card li.done { color: var(--ink); }
+  .plan-card li.done::before { content: "●"; color: var(--ok-dot); }
+  .win-swarm { padding: 16px 14px; display: flex; flex-direction: column; align-items: center; gap: 0; }
+  .node {
+    border: 1px solid var(--line-strong); border-radius: 9px;
+    padding: 5px 12px; font-size: 12px; color: var(--muted);
+    background: var(--panel); position: relative; transition: all 0.3s;
+  }
+  .node b { font-weight: 500; color: var(--ink); }
+  .node .st { position: absolute; top: -4px; right: -4px; width: 9px; height: 9px; border-radius: 50%; background: var(--line-strong); border: 2px solid var(--panel); }
+  .vline { width: 1px; height: 14px; background: var(--line-strong); }
+  .exe-row { display: flex; gap: 8px; margin-block: 0; }
+  .exe-row .node { flex: 1; text-align: center; padding-inline: 6px; white-space: nowrap; }
+  .hconnector { height: 1px; background: var(--line-strong); align-self: stretch; margin-top: 14px; }
+  .artifact {
+    display: inline-flex; align-items: center; gap: 7px;
+    border: 1px solid var(--line-strong); border-radius: 9px;
+    background: var(--ok-soft); padding: 7px 12px; font-size: 12px; color: var(--ink);
+    opacity: 0; transform: translateY(6px);
+  }
+  .artifact i { width: 8px; height: 8px; border-radius: 2px; background: var(--ok-dot); }
+
+  /* swarm animation (hero) */
+  @keyframes execOn { 0% { border-color: var(--line-strong); color: var(--muted); } 6%, 100% { border-color: var(--accent); color: var(--ink); box-shadow: 0 0 0 3px var(--accent-soft); } }
+  @keyframes dotOn { 0% { background: var(--line-strong); } 6%, 100% { background: var(--ok-dot); } }
+  @keyframes artIn { 0%, 55% { opacity: 0; transform: translateY(6px); } 62%, 92% { opacity: 1; transform: translateY(0); } 100% { opacity: 0; transform: translateY(6px); } }
+  @keyframes reset { 0% {} }
+  .exe1 { animation: execOn 12s infinite; }
+  .exe2 { animation: execOn 12s infinite 0.5s; }
+  .exe3 { animation: execOn 12s infinite 1s; }
+  .exe1 .st { animation: dotOn 12s infinite; }
+  .exe2 .st { animation: dotOn 12s infinite 0.5s; }
+  .exe3 .st { animation: dotOn 12s infinite 1s; }
+  .rev { animation: execOn 12s infinite 2.2s; }
+  .rev .st { animation: dotOn 12s infinite 2.2s; }
+  .artifact { animation: artIn 12s infinite 3s; }
+
+  /* ---------- S3 badges ---------- */
+  .badges { border-block: 1px solid var(--line); background: color-mix(in srgb, var(--panel) 55%, var(--paper)); }
+  .badges-in { display: flex; justify-content: space-between; gap: 20px; padding-block: 18px; flex-wrap: wrap; }
+  .badge-item { display: flex; align-items: center; gap: 10px; font-size: 14.5px; color: var(--muted); }
+  .badge-item svg { width: 20px; height: 20px; stroke: var(--accent); flex: none; }
+
+  /* ---------- S4 steps ---------- */
+  .steps-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; }
+  .step-card {
+    background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius-card);
+    padding: 22px 20px; display: flex; flex-direction: column; gap: 10px;
+  }
+  .step-no {
+    width: 30px; height: 30px; border-radius: 50%;
+    background: var(--accent-soft); color: var(--accent);
+    display: grid; place-items: center; font-weight: 700; font-size: 14px; font-family: var(--font-en);
+  }
+  .step-card h3 { font-size: 16.5px; }
+  .step-card p { font-size: 14px; color: var(--muted); }
+  .mini-approve { display: flex; gap: 8px; margin-top: 4px; }
+  .mini-approve .yes { background: var(--accent); color: #fff; border: none; border-radius: 7px; padding: 5px 14px; font-size: 13px; }
+  .mini-approve .no { background: none; border: 1px solid var(--line-strong); color: var(--muted); border-radius: 7px; padding: 5px 12px; font-size: 13px; }
+  .mini-approve button:hover { transform: translateY(-1px); box-shadow: var(--shadow-hover); }
+
+  /* ---------- S5 swarm deep (dark) ---------- */
+  .swarm-sec { background: #131417; color: #e6e8eb; position: relative; overflow: hidden; }
+  .swarm-sec .kicker { background: #1c2a44; color: #4c8dff; }
+  .swarm-sec .lede { color: #9aa1ab; }
+  .hexbg { position: absolute; inset: 0; opacity: 0.05; pointer-events: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='56' height='100' viewBox='0 0 56 100'%3E%3Cpath d='M28 0L56 16v34L28 66 0 50V16z' fill='none' stroke='%23e6e8eb' stroke-width='1'/%3E%3Cpath d='M28 66l28 17v34H0V83z' fill='none' stroke='%23e6e8eb' stroke-width='1'/%3E%3C/svg%3E");
+    background-size: 56px 100px; }
+  .swarm-grid { display: grid; grid-template-columns: 1.5fr 1fr; gap: 48px; align-items: center; position: relative; }
+  .dag-panel { background: #1c1e22; border: 1px solid #2a2d33; border-radius: 16px; padding: 24px; }
+  .dag-top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 18px; }
+  .dag-top b { font-size: 14px; color: #9aa1ab; font-weight: 500; }
+  .replay { background: none; border: 1px solid #3a3e46; color: #e6e8eb; border-radius: 7px; padding: 5px 14px; font-size: 13px; }
+  .replay:hover { border-color: #4c8dff; color: #4c8dff; }
+  .dag-svg { width: 100%; height: auto; display: block; }
+  .dag-svg text { font-family: var(--font-cn); }
+  .n-hex { fill: #131417; stroke: #3a3e46; stroke-width: 1.2; }
+  .n-label { fill: #9aa1ab; font-size: 11px; }
+  .n-role { fill: #4c8dff; font-size: 10px; font-family: var(--font-en); font-weight: 700; letter-spacing: 0.06em; }
+  .e-line { stroke: #2a2d33; stroke-width: 1.2; }
+  .flow { stroke: #4c8dff; stroke-width: 1.6; fill: none; stroke-dasharray: 4 5; opacity: 0.85; animation: dash 1.2s linear infinite; }
+  @keyframes dash { to { stroke-dashoffset: -9; } }
+  .gov-cards { display: flex; flex-direction: column; gap: 14px; }
+  .gov-card { background: #1c1e22; border: 1px solid #2a2d33; border-radius: 12px; padding: 18px 20px; }
+  .gov-card b { display: block; font-size: 14px; color: #9aa1ab; font-weight: 500; margin-bottom: 6px; }
+  .gov-card .val { font-family: var(--font-en); font-size: 30px; font-weight: 700; }
+  .gov-card .val small { font-size: 13px; color: #62686f; font-weight: 500; margin-left: 8px; }
+  .gov-card p { font-size: 13px; color: #62686f; margin-top: 4px; }
+  .gov-note { font-size: 12px; color: #62686f; margin-top: 10px; }
+  .chain-note { margin-top: 14px; font-size: 13px; color: #9aa1ab; border-top: 1px dashed #2a2d33; padding-top: 12px; min-height: 44px; }
+  .chain-note b { color: #e6e8eb; font-weight: 500; }
+
+  /* ---------- S6 scenarios ---------- */
+  .scen-list { display: flex; flex-direction: column; gap: 20px; }
+  .scen {
+    display: grid; grid-template-columns: 1fr 300px; gap: 0;
+    background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius-card);
+    overflow: hidden; transition: box-shadow 0.2s;
+  }
+  .scen:hover { box-shadow: var(--shadow-hover); }
+  .scen-main { padding: 26px 28px; display: flex; flex-direction: column; gap: 12px; }
+  .scen-main h3 { font-size: 19px; }
+  .scen-prompt { font-family: var(--font-mono); font-size: 13px; color: var(--muted); background: var(--paper); border: 1px dashed var(--line-strong); border-radius: 8px; padding: 10px 14px; }
+  .scen-meta { display: flex; align-items: center; gap: 12px; font-size: 13px; color: var(--faint); flex-wrap: wrap; }
+  .cdot { display: inline-flex; align-items: center; gap: 5px; }
+  .cdot i { width: 8px; height: 8px; border-radius: 50%; background: var(--ok-dot); }
+  .cdot.off i { background: var(--line-strong); }
+  .scen-side { border-left: 1px solid var(--line); background: color-mix(in srgb, var(--paper) 70%, var(--panel)); padding: 20px; display: flex; flex-direction: column; gap: 12px; }
+  .gate { background: var(--warn-soft); border-radius: 10px; padding: 12px 14px; }
+  .gate b { display: block; font-size: 13.5px; color: var(--warn-ink); font-weight: 500; margin-bottom: 8px; }
+  .gate-row { display: flex; gap: 8px; }
+  .gate-row .yes { background: var(--accent); color: #fff; border: none; border-radius: 7px; padding: 5px 16px; font-size: 13px; }
+  .gate-row .no { background: none; border: 1px solid var(--line-strong); color: var(--muted); border-radius: 7px; padding: 5px 12px; font-size: 13px; }
+  .gate-dest { font-size: 12px; color: var(--faint); margin-top: 8px; }
+  .artifact-chip { display: flex; align-items: center; gap: 10px; border: 1px solid var(--line-strong); background: var(--panel); border-radius: 10px; padding: 10px 14px; font-size: 13px; }
+  .artifact-chip i { width: 26px; height: 32px; border-radius: 4px; background: var(--accent-soft); border: 1px solid var(--accent); flex: none; position: relative; }
+  .artifact-chip small { display: block; color: var(--faint); font-size: 11.5px; }
+
+  /* ---------- S7 local-first ---------- */
+  .local-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 48px; align-items: center; }
+  .stack { display: flex; flex-direction: column; gap: 10px; }
+  .layer { border: 1px solid var(--line-strong); background: var(--panel); border-radius: 12px; padding: 16px 20px; }
+  .layer b { display: block; font-size: 15px; }
+  .layer span { font-size: 13px; color: var(--muted); }
+  .layer.core { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+  .layer-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+  .layer-row .layer { text-align: center; padding: 14px 10px; }
+  .brace { text-align: center; color: var(--faint); font-size: 13px; }
+  .prov-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-top: 20px; }
+  .prov { border: 1px solid var(--line); border-radius: 9px; background: var(--panel); text-align: center; padding: 10px 6px; font-size: 13.5px; color: var(--muted); }
+  .prov.hl { border-color: var(--ok-dot); color: var(--ok); background: var(--ok-soft); font-weight: 500; }
+  .prov-quote { margin-top: 18px; color: var(--muted); font-size: 15px; }
+  .prov-quote b { color: var(--ink); }
+
+  /* ---------- S8 assets ---------- */
+  .fly { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 36px; }
+  .fly-step { border: 1px solid var(--line-strong); border-radius: 999px; padding: 8px 18px; font-size: 14px; background: var(--panel); }
+  .fly-step.on { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); font-weight: 500; }
+  .fly-arrow { color: var(--faint); }
+  .asset-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+  .asset-card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius-card); padding: 24px; }
+  .asset-card .ico { font-size: 22px; margin-bottom: 10px; }
+  .asset-card h3 { font-size: 17px; margin-bottom: 8px; }
+  .asset-card p { font-size: 14px; color: var(--muted); }
+  .asset-note { margin-top: 18px; font-size: 13.5px; color: var(--faint); }
+
+  /* ---------- S9 opensource ---------- */
+  .oss { background: var(--accent-soft); }
+  .oss-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 48px; align-items: center; }
+  .oss .mit { font-family: var(--font-en); font-size: clamp(56px, 7vw, 84px); font-weight: 700; color: var(--accent); line-height: 1; }
+  .repo-card { background: var(--panel); border: 1px solid var(--line-strong); border-radius: 14px; padding: 22px 24px; box-shadow: var(--shadow-hover); }
+  .repo-card .rname { font-family: var(--font-en); font-weight: 700; font-size: 17px; display: flex; align-items: center; gap: 8px; }
+  .repo-card .rmeta { display: flex; gap: 16px; margin-top: 12px; font-size: 13px; color: var(--muted); flex-wrap: wrap; }
+  .repo-card .rdesc { color: var(--muted); font-size: 14px; margin-top: 8px; }
+  .oss-cta { display: flex; gap: 12px; margin-top: 22px; flex-wrap: wrap; }
+
+  /* ---------- S10 final + footer ---------- */
+  .final { text-align: center; }
+  .final .lede { margin: 14px auto 30px; }
+  .final-cta { display: flex; gap: 14px; justify-content: center; flex-wrap: wrap; }
+  .trust-bar {
+    border-block: 1px solid var(--line); margin-top: clamp(56px, 8vw, 90px);
+    padding-block: 18px; font-size: 14px; color: var(--muted);
+  }
+  .trust-in { display: flex; justify-content: center; gap: 28px; flex-wrap: wrap; }
+  footer { padding-block: 48px 40px; }
+  .foot-grid { display: grid; grid-template-columns: 1.4fr 1fr 1fr 1fr; gap: 32px; }
+  .foot-grid h4 { font-size: 13.5px; margin-bottom: 14px; color: var(--faint); font-weight: 500; }
+  .foot-grid a { display: block; font-size: 14px; color: var(--muted); padding-block: 5px; }
+  .foot-grid a:hover { color: var(--ink); }
+  .foot-brand p { font-size: 13.5px; color: var(--faint); margin-top: 12px; max-width: 30ch; }
+  .foot-base { border-top: 1px solid var(--line); margin-top: 40px; padding-top: 22px; display: flex; justify-content: space-between; gap: 16px; font-size: 13px; color: var(--faint); flex-wrap: wrap; }
+
+  /* ---------- responsive ---------- */
+  @media (max-width: 960px) {
+    .hero-grid, .swarm-grid, .local-grid, .oss-grid { grid-template-columns: 1fr; gap: 40px; }
+    .steps-grid { grid-template-columns: repeat(2, 1fr); }
+    .asset-grid { grid-template-columns: 1fr; }
+    .prov-grid { grid-template-columns: repeat(3, 1fr); }
+    .scen { grid-template-columns: 1fr; }
+    .scen-side { border-left: none; border-top: 1px solid var(--line); }
+    .win-body { grid-template-columns: 1fr; }
+    .win-chat { border-right: none; border-bottom: 1px solid var(--line); }
+    .foot-grid { grid-template-columns: 1fr 1fr; }
+    .nav-links { display: none; }
+  }
+  @media (max-width: 560px) {
+    .steps-grid { grid-template-columns: 1fr; }
+    .prov-grid { grid-template-columns: repeat(2, 1fr); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    * { animation: none !important; transition: none !important; }
+    .artifact { opacity: 1; transform: none; }
+  }
+</style>
+</head>
+<body>
+
+<!-- ======== S1 导航栏 ======== -->
+<header class="nav" id="nav">
+  <div class="wrap nav-in">
+    <a class="brand" href="#top" aria-label="QunWork 群沃客 首页">
+      <img src="assets/qunwork-mark.png" alt="QunWork 蜂群标志">
+      <b>QunWork</b><span>群沃客</span>
+    </a>
+    <nav class="nav-links" aria-label="主导航">
+      <a href="#swarm">蜂群协同</a>
+      <a href="#local">本地优先</a>
+      <a href="#assets">技能与资产</a>
+      <a href="#opensource">开源</a>
+      <a href="#docs" aria-label="文档">文档</a>
+    </nav>
+    <div class="nav-cta">
+      <button class="icon-btn" id="themeBtn" aria-label="切换明暗主题" title="切换主题">◐</button>
+      <a class="icon-btn" href="#opensource" aria-label="GitHub 源码仓库" title="GitHub">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
+      </a>
+      <a class="btn btn-primary btn-sm" href="#download">⬇ 下载</a>
+    </div>
+  </div>
+</header>
+
+<main id="top">
+
+<!-- ======== S2 Hero ======== -->
+<section class="hero">
+  <div class="wrap hero-grid">
+    <div>
+      <span class="hero-badge">🐝 <em>Beta</em> · v0.22 · 开源 MIT</span>
+      <h1 class="h1">一份任务，一群 AI 同事，<br>交付成品。</h1>
+      <p class="lede">QunWork 群沃客是常驻你桌面的开源 AI 同事团队：规划、并行执行、交叉校验，把复杂任务做成能直接用的文档、报表和自动化——全程跑在你自己的机器上，关键动作先征得你同意。</p>
+      <div class="hero-cta">
+        <a class="btn btn-primary" href="#download">⬇ 下载 Windows 版</a>
+        <a class="btn btn-ghost" href="#opensource">在 GitHub 看源码</a>
+        <a class="link" href="#download">macOS 版 →</a>
+      </div>
+      <div class="hero-trust">
+        <span>本地优先，数据不出你的机器</span>
+        <span>自带模型 Key，11 家供应商 + Ollama</span>
+        <span>行动前先询问</span>
+      </div>
+    </div>
+
+    <!-- 蜂群运行主视觉：产品窗体风格化 mock -->
+    <div class="window" role="img" aria-label="演示：QunWork 桌面应用中一次蜂群运行——左侧是用户目标与任务计划，右侧是 planner、三个并行 executor 与 reviewer 的执行视图，最终产出交付物">
+      <div class="win-bar"><i></i><i></i><i></i><b>QunWork 群沃客 · 蜂群运行中…</b></div>
+      <div class="win-body">
+        <div class="win-chat">
+          <div class="bubble user">准备一份客户简报：汇总本周 HubSpot 新线索，标出需要跟进的。</div>
+          <div class="plan-card">
+            <b>任务计划 · 4 个子任务</b>
+            <li class="done">读取 HubSpot 本周线索</li>
+            <li class="done">按来源与阶段分组</li>
+            <li class="done">识别待跟进名单</li>
+            <li>生成简报并发给你审阅</li>
+          </div>
+        </div>
+        <div class="win-swarm">
+          <div class="node"><b>planner</b> 目标 → 任务 DAG<span class="st"></span></div>
+          <div class="vline"></div>
+          <div class="exe-row">
+            <div class="node exe1">读取线索<span class="st"></span></div>
+            <div class="node exe2">分组统计<span class="st"></span></div>
+            <div class="node exe3">跟进名单<span class="st"></span></div>
+          </div>
+          <div class="vline"></div>
+          <div class="node rev"><b>reviewer</b> 交叉校验 · 已通过<span class="st"></span></div>
+          <div class="vline"></div>
+          <div class="artifact"><i></i>客户简报.md · 已交付</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ======== S3 信任徽章条 ======== -->
+<div class="badges">
+  <div class="wrap badges-in">
+    <div class="badge-item">
+      <svg viewBox="0 0 24 24" fill="none" stroke-width="1.5" aria-hidden="true"><rect x="4" y="10" width="16" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>
+      本地优先——数据不出你的机器
+    </div>
+    <div class="badge-item">
+      <svg viewBox="0 0 24 24" fill="none" stroke-width="1.5" aria-hidden="true"><path d="M12 3l9 5-9 5-9-5 9-5z"/><path d="M3 13l9 5 9-5"/></svg>
+      11+ 模型供应商 + Ollama 完全本地
+    </div>
+    <div class="badge-item">
+      <svg viewBox="0 0 24 24" fill="none" stroke-width="1.5" aria-hidden="true"><path d="M9 7H6a4 4 0 0 0 0 8h3M15 7h3a4 4 0 0 1 0 8h-3M8 11h8"/></svg>
+      25+ 连接器 + 任意 MCP 工具
+    </div>
+    <div class="badge-item">
+      <svg viewBox="0 0 24 24" fill="none" stroke-width="1.5" aria-hidden="true"><path d="M12 3l7 3v5c0 5-3.5 8-7 10-3.5-2-7-5-7-10V6l7-3z"/></svg>
+      MIT 开源 · 基于 OpenWorker 构建
+    </div>
+  </div>
+</div>
+
+<!-- ======== S4 工作原理四步 ======== -->
+<section class="sec-pad" id="how">
+  <div class="wrap">
+    <div class="sec-head">
+      <span class="kicker">工作原理</span>
+      <h2 class="h2">你要的是结果，不是待办清单</h2>
+    </div>
+    <div class="steps-grid">
+      <div class="step-card">
+        <div class="step-no">1</div>
+        <h3>告诉它你要的结果</h3>
+        <p>"准备一份客户简报"、"理一下我的日程"、"看看发布在 Jira 和 GitHub 上的进度"。用一句话描述目标即可。</p>
+      </div>
+      <div class="step-card">
+        <div class="step-no">2</div>
+        <h3>蜂群拆解计划、并行干活</h3>
+        <p>任务被拆成步骤 DAG，多个 worker 在你的桌面、文件和已连接的应用之间同时工作，进度实时可见。</p>
+      </div>
+      <div class="step-card">
+        <div class="step-no">3</div>
+        <h3>关键动作先问你</h3>
+        <p>发消息、改日程、执行命令——有后果的操作都会先弹出批准门，由你拍板或改向。</p>
+        <div class="mini-approve" aria-label="批准门示意">
+          <button class="yes" type="button">批准</button>
+          <button class="no" type="button">暂不</button>
+        </div>
+      </div>
+      <div class="step-card">
+        <div class="step-no">4</div>
+        <h3>拿到的是成品</h3>
+        <p>一份精修过的文档、一条带数据的回复、一次更新好的日程、一封整理好的邮件——落地为能打开、能分享的文件。</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ======== S5 蜂群协同深览（深色） ======== -->
+<section class="swarm-sec sec-pad" id="swarm">
+  <div class="hexbg" aria-hidden="true"></div>
+  <div class="wrap">
+    <div class="sec-head">
+      <span class="kicker">蜂群协同</span>
+      <h2 class="h2">看得见的蜂群，管得住的团队</h2>
+      <p class="lede">不是把任务切碎了扔进黑盒并行——planner、executor、reviewer 各司其职，治理回路全程盯着。过程可暂停、可干预、可回放。</p>
+    </div>
+    <div class="swarm-grid">
+      <div class="dag-panel">
+        <div class="dag-top">
+          <b>一次蜂群运行 · "市场分析报告"</b>
+          <button class="replay" id="replayBtn" type="button">▶ 回放</button>
+        </div>
+        <svg class="dag-svg" viewBox="0 0 560 240" aria-label="蜂群任务 DAG 示意图：planner 规划出四个并行子任务，reviewer 校验后收敛为交付物">
+          <defs>
+            <marker id="arr" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L8 4L0 8z" fill="#3a3e46"/></marker>
+          </defs>
+          <!-- planner -->
+          <g>
+            <rect class="n-hex" x="228" y="16" width="104" height="40" rx="9"/>
+            <text class="n-role" x="252" y="32">PLANNER</text>
+            <text class="n-label" x="248" y="48">目标 → 任务 DAG</text>
+          </g>
+          <!-- fan-out -->
+          <path class="e-line" d="M280 56v14" marker-end="url(#arr)"/>
+          <path class="e-line" d="M280 70H70v14" marker-end="url(#arr)"/>
+          <path class="e-line" d="M280 70H210v14" marker-end="url(#arr)"/>
+          <path class="e-line" d="M280 70h70v14" marker-end="url(#arr)"/>
+          <path class="e-line" d="M280 70h210v14" marker-end="url(#arr)"/>
+          <!-- executors -->
+          <g>
+            <rect class="n-hex" x="20" y="84" width="100" height="44" rx="9"/>
+            <text class="n-role" x="32" y="100">EXECUTOR</text>
+            <text class="n-label" x="35" y="117">收集资料 ×3</text>
+          </g>
+          <g>
+            <rect class="n-hex" x="160" y="84" width="100" height="44" rx="9"/>
+            <text class="n-role" x="172" y="100">EXECUTOR</text>
+            <text class="n-label" x="176" y="117">数据与图表</text>
+          </g>
+          <g>
+            <rect class="n-hex" x="300" y="84" width="100" height="44" rx="9"/>
+            <text class="n-role" x="312" y="100">EXECUTOR</text>
+            <text class="n-label" x="316" y="117">竞品对照</text>
+          </g>
+          <g>
+            <rect class="n-hex" x="440" y="84" width="100" height="44" rx="9"/>
+            <text class="n-role" x="452" y="100">EXECUTOR</text>
+            <text class="n-label" x="456" y="117">草稿撰写</text>
+          </g>
+          <!-- converge -->
+          <path class="e-line" d="M70 128v14h210v12" marker-end="url(#arr)"/>
+          <path class="e-line" d="M210 128v12h70v2" />
+          <path class="e-line" d="M350 128v12h-70v2" />
+          <path class="e-line" d="M490 128v14h-210v12" marker-end="url(#arr)"/>
+          <!-- reviewer -->
+          <g>
+            <rect class="n-hex" x="228" y="154" width="104" height="40" rx="9" style="stroke:#4c8dff"/>
+            <text class="n-role" x="254" y="170">REVIEWER</text>
+            <text class="n-label" x="248" y="186">校验 · ACCEPT</text>
+          </g>
+          <!-- flow overlay -->
+          <path class="flow" d="M280 56v14M280 70H70v14M280 70h210v14"/>
+          <!-- governance strip -->
+          <g>
+            <rect x="20" y="206" width="520" height="22" rx="6" fill="none" stroke="#2a2d33"/>
+            <text class="n-label" x="30" y="221">治理回路：循环粘度 · 漂移度 · 安全红线 —— 命中即 REVERT / PAUSE / ESCALATE</text>
+          </g>
+        </svg>
+        <p class="chain-note" id="chainNote">把鼠标放到任意节点上，看这个 worker 在想什么。<b>提示：</b>过程不是黑盒——每个 worker 的思维链与耗时都实时可见、可暂停。</p>
+      </div>
+      <div class="gov-cards">
+        <div class="gov-card">
+          <b>循环粘度 Loop Viscosity</b>
+          <div class="val">0.18<small>越低越顺</small></div>
+          <p>衡量蜂群是否在空转打结：卡壳、互相等待、重复返工都会推高它。</p>
+        </div>
+        <div class="gov-card">
+          <b>漂移度 Drift Score</b>
+          <div class="val">0.07<small>越低越稳</small></div>
+          <p>执行是否偏离计划与目标。漂移超阈值自动回滚（REVERT）或暂停（PAUSE）。</p>
+        </div>
+        <div class="gov-card">
+          <b>安全红线 Red Lines</b>
+          <div class="val">0<small>命中</small></div>
+          <p>触线即停：蜂群自动冻结并升级给你（ESCALATE），配合收件箱审批流处理。</p>
+        </div>
+        <p class="gov-note">※ 示意数据，用于说明治理维度。每次运行都会生成完整快照，可复盘、可追责。</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ======== S6 任务情景卡 ======== -->
+<section class="sec-pad" id="scenarios">
+  <div class="wrap">
+    <div class="sec-head">
+      <span class="kicker">它做什么</span>
+      <h2 class="h2">从一个任务开始</h2>
+      <p class="lede">三个真实场景，来自产品开箱即带的快速开始任务——注意每一次"离开你的机器"的动作，都先经过你批准。</p>
+    </div>
+    <div class="scen-list">
+
+      <article class="scen">
+        <div class="scen-main">
+          <h3>分析一个目录的文件</h3>
+          <div class="scen-prompt">"分析这个文件夹里的文件，总结哪些事重要。"</div>
+          <div class="scen-meta"><span>6 steps</span><span class="cdot"><i></i>本地文件夹</span></div>
+          <p style="font-size:14.5px; color:var(--muted)">读完目录里的全部文档，交叉比对后给出摘要：哪些在等你拍板、哪些已经过期、哪些可以归档。</p>
+        </div>
+        <div class="scen-side">
+          <div class="artifact-chip"><i></i><span>摘要报告.md<small>已交付 · 在你的工作区里</small></span></div>
+          <div class="gate">
+            <b>没有需要批准的操作——全程只读你的文件夹</b>
+            <div class="gate-dest">数据流向：不离开你的机器</div>
+          </div>
+        </div>
+      </article>
+
+      <article class="scen">
+        <div class="scen-main">
+          <h3>从 HubSpot 线索生成报告</h3>
+          <div class="scen-prompt">"就我最近的 HubSpot 线索做一份报告：来源、阶段、谁需要跟进。"</div>
+          <div class="scen-meta"><span>8 steps</span><span class="cdot"><i></i>HubSpot</span><span class="cdot"><i></i>本地文件</span></div>
+          <p style="font-size:14.5px; color:var(--muted)">拉取近期线索，按来源与销售阶段分组，算出转化漏斗，圈出超过 7 天没跟进的高价值名单。</p>
+        </div>
+        <div class="scen-side">
+          <div class="artifact-chip"><i></i><span>线索报告.md + 图表<small>已交付</small></span></div>
+          <div class="gate">
+            <b>把报告发给销售负责人？</b>
+            <div class="gate-row"><button class="yes" type="button">批准</button><button class="no" type="button">暂不</button></div>
+            <div class="gate-dest">离开你的机器 → Email · 发送前确认</div>
+          </div>
+        </div>
+      </article>
+
+      <article class="scen">
+        <div class="scen-main">
+          <h3>GitHub → Slack 每周自动化周报</h3>
+          <div class="scen-prompt">"设一个每周进度汇报：汇总我 GitHub 仓库的活动，每周五早上发到 Slack。"</div>
+          <div class="scen-meta"><span>自动化 · 每周五 09:00</span><span class="cdot"><i></i>GitHub</span><span class="cdot"><i></i>Slack</span></div>
+          <p style="font-size:14.5px; color:var(--muted)">面向重复工作的定时自动化：每周五早上汇总仓库动态、合并请求与阻塞项，成稿后投递到频道。</p>
+        </div>
+        <div class="scen-side">
+          <div class="artifact-chip"><i></i><span>周报模板.md<small>第 3 周运行 · 历史可回放</small></span></div>
+          <div class="gate">
+            <b>把周报发到 #产品频道？</b>
+            <div class="gate-row"><button class="yes" type="button">批准</button><button class="no" type="button">暂不</button></div>
+            <div class="gate-dest">离开你的机器 → Slack · 批准后发送</div>
+          </div>
+        </div>
+      </article>
+
+    </div>
+  </div>
+</section>
+
+<!-- ======== S7 本地优先与模型自由 ======== -->
+<section class="sec-pad" id="local" style="border-top: 1px solid var(--line)">
+  <div class="wrap">
+    <div class="sec-head">
+      <span class="kicker">本地优先</span>
+      <h2 class="h2">数据在你手里，模型随你换</h2>
+      <p class="lede">agent 循环、对话、连接器 token、模型 Key 全部存在你机器的本地 secret store 里。唯一的云组件，是连接器 OAuth 握手的一个小服务。</p>
+    </div>
+    <div class="local-grid">
+      <div>
+        <div class="stack">
+          <div class="layer"><b>QunWork 桌面应用</b><span>原生外壳 + GUI（Tauri）</span></div>
+          <div class="layer core"><b>本地 agent 服务</b><span>引擎 · 工具 · 连接器——基于 aisuite 构建</span></div>
+          <div class="layer-row">
+            <div class="layer"><b>你的文件</b><span>& 终端</span></div>
+            <div class="layer"><b>25+ 连接器</b><span>+ 任意 MCP</span></div>
+            <div class="layer"><b>你的模型</b><span>任意供应商</span></div>
+          </div>
+        </div>
+        <p class="brace">一切以你的 Key、在你的机器上运行 · 服务默认只监听 127.0.0.1</p>
+      </div>
+      <div>
+        <div class="prov-grid" aria-label="支持的模型供应商">
+          <div class="prov">OpenAI</div><div class="prov">Anthropic</div><div class="prov">Gemini</div><div class="prov">DeepSeek</div>
+          <div class="prov">GLM (Z.ai)</div><div class="prov">Kimi</div><div class="prov">Qwen</div><div class="prov">MiniMax</div>
+          <div class="prov">Mistral</div><div class="prov">Grok</div><div class="prov">Inkling</div><div class="prov">Together</div>
+          <div class="prov">Fireworks</div><div class="prov hl">Ollama · 完全本地</div>
+        </div>
+        <p class="prov-quote">换个模型像换个灯泡——<b>Key 在你手里</b>，随时切换，不锁定任何一家。也可以完全不登录使用。</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ======== S8 资产沉淀闭环 ======== -->
+<section class="sec-pad" id="assets" style="border-top: 1px solid var(--line)">
+  <div class="wrap">
+    <div class="sec-head">
+      <span class="kicker">技能与资产</span>
+      <h2 class="h2">越用越厚的团队资产</h2>
+      <p class="lede">蜂群把重复性工作沉淀为可复用资产：技能、知识、模板。单机已经可用，团队工作区在路上。</p>
+    </div>
+    <div class="fly" aria-label="资产沉淀飞轮">
+      <span class="fly-step on">一次协同跑通</span><span class="fly-arrow">→</span>
+      <span class="fly-step">沉淀为模板 / SOP</span><span class="fly-arrow">→</span>
+      <span class="fly-step">团队复用</span><span class="fly-arrow">→</span>
+      <span class="fly-step">资产增值</span><span class="fly-arrow">↺</span>
+    </div>
+    <div class="asset-grid">
+      <div class="asset-card">
+        <div class="ico">🧩</div>
+        <h3>技能市场</h3>
+        <p>把重复性工作写成 SKILL.md 技能：创建、编辑、zip 导入导出、安装数与评分统计。蜂群在对话里就能创建技能。</p>
+      </div>
+      <div class="asset-card">
+        <div class="ico">📚</div>
+        <h3>知识文件库</h3>
+        <p>工作区文档自动索引 + 本地文件夹导入 + 手动条目，分块向量化检索，中文开箱即用——蜂群与对话都能直接查。</p>
+      </div>
+      <div class="asset-card">
+        <div class="ico">🐝</div>
+        <h3>蜂群模板</h3>
+        <p>把一次跑通的协同——分解策略、技能组合、验收标准——整体存档。下次同类任务直接套用团队的成熟打法。</p>
+      </div>
+    </div>
+    <p class="asset-note">※ "员工走了，资产留下；工具换了，流程留下。"——资产始终可本地导出，不绑定任何云厂商。</p>
+  </div>
+</section>
+
+<!-- ======== S9 开源 ======== -->
+<section class="oss sec-pad" id="opensource">
+  <div class="wrap oss-grid">
+    <div>
+      <div class="mit">MIT</div>
+      <h2 class="h2" style="margin-top: 14px;">开源，且站在上游肩膀上</h2>
+      <p class="lede" style="margin-top: 12px;">QunWork 是 OpenWorker（作者 Andrew Ng，MIT License）的二次开发分支，引擎基于 aisuite 构建。我们保留并致谢全部上游贡献——合规细节见 NOTICE。</p>
+    </div>
+    <div>
+      <div class="repo-card">
+        <div class="rname">🐝 QunWork / QunWork</div>
+        <p class="rdesc">让 AI 帮你把日常任务做完——开源 AI 同事，交付成品而非聊天。</p>
+        <div class="rmeta"><span>★ —</span><span>TypeScript · Python · Rust</span><span>MIT License</span></div>
+        <div class="oss-cta">
+          <a class="btn btn-primary btn-sm" href="#download">查看源码</a>
+          <a class="btn btn-ghost btn-sm" href="#docs">贡献指南</a>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ======== S10 终章 CTA + 页脚 ======== -->
+<section class="sec-pad final" id="download">
+  <div class="wrap">
+    <h2 class="h2">有什么任务需要我帮你解决？</h2>
+    <p class="lede">下载桌面版，或从源码运行。Beta 阶段免费使用。</p>
+    <div class="final-cta">
+      <a class="btn btn-primary" href="#download">⬇ 下载 Windows 版</a>
+      <a class="btn btn-ghost" href="#download">⬇ 下载 macOS 版</a>
+      <a class="link" href="#docs">或从源码运行 →</a>
+    </div>
+  </div>
+  <div class="trust-bar">
+    <div class="wrap trust-in">
+      <span>🔓 本地优先——数据不出你的机器</span>
+      <span>🔑 自带模型 Key，11 家供应商 + Ollama 完全本地</span>
+      <span>🐝 开源 MIT（基于 OpenWorker 构建）</span>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <div class="foot-grid" id="docs">
+      <div class="foot-brand">
+        <a class="brand" href="#top"><img src="assets/qunwork-mark.png" alt=""><b>QunWork</b><span>群沃客</span></a>
+        <p>常驻桌面的开源 AI 同事团队。规划、并行执行、交叉校验，交付成品。</p>
+      </div>
+      <div>
+        <h4>产品</h4>
+        <a href="#swarm">蜂群协同</a>
+        <a href="#local">本地优先</a>
+        <a href="#assets">技能与资产</a>
+        <a href="#download">下载</a>
+      </div>
+      <div>
+        <h4>资源</h4>
+        <a href="#docs">文档</a>
+        <a href="#scenarios">使用场景</a>
+        <a href="#how">工作原理</a>
+        <a href="#top">更新日志</a>
+      </div>
+      <div>
+        <h4>开源</h4>
+        <a href="#opensource">GitHub 仓库</a>
+        <a href="#opensource">MIT License</a>
+        <a href="#opensource">NOTICE 与致谢</a>
+        <a href="#opensource">贡献指南</a>
+      </div>
+    </div>
+    <div class="foot-base">
+      <span>© 2026 QunWork 群沃客 · MIT License</span>
+      <span>基于 OpenWorker 构建 · ICP 备案占位</span>
+    </div>
+  </div>
+</footer>
+
+</main>
+
+<script>
+  // theme toggle
+  var btn = document.getElementById("themeBtn");
+  btn.addEventListener("click", function () {
+    var next = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
+    document.documentElement.dataset.theme = next;
+    try { localStorage.setItem("qw-theme", next); } catch (e) {}
+  });
+  // nav border on scroll
+  var nav = document.getElementById("nav");
+  addEventListener("scroll", function () {
+    nav.classList.toggle("scrolled", scrollY > 8);
+  }, { passive: true });
+  // DAG replay: restart hero + panel animations by cloning nodes (cheap re-trigger)
+  document.getElementById("replayBtn").addEventListener("click", function () {
+    document.querySelectorAll(".exe1,.exe2,.exe3,.rev,.artifact").forEach(function (el) {
+      var s = el.style;
+      s.animation = "none";
+      void el.offsetWidth;
+      s.animation = "";
+    });
+  });
+  // worker thought-chain hover notes (S5)
+  var notes = {
+    planner: "planner 正在把目标拆成 4 个子任务，估算依赖关系并分派给空闲 executor。",
+    exec: "executor 正在你的文件与连接器之间取数——所有读取仅限本会话授权的目录。",
+    rev: "reviewer 正在交叉校验产物：数据对得上源、结论有依据，才会标 ACCEPT。",
+    gov: "治理回路正在采样循环粘度与漂移度——都在阈值内，蜂群健康。"
+  };
+  var chain = document.getElementById("chainNote");
+  var base = chain.innerHTML;
+  document.querySelectorAll(".dag-svg g").forEach(function (g) {
+    var label = g.querySelector("text");
+    if (!label) return;
+    var key = /PLANNER/.test(label.textContent) ? "planner"
+            : /REVIEWER/.test(label.textContent) ? "rev"
+            : /EXECUTOR/.test(label.textContent) ? "exec" : null;
+    if (!key) return;
+    g.style.cursor = "pointer";
+    g.addEventListener("mouseenter", function () { chain.innerHTML = "<b>思维链摘要 · </b>" + notes[key]; });
+    g.addEventListener("mouseleave", function () { chain.innerHTML = base; });
+  });
+</script>
+</body>
+</html>
