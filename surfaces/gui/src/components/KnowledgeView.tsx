@@ -16,12 +16,19 @@ import { useT } from "../i18n";
 
 interface KnowledgeViewProps {
   onResume?: (payload: { title: string; content: string; source?: string; id?: number }) => void;
+  /** The session's workspace. Scoping the list to it is what stops the page from
+   *  showing the same file once per indexed root (owner-hit 2026-09-13). */
+  workspace?: string;
 }
 
-export default function KnowledgeView({ onResume }: KnowledgeViewProps) {
+export default function KnowledgeView({ onResume, workspace }: KnowledgeViewProps) {
   const t = useT();
   const [items, setItems] = useState<KnowledgeItem[]>([]);
   const [total, setTotal] = useState(0);
+  // Which slice of the (multi-workspace) library is on screen. Default to THIS session's
+  // workspace: the aggregate view mixes every indexed root, so nested roots make one file
+  // appear several times over and the count looks monstrous.
+  const [scope, setScope] = useState<"workspace" | "all">(workspace ? "workspace" : "all");
   const [hits, setHits] = useState<KnowledgeHit[]>([]);
   const [query, setQuery] = useState("");
   const [searched, setSearched] = useState(false);
@@ -130,9 +137,11 @@ export default function KnowledgeView({ onResume }: KnowledgeViewProps) {
     [sortBy],
   );
 
+  const scopeWs = scope === "workspace" ? workspace : undefined;
+
   const refresh = useCallback(async () => {
     try {
-      const data = await listKnowledge();
+      const data = await listKnowledge(100, 0, scopeWs);
       setItems(sortItems(data.items ?? []));
       setTotal(data.total ?? 0);
       setLoadError(false);
@@ -141,14 +150,15 @@ export default function KnowledgeView({ onResume }: KnowledgeViewProps) {
       setTotal(0);
       setLoadError(true);
     }
-  }, [sortItems]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sortItems, scopeWs]);
 
   useEffect(() => {
     refresh();
   }, [refresh]);
 
   const loadMore = async () => {
-    const data = await listKnowledge(100, items.length);
+    const data = await listKnowledge(100, items.length, scopeWs);
     setItems((prev) => sortItems([...prev, ...(data.items ?? [])]));
   };
 
@@ -378,10 +388,21 @@ export default function KnowledgeView({ onResume }: KnowledgeViewProps) {
       </div>
 
       {/* items */}
-      <div className="flex items-center gap-2 mb-2">
+      <div className="flex items-center gap-2 mb-2 flex-wrap">
         <div className="text-[12.5px] text-muted">
           {t("Entries")} ({items.length}/{total})
         </div>
+        {/* Scope: the library is per-workspace, and the aggregate view is where nested
+            roots make one document look like N duplicate entries. */}
+        {workspace && (
+          <div className="seg !text-[11.5px]" role="radiogroup" aria-label={t("Scope")} data-testid="knowledge-scope">
+            {(["workspace", "all"] as const).map((s) => (
+              <button key={s} className={scope === s ? "active" : ""} onClick={() => setScope(s)}>
+                {s === "workspace" ? t("This workspace") : t("All workspaces")}
+              </button>
+            ))}
+          </div>
+        )}
         {/* 排序需求: 更新时间 / 名称 */}
         <select
           className="ml-auto input !py-1 !text-[11.5px] w-auto"
@@ -398,6 +419,11 @@ export default function KnowledgeView({ onResume }: KnowledgeViewProps) {
           <option value="title_desc">{t("Title Z→A")}</option>
         </select>
       </div>
+      {scope === "workspace" && workspace && (
+        <div className="text-[11.5px] text-faint mb-2 break-all" data-testid="knowledge-scope-path">
+          {workspace}
+        </div>
+      )}
       {items.length > 0 && items.length < total && (
         <button className="btn-secondary mb-2 self-start" onClick={loadMore}>
           {t("Load more")} ({total - items.length})

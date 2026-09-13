@@ -40,6 +40,27 @@ describe("KnowledgeView", () => {
     await waitFor(() => expect(screen.getByText("doc")).toBeTruthy());
     expect(screen.queryByTestId("knowledge-load-error")).toBeNull();
   });
+
+  it("scopes the list to the session workspace by default, and can widen it", async () => {
+    // Owner-hit 2026-09-13: the unscoped list mixes every indexed root, so one file
+    // appears once per root and the count looks like thousands of duplicates.
+    const listKnowledge = (api as unknown as { listKnowledge: ReturnType<typeof vi.fn> }).listKnowledge;
+    const ws = "E:\\QunWork\\QunWork"; // JSX attrs are literal text — use an expression
+    render(<KnowledgeView workspace={ws} />);
+
+    await waitFor(() => expect(listKnowledge).toHaveBeenCalledWith(100, 0, ws));
+    expect(screen.getByTestId("knowledge-scope-path").textContent).toContain(ws);
+
+    // "All workspaces" widens it (undefined = backend aggregates).
+    screen.getByRole("button", { name: "All workspaces" }).click();
+    await waitFor(() => expect(listKnowledge).toHaveBeenCalledWith(100, 0, undefined));
+  });
+
+  it("has no scope switch when the surface has no workspace", async () => {
+    render(<KnowledgeView />);
+    await waitFor(() => expect(screen.getByText("doc")).toBeTruthy());
+    expect(screen.queryByTestId("knowledge-scope")).toBeNull();
+  });
 });
 
 describe("KnowledgeView resume/detail", () => {

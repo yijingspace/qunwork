@@ -1054,8 +1054,14 @@ export async function setKnowledgePath(
 export async function listKnowledge(
   limit = 100,
   offset = 0,
+  workspace?: string,
 ): Promise<{ items: KnowledgeItem[]; total?: number }> {
-  const res = await apiFetch(`${httpBase()}/v1/knowledge?limit=${limit}&offset=${offset}`);
+  const q = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+  // Scoping matters: without it the backend aggregates EVERY indexed root, so a file
+  // that lives under nested roots (E:\ and E:\QunWork and E:\QunWork\QunWork) shows up
+  // once per root and the page looks like it is full of duplicates (owner-hit 2026-09-13).
+  if (workspace) q.set("workspace", workspace);
+  const res = await apiFetch(`${httpBase()}/v1/knowledge?${q.toString()}`);
   return await res.json();
 }
 

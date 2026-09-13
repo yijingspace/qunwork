@@ -63,6 +63,11 @@ _SKIP_DIRS = {
     "System Volume Information",
     ".graphflow-cache",
     "graphflow-out",
+    # 2026-09-13 (owner-hit): 打包后的 Python 运行时 (PyInstaller onedir) — 一处 sidecar
+    # 就带进上千条 license/元数据文本 (numpy 的 random 测试向量等), 纯噪音且随每次
+    # 打包换版本重复入库。旧库里的存量由 purge 的 R1 处理。
+    "_internal",
+    ".pnpm-store",
 }
 # 派生产物文件名模式: OIR 交付物 / 审计报告回灌知识库 = 用产出污染源
 # (主会话实证: 概念索引副本被当源文档二次索引)。fnmatch 语义。
@@ -634,17 +639,115 @@ class KnowledgeStore:
             "workspace": row[10],
         }
 
-    def count_items(self, workspace: Optional[str] = None) -> int:
-        """Total number of knowledge items for the workspace (or all workspaces)."""
+    def count_items(self, workspace: Optional[str] = None, *, include_retired: bool = False) -> int:
+        """Number of items a LIST would show — active only, unless asked otherwise.
+
+        The list hides retired rows; a count that included them made the page claim
+        "200/21782" while only 8,944 rows could ever load (owner-hit 2026-09-13: 12,838
+        of those were superseded versions, i.e. the count over-reported by 2.4×).
+        `include_retired=True` is for audit/maintenance callers.
+        """
         ws = str(workspace) if workspace else self._default_workspace
+        retired_filter = "" if include_retired else " AND retired=0"
         with self._lock:
             if ws:
                 row = self._con.execute(
-                    "SELECT COUNT(*) FROM knowledge_items WHERE workspace=?", (ws,)
+                    f"SELECT COUNT(*) FROM knowledge_items WHERE workspace=?{retired_filter}",
+                    (ws,),
                 ).fetchone()
             else:
-                row = self._con.execute("SELECT COUNT(*) FROM knowledge_items").fetchone()
+                row = self._con.execute(
+                    f"SELECT COUNT(*) FROM knowledge_items WHERE 1=1{retired_filter}"
+                ).fetchone()
         return row[0] if row else 0
+
+    def backfill_content_hashes(
+        self,
+        *,
+        limit: Optional[int] = None,
+        active_only: bool = False,
+        commit_every: int = 200,
+    ) -> dict:
+        """Give legacy rows a content hash so content-level dedupe can see them.
+
+        content_hash landed 2026-09-06; everything indexed before it carries an empty
+        hash, which made `_find_dupe_by_hash` blind — identical documents in different
+        paths/workspaces could never be recognised. Prefer RE-EXTRACTING the file (that
+        yields the same hash a fresh index computes, so new and old rows compare equal);
+        fall back to hashing the stored chunks when the source is gone.
+
+        Two knobs exist because the real library is 21.7k rows on a slow, nearly-full
+        volume (2026-09-13: 564 rows in 2 minutes with a commit per row):
+        ``active_only`` skips retired rows — invisible to search and to dedupe, and their
+        chunks are the ones the purge deletes, so hashing them is work thrown away;
+        ``commit_every`` batches the writes into one fsync per N rows.
+        """
+        sql = (
+            "SELECT id, source_path FROM knowledge_items "
+            "WHERE (content_hash IS NULL OR content_hash='') AND kind='file'"
+        )
+        if active_only:
+            sql += " AND retired=0"
+        sql += " ORDER BY id"
+        if limit:
+            sql += f" LIMIT {int(limit)}"
+        with self._lock:
+            rows = self._con.execute(sql).fetchall()
+            skipped_retired = 0
+            if active_only:
+                skipped_retired = self._con.execute(
+                    "SELECT COUNT(*) FROM knowledge_items WHERE (content_hash IS NULL "
+                    "OR content_hash='') AND kind='file' AND retired=1"
+                ).fetchone()[0]
+
+        filled = from_disk = from_chunks = skipped = 0
+        batch = max(1, int(commit_every))
+        pending = 0
+        for item_id, src in rows:
+            content: Optional[str] = None
+            if src:
+                try:
+                    p = Path(src)
+                    if p.is_file():
+                        from .extractors import extract_text
+
+                        content, _fmt = extract_text(p)
+                        if content:
+                            from_disk += 1
+                except Exception:
+                    content = None  # unreadable/gone → fall back to the stored chunks
+            if not content:
+                with self._lock:
+                    chunks = self._con.execute(
+                        "SELECT content FROM knowledge_chunks WHERE item_id=? ORDER BY chunk_index",
+                        (item_id,),
+                    ).fetchall()
+                content = "\n".join(c[0] for c in chunks) if chunks else None
+                if content:
+                    from_chunks += 1
+            if not content:
+                skipped += 1
+                continue
+            with self._lock:
+                self._con.execute(
+                    "UPDATE knowledge_items SET content_hash=? WHERE id=?",
+                    (self._content_hash(content), item_id),
+                )
+                pending += 1
+                if pending >= batch:
+                    self._con.commit()
+                    pending = 0
+            filled += 1
+        with self._lock:
+            self._con.commit()
+        return {
+            "candidates": len(rows),
+            "filled": filled,
+            "from_disk": from_disk,
+            "from_chunks": from_chunks,
+            "skipped": skipped,
+            "skipped_retired": skipped_retired,
+        }
 
     def list_items(
         self,

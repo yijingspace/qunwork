@@ -1449,7 +1449,7 @@ export function App() {
       ) : surface === "skills" ? (
         <SkillsView />
       ) : surface === "knowledge" ? (
-        <KnowledgeView onResume={resumeKnowledge} />
+        <KnowledgeView onResume={resumeKnowledge} workspace={workspace ?? undefined} />
       ) : surface === "integrations" ? (
         <IntegrationsView />
       ) : surface === "settings" ? (
