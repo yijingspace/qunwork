@@ -5,6 +5,12 @@ name: CI
 
 on: [push, pull_request]
 
+# 同一个 ref 上新的推送直接取消上一次还没跑完的 run：Windows runner 慢, 上一版还没跑完
+# 新提交就来了, 队列会一直堆(实测一次堆了 3 个 run, 且都被前面卡住的 job 拖着烧额度)。
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 # Windows 控制台默认 GBK: verify/*.py 打印 ₀₂⁻ 这类字符会 UnicodeEncodeError 而死,
 # pytest 的日志同理(conftest 里另有一层兜底)。统一让 CI 用 UTF-8。
 env:
@@ -19,10 +25,16 @@ jobs:
       # 只看得到一半结论。
       fail-fast: false
       matrix:
-        # 私有仓库的 macOS runner 按 10× 计费(免费额度 2000 分钟/月), 且当前 macOS 上
-        # 唯一暴露的是 verify 的数值检查差异; macOS 的构建覆盖由 release.yml 的 dmg 承担。
-        os: [ubuntu-latest, windows-latest]
-        python-version: ["3.12", "3.13"]
+        # 私有仓库免费额度 2000 分钟/月, 而 Windows runner 按 2× 计费且明显更慢: 因此
+        # 只保留一个 Windows 组合(3.13), 3.12 覆盖交给 ubuntu —— 省掉约 20 分钟/次推送。
+        # macOS runner 按 10× 计费, 覆盖由 release.yml 的 dmg 构建承担。
+        include:
+          - os: ubuntu-latest
+            python-version: "3.12"
+          - os: ubuntu-latest
+            python-version: "3.13"
+          - os: windows-latest
+            python-version: "3.13"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -45,16 +57,13 @@ jobs:
           path: coverage.xml
 
   # 7×24 突破方案数学模型验证 (分形检查点 / LoopCoop 收敛 / 皮萨诺压缩 /
-  # 蜂巢心跳 / 分形降级 — verify/run_all.py 5 脚本, 全过才绿)。
+  # 蜂巢心跳 / 分形降级 — verify/run_all.py, 全过才绿)。
   #
-  # 现状(2026-09-13, run #1 实证): 7 个脚本只有 verify_compress_pisano 通过 ——
-  #   · verify_oir_longrun_handshake / verify_oir_scheduler_driven 需要**活着的网关**,
-  #     且后者 import 的 oir_longrun_driver 不在本仓库(ModuleNotFoundError);
-  #   · 其余数学脚本在 macOS 上跑出数值不符(|λ₂| 1.1302 vs 理论 0.5712), Windows 上则是
-  #     GBK 控制台编码问题(已由 workflow 级 PYTHONUTF8 兜住)。
-  # 所以先让它**不阻塞**主 CI(继续跑、继续显示输出), 等有人专门修这几支脚本再转硬门禁。
+  # 两个 OIR 脚本依赖仓库外条件(活着的网关 / 不在本仓库的 oir_longrun_driver), 现在由
+  # run_all.py 做环境门控: 缺条件记 SKIP 并打印原因。此前它们在**任何**环境都 FAIL, 让这个
+  # 门禁永远红着(run #1-#5 实证), 于是没人再看它; 现在 5 个数学脚本 PASS + 2 SKIP = 绿。
+  # (中途曾用 continue-on-error 让它不阻塞; 门控到位后已收回, 恢复成硬门禁。)
   verify-7x24:
-    continue-on-error: true
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
