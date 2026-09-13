@@ -45,8 +45,11 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e ".[messaging,dev,sim,vision]"
           pip install pytest-cov
+      # -v + 显式 --timeout: Windows runner 上有个用例会卡住(run #5/#7 的超时转储里堆着几十个
+      # shell reader 线程 —— 那些是**活着的外壳在等输出**, 属正常; 卡的是某个用例的主线程),
+      # 而 pytest-timeout(thread) 超时会直接结束进程, 没有 -v 日志里只剩一排点号, 点不出是谁。
       - name: Test (full suite, coverage)
-        run: pytest tests -q --cov=coworker --cov-report=term-missing --cov-report=xml:coverage.xml --cov-fail-under=60
+        run: pytest tests -v --timeout=180 --cov=coworker --cov-report=term-missing --cov-report=xml:coverage.xml --cov-fail-under=60
       # 7×24 长程任务架构回归 (五大突破 + 管理控制台 + 压力场景)。
       - name: Test (7×24 long-run suite)
         run: pytest tests/test_longrun.py tests/test_stress_longrun.py -q
