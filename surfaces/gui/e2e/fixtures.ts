@@ -330,6 +330,7 @@ const baseName = (p: string) => p.split("/").filter(Boolean).pop() || p;
 // governance checks whose SECOND one trips the red line (the metric cards), a convergence
 // report and a saved report. Shapes mirror the real /v1/orchestrate payloads.
 const SWARM_RUN_ID = "run-swarm-1";
+const SWARM_DISKFULL_ID = "run-swarm-diskfull";
 const SWARM_INTENT = "Draft the launch note from the repo state";
 const SWARM_THRESHOLDS = { viscosity_mid: 0.4, viscosity_high: 0.66, drift: 0.8, max_warnings: 3 };
 const SWARM_EVENTS = [
@@ -381,7 +382,18 @@ const SWARM_SNAPSHOT = {
 const SWARM_HISTORY = {
   runs: [
     { run_id: SWARM_RUN_ID, intent: SWARM_INTENT, status: "completed", created_at: SWARM_SNAPSHOT.created_at, updated_at: SWARM_SNAPSHOT.updated_at, parent_run_id: null },
+    // A run whose store died mid-flight (owner-hit 2026-09-13): the record still says
+    // "running" while the server knows storage failed — GET annotates it from memory.
+    { run_id: SWARM_DISKFULL_ID, intent: SWARM_INTENT, status: "running", created_at: SWARM_SNAPSHOT.created_at, updated_at: SWARM_SNAPSHOT.updated_at, parent_run_id: null },
   ],
+};
+const SWARM_DISKFULL_ERROR = "OperationalError: database or disk is full";
+const SWARM_DISKFULL_SNAPSHOT = {
+  ...SWARM_SNAPSHOT,
+  run_id: SWARM_DISKFULL_ID,
+  status: "running",
+  final: undefined,
+  storage_error: SWARM_DISKFULL_ERROR,
 };
 // A coordination report body — deliberately contains a host path + an email so the redacted
 // export (G5) has something real to scrub.
@@ -924,6 +936,9 @@ export async function mockApi(page: import("@playwright/test").Page) {
     // Swarm / orchestrate surface. `/history` and the sub-resources are matched before the
     // run-id catch-all (which would otherwise swallow them as a run id).
     if (p.endsWith("/v1/orchestrate/history")) return json(SWARM_HISTORY);
+    if (/\/v1\/orchestrate\/[^/]+\/abandon$/.test(p) && m === "POST") {
+      return json({ ok: true, status: "failed", reason: SWARM_DISKFULL_ERROR });
+    }
     if (/\/v1\/orchestrate\/[^/]+\/control$/.test(p)) return json({ ok: true });
     if (/\/v1\/orchestrate\/[^/]+\/dissolve$/.test(p)) return json({ ok: true });
     if (/\/v1\/orchestrate\/[^/]+\/tag$/.test(p)) return json({ ok: true });
@@ -945,7 +960,8 @@ export async function mockApi(page: import("@playwright/test").Page) {
         redacted: redact,
       });
     }
-    if (/\/v1\/orchestrate\/[^/]+$/.test(p)) return json(SWARM_SNAPSHOT);
+    if (/\/v1\/orchestrate\/[^/]+$/.test(p))
+      return json(p.includes(SWARM_DISKFULL_ID) ? SWARM_DISKFULL_SNAPSHOT : SWARM_SNAPSHOT);
     if (p.endsWith("/v1/orchestrate") && m === "POST") {
       return json({ ok: true, run_id: SWARM_RUN_ID });
     }

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
+  abandonOrchestrationRun,
   addSwarmTemplate,
   deleteSwarmTemplate,
   deleteSwarmLesson,
@@ -630,6 +631,13 @@ export function SwarmView({
   const [reportPath, setReportPath] = useState<string>("");
   const [elapsed, setElapsed] = useState(0);
   const [stale, setStale] = useState(false);
+  // Storage failure reported by the server for this run (full volume / read-only DB):
+  // the run record can't be written any more, so this is the only explanation the owner
+  // will ever get — show it, don't sit on the generic "quiet" notice.
+  const [storageError, setStorageError] = useState<string | null>(null);
+  // Heartbeat of the last recorded event (ms) — the concrete diagnostic behind "quiet".
+  const [lastEventAt, setLastEventAt] = useState(0);
+  const [abandonBusy, setAbandonBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [history, setHistory] = useState<OrchestrationHistoryItem[]>([]);
   const [templates, setTemplates] = useState<SwarmTemplate[]>([]);
@@ -802,6 +810,16 @@ export function SwarmView({
     snapRef.current = snap; // always keep the latest truth, even mid-replay
     setStatus(snap.status);
     setEventsTotal(snap.events.length);
+    // Storage failure (server-side `storage_error`): the run record can no longer be
+    // written, so the snapshot will never move again. Both entry points land here —
+    // live polling AND opening a past run from history — so surface it once, here.
+    if (snap.storage_error) {
+      setStorageError(snap.storage_error);
+      setStatus("failed");
+      setStale(true);
+    } else {
+      setStorageError(null);
+    }
     if (snap.final) setFinalReport(snap.final);
     // 7x24 长程任务 (突破五): 降级轨迹直接来自 run snapshot。
     setDegradations(snap.degradations ?? []);
@@ -933,6 +951,26 @@ export function SwarmView({
     if (res.ok) await loadHistory();
   };
 
+  // A run frozen mid-flight keeps status="running" forever (full disk, killed worker).
+  // Closing it is the owner's way out — otherwise the history keeps lying and the deck
+  // offers no next step.
+  const abandonRun = async () => {
+    if (!runId) return;
+    setAbandonBusy(true);
+    const res = await abandonOrchestrationRun(runId);
+    setAbandonBusy(false);
+    if (!res.ok) {
+      setDeckError(res.error || "could not close the run");
+      return;
+    }
+    setStatus("failed");
+    setStale(false);
+    // The run is closed and the record now carries the reason — the "frozen run"
+    // banner has done its job.
+    setStorageError(null);
+    await loadHistory();
+  };
+
   const loadReport = async () => {
     if (!runId) return;
     setReportBusy(true);
@@ -981,6 +1019,9 @@ export function SwarmView({
     setFinalReport("");
     stopReplay(false); // a fresh run starts live — never inherit a replay cursor
     setEventsTotal(0);
+    setStorageError(null);
+    setLastEventAt(0);
+    setStale(false);
     startRef.current = Date.now();
     setElapsed(0);
     onRunActivity?.(); // 发起即刷新一次右栏 (蜂群若秒产文件也能及时可见)。
@@ -1032,6 +1073,22 @@ export function SwarmView({
           }
           const upd = (snap.updated_at ?? 0) * 1000;
           if (upd > lastActivity) lastActivity = upd;
+          setLastEventAt(upd);
+          // Storage died (full volume / read-only DB): the run record can never move
+          // again, so stop waiting immediately and say the real reason instead of
+          // holding the owner for the whole silence window (owner-hit 2026-09-13).
+          if (snap.storage_error) {
+            setStorageError(snap.storage_error);
+            setStatus("failed");
+            setStale(true);
+            setError(null);
+            if (pollRef.current) clearInterval(pollRef.current);
+            if (timerRef.current) clearInterval(timerRef.current);
+            setBusy(false);
+            onRunActivity?.();
+            loadHistory();
+            return;
+          }
           const stalled = Date.now() - lastActivity > stallMs;
           if (snap.status !== "running" || stalled) {
             if (pollRef.current) clearInterval(pollRef.current);
@@ -1041,11 +1098,7 @@ export function SwarmView({
               // word it so we don't falsely accuse the server (it may finish late).
               setStatus("stale");
               setStale(true);
-              setError(
-                t(
-                  "Swarm has been quiet. It may still be finishing in the background — keep this open or re-open it from history.",
-                ),
-              );
+              setError(null); // the diagnostic banner below carries this now
             } else {
               setElapsed((Date.now() - startRef.current) / 1000);
             }
@@ -1081,6 +1134,8 @@ export function SwarmView({
     setRunId(rid);
     setStatus("running");
     stopReplay(false); // switching runs drops any replay cursor from the previous run
+    setStorageError(null);
+    setLastEventAt(0);
     requestAnimationFrame(() => {
       document.querySelector(".swarm-scroll")?.scrollTo({ top: 0 });
     });
@@ -1506,9 +1561,51 @@ export function SwarmView({
                   {t("Tasks")}: {doneTasks.length}/{tasks.length}
                 </div>
               </div>
-              {stale && (
-                <div className="rounded-xl border border-warnInk bg-warnSoft px-3.5 py-2.5 mb-2 text-[12px] text-warnInk">
-                  {t("This run stopped updating (server may have restarted). The run record is kept; try running again.")}
+              {storageError && (
+                <div
+                  className="rounded-xl border border-danger bg-dangerSoft px-3.5 py-2.5 mb-2 text-[12px] text-danger"
+                  data-testid="swarm-storage-error"
+                >
+                  <div className="font-semibold">
+                    {t("The run stopped: its storage failed and nothing more can be recorded.")}
+                  </div>
+                  <div className="mt-0.5 break-all">{storageError}</div>
+                  <div className="mt-1 text-[11.5px]">
+                    {t("Free up disk space, then re-run the remaining tasks. Finished deliverables on disk are intact.")}
+                  </div>
+                  <button
+                    className="mt-2 rounded-lg border border-danger px-2.5 py-1 text-[12px] hover:bg-panel disabled:opacity-50"
+                    onClick={() => void abandonRun()}
+                    disabled={abandonBusy}
+                    data-testid="swarm-abandon"
+                  >
+                    {abandonBusy ? t("Closing…") : t("Mark this run failed")}
+                  </button>
+                </div>
+              )}
+              {!storageError && stale && (
+                <div
+                  className="rounded-xl border border-warnInk bg-warnSoft px-3.5 py-2.5 mb-2 text-[12px] text-warnInk"
+                  data-testid="swarm-stale"
+                >
+                  <div className="font-semibold">
+                    {t("Swarm has been quiet — no events recorded for a while.")}
+                  </div>
+                  <div className="mt-0.5 text-[11.5px]">
+                    {lastEventAt
+                      ? t("Last recorded event: {t}", { t: new Date(lastEventAt).toLocaleTimeString() })
+                      : t("No event was ever recorded for this run.")}
+                    {" · "}
+                    {t("It may still be finishing in the background — keep this open, or re-open it from history.")}
+                  </div>
+                  <button
+                    className="mt-2 rounded-lg border border-warnInk px-2.5 py-1 text-[12px] hover:bg-panel disabled:opacity-50"
+                    onClick={() => void abandonRun()}
+                    disabled={abandonBusy}
+                    data-testid="swarm-abandon"
+                  >
+                    {abandonBusy ? t("Closing…") : t("Mark this run failed")}
+                  </button>
                 </div>
               )}
             </div>

@@ -1407,10 +1407,24 @@ export interface OrchestrationRunSnapshot {
   events: { kind: string; payload: Record<string, unknown> }[];
   // 7x24 闀跨▼浠诲姟: 闄嶇骇杞ㄨ抗 (绐佺牬浜? + 鏀舵暃鎶ュ憡 (绐佺牬浜?銆?
   degradations?: OrchestrationDegradation[];
+  // Set when the run's event store stopped accepting writes (full volume / read-only
+  // DB). The run record is exactly what can't be written, so this rides the read from
+  // the server's memory — without it the UI just sees a snapshot that stops updating.
+  storage_error?: string;
 }
 
 export async function getOrchestrateRun(runId: string): Promise<OrchestrationRunSnapshot> {
   const res = await apiFetch(`${httpBase()}/v1/orchestrate/${runId}`);
+  return await res.json();
+}
+
+/** Close out a run that stopped making progress (full disk, killed worker). */
+export async function abandonOrchestrationRun(
+  runId: string,
+): Promise<{ ok: boolean; status?: string; reason?: string; error?: string; already_closed?: boolean }> {
+  const res = await apiFetch(`${httpBase()}/v1/orchestrate/${encodeURIComponent(runId)}/abandon`, {
+    method: "POST",
+  });
   return await res.json();
 }
 

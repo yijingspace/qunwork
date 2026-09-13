@@ -242,3 +242,61 @@ def test_run_store_heartbeat_updates_updated_at(tmp_path):
     after = store.get_run(run_id)["updated_at"]
     assert after > before
     store.close()
+
+
+# -- disk-full hardening (owner-hit 2026-09-13) -------------------------------------------
+
+
+def test_orchestrate_refuses_to_start_on_an_unwritable_workspace(client, monkeypatch):
+    """A full volume used to start anyway and ship a 0-byte deliverable."""
+    import coworker.diskspace as ds
+
+    monkeypatch.setattr(
+        ds,
+        "check_writable",
+        lambda *_a, **_k: ds.SpaceReport(
+            ok=False, reason="alloc-failed", free_bytes=52 * 1024**3,
+            error="E:\\ cannot allocate new data (reports 52.0 GB free): disk full",
+        ),
+    )
+    r = client.post("/v1/orchestrate", json={"intent": "Write a report", "sync": True})
+    body = r.json()
+    assert body["ok"] is False
+    assert body["space"] == "alloc-failed"
+    assert "cannot allocate" in body["error"]
+    # Nothing was created — no ghost run in the history.
+    assert client.get("/v1/orchestrate/history").json()["runs"] == []
+
+
+def test_snapshot_reports_a_storage_failure_that_the_record_could_not_hold(client, manager):
+    """The store is exactly what died, so the reason rides the READ from memory."""
+    client.post("/v1/orchestrate", json={"intent": "Write a report", "sync": True})
+    run_id = client.get("/v1/orchestrate/history").json()["runs"][0]["run_id"]
+
+    manager.orchestration_storage_errors[run_id] = "OperationalError: database or disk is full"
+    snap = client.get(f"/v1/orchestrate/{run_id}").json()
+    assert snap["storage_error"] == "OperationalError: database or disk is full"
+
+    # A healthy run carries no such annotation.
+    manager.orchestration_storage_errors.pop(run_id)
+    assert "storage_error" not in client.get(f"/v1/orchestrate/{run_id}").json()
+
+
+def test_abandon_closes_a_frozen_running_run(client, manager):
+    """A ghost run keeps status=running forever; the owner needs a way out."""
+    client.post("/v1/orchestrate", json={"intent": "Write a report", "sync": True})
+    store = manager.orchestration_store
+    run_id = client.get("/v1/orchestrate/history").json()["runs"][0]["run_id"]
+    store.update_status(run_id, "running")  # simulate the frozen-in-time record
+    manager.orchestration_storage_errors[run_id] = "OSError: disk full"
+
+    r = client.post(f"/v1/orchestrate/{run_id}/abandon").json()
+    assert r["ok"] is True
+    assert r["status"] == "failed"
+    assert "disk full" in r["reason"]
+    assert store.get_run(run_id)["status"] == "failed"
+    assert "abandoned" in (store.get_run(run_id)["final"] or "")
+
+    # Second call is a no-op (already closed), and the stale reason is cleared.
+    again = client.post(f"/v1/orchestrate/{run_id}/abandon").json()
+    assert again["ok"] is True and again.get("already_closed") is True

@@ -27,12 +27,17 @@ from ..pheromone import StigmergyBus
 from .governance import ESCALATE, NOP, PAUSE, REVERT, WARN, Governance, GovernanceCommand, GovernanceConfig
 from .memory_store import PersistentVectorMemory
 from .mesh import HexGrid, _mesh_mode_flags, bft_vote, claim_idle_agent, domain_of_task, review_neighborhood, select_batch_grid, topology_health
+from .artifacts import artifact_warning, verify_artifacts
+from ..diskspace import check_writable
 from .models import OrchestrationResult, Plan, ReviewVerdict, Task
 
 # The placeholder an executor leaves when a task timed out before producing any
 # content (see the timeout-degrade path). Shared so every check that needs to
 # distinguish "timeout placeholder" from a real deliverable uses ONE string.
 _TASK_TIMEOUT_PREFIX = "⚠ task timed out"
+# Consecutive event-sink failures before a run declares its storage dead and stops
+# (see Orchestrator._emit). Three in a row is far past a transient hiccup.
+_STORAGE_FAILURE_LIMIT = 3
 from .vectormemory import VectorMemory
 from .workers import (
     _run_engine_async,
@@ -251,6 +256,11 @@ class Orchestrator:
     timeout_seconds: Optional[int] = 600  # whole-run timeout (None = no limit)
     task_timeout_seconds: Optional[int] = 240  # per-task timeout; timeout degrades to a partial result
     event_sink: Optional[Callable[[str, dict], None]] = None  # (kind, payload) progress feed
+    # Storage failure hook: fired ONCE when the event sink keeps failing (full volume,
+    # locked/read-only DB, …). Without it a run whose store went unwritable keeps
+    # "working" while nothing is recorded — the GUI then shows a frozen snapshot
+    # forever and the owner sees a blank deliverable (owner-hit 2026-09-13).
+    on_storage_error: Optional[Callable[[BaseException], None]] = None
     # Per-turn token ledger sink forwarded to every worker engine (see TurnEngine.usage_sink).
     usage_sink: Optional[Callable[[dict, None]]] = None  # noqa: E501
     # G2 command deck: external control (pause/resume/operator message/requeue
@@ -299,6 +309,11 @@ class Orchestrator:
     reap_timeout: float = 300.0
     _runs: int = field(default=0, init=False)
     _run_seq: int = field(default=0, init=False)
+    # Storage-failure bookkeeping (see _emit): how many consecutive sink writes
+    # failed, whether we gave up, and the last exception for the owner-facing error.
+    _storage_sink_failures: int = field(default=0, init=False)
+    _storage_failed: bool = field(default=False, init=False)
+    _last_storage_error: Optional[BaseException] = field(default=None, init=False)
     _last_plan: Optional[Plan] = field(default=None, init=False)
     _hornet_last_hits: list = field(default_factory=list, init=False)
     _hornet_last_phase: list = field(default_factory=list, init=False)
@@ -361,11 +376,37 @@ class Orchestrator:
             return []
 
     def _emit(self, kind: str, payload: dict[str, Any]) -> None:
-        if self.event_sink is not None:
-            try:
-                self.event_sink(kind, payload)
-            except Exception:
-                logger.exception("event_sink %s failed", kind)
+        if self.event_sink is None or self._storage_failed:
+            return
+        try:
+            self.event_sink(kind, payload)
+            self._storage_sink_failures = 0
+        except Exception as exc:
+            # A failing sink used to be logged and forgotten — which turned a full
+            # volume into a run that looked alive forever while recording nothing.
+            # Count consecutive failures, then tell the owner and stop the run.
+            self._storage_sink_failures += 1
+            logger.exception("event_sink %s failed", kind)
+            if self._storage_sink_failures >= _STORAGE_FAILURE_LIMIT:
+                self._storage_failed = True
+                self._last_storage_error = exc
+                if self.on_storage_error is not None:
+                    try:
+                        self.on_storage_error(exc)
+                    except Exception:
+                        logger.exception("on_storage_error hook failed")
+
+    @property
+    def storage_error(self) -> Optional[str]:
+        """Owner-facing storage failure text, or None when the store stayed healthy."""
+        if not self._storage_failed or self._last_storage_error is None:
+            return None
+        return f"{type(self._last_storage_error).__name__}: {self._last_storage_error}"
+
+    @property
+    def storage_failed(self) -> bool:
+        """True once the event store has stopped accepting writes for this run."""
+        return self._storage_failed
 
     def _pher_deposit(self, key: str, amount: float, *, channel: str = "load",
                       payload: Optional[str] = None) -> None:
@@ -919,6 +960,9 @@ class Orchestrator:
         # T4: consecutive no-progress rounds → stall (fixed point without completion).
         stall_rounds = 0
         stalled_reason: Optional[str] = None
+        # Set when the run had to stop because its storage died / the workspace became
+        # unwritable (see the loop's storage gate) — surfaces as status "failed".
+        storage_reason: Optional[str] = None
         plan: Optional[Plan] = None
         planner_timed_out = False
         if self.initial_plan is not None:
@@ -1159,6 +1203,18 @@ class Orchestrator:
                     "result": _truncate_with_warning(result, 2000),
                 },
             )
+            # 产物落地校验: worker 用 `artifact:` 声称写了文件，这里回磁盘核对。
+            # 满盘时写盘会留下 0 字节文件，而"任务完成"的假象会让整轮 run 交付一份
+            # 空白文档 (owner-hit 2026-09-13)。问题既上报事件，也并入交给评审者的
+            # 文本 —— 评审者要看到和用户一样的证据。
+            try:
+                artifact_problems = verify_artifacts(result, self.workspace)
+            except Exception:
+                artifact_problems = []
+                logger.exception("artifact verification failed for %s", task.id)
+            if artifact_problems:
+                self._emit("artifact_check", {"id": task.id, "problems": artifact_problems})
+                result = result + artifact_warning(artifact_problems)
             verdict = await self._review(task, result)
             self._emit(
                 "task_review",
@@ -1255,6 +1311,27 @@ class Orchestrator:
         # Iterate until convergence: all tasks done, a task escalated to human,
         # the governance loop paused the run, or no progress is possible.
         while not plan.all_done() and not plan.needs_human() and not governance_paused:
+            # Storage health gate (owner-hit 2026-09-13). Two ways a run dies silently
+            # on a full volume: (a) the event sink stopped accepting writes → nothing we
+            # do from here is observable, so stop rather than burn tokens on a run whose
+            # progress no one can see; (b) the workspace itself can no longer be written
+            # → every remaining task would produce a blank artifact. Both end the run with
+            # an explicit reason instead of a frozen "running" ghost.
+            if self._storage_failed:
+                storage_reason = (
+                    "run store stopped accepting writes — "
+                    f"{type(self._last_storage_error).__name__ if self._last_storage_error else 'storage error'}: "
+                    f"{self._last_storage_error or 'unknown'}"
+                )
+                break
+            if self._runs % 5 == 0:  # cheap, but often enough to catch a filling disk
+                space = check_writable(self.workspace)
+                if not space.ok:
+                    storage_reason = f"workspace not writable: {space.error}"
+                    # The sink is still healthy on this path (only the workspace died),
+                    # so the GUI can be told at once instead of waiting out its window.
+                    self._emit("run_stalled", {"reason": storage_reason})
+                    break
             # G2 command deck: hold while paused, and feed operator directives into
             # this round's task hints so a stuck worker gets the operator's steer.
             ctrl = self.controller
@@ -1460,7 +1537,9 @@ class Orchestrator:
             reaper.cancel()
 
         status = (
-            "paused"
+            "failed"
+            if storage_reason is not None
+            else "paused"
             if planner_timed_out
             else "completed"
             if plan.all_done()
@@ -1472,6 +1551,8 @@ class Orchestrator:
             if plan.needs_human()
             else "failed"
         )
+        if storage_reason is not None:
+            gov_log.append(f"[storage] {storage_reason}")
         summary = "\n\n".join(
             f"[{t.id}] {t.description}\n{t.result}" for t in plan.tasks if t.result
         )

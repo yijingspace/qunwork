@@ -365,6 +365,11 @@ class SessionManager:
         # G2 command deck: run_id → live control channel while a swarm run is active
         # (paused flag, operator messages, pending requeue approvals).
         self.active_orchestration_controls: dict[str, Any] = {}
+        # run_id → storage failure text for runs whose event store stopped accepting
+        # writes (full volume / read-only DB). Lives in memory on purpose: the run
+        # record is exactly what can't be written, and GET /v1/orchestrate/{id} reads
+        # it here to explain why the run went quiet (owner-hit 2026-09-13).
+        self.orchestration_storage_errors: dict[str, str] = {}
         # Benchmark showcase (dev-plan): seed the three canonical swarm templates so
         # users can one-click launch a "coordination demo" — market report, code
         # refactor, weekly automation. Each pairs with /v1/orchestrate/{id}/report.

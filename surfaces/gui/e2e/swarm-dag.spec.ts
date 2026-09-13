@@ -78,6 +78,25 @@ test("the coordination report can be exported as a redacted sample", async ({ pa
   await expect(sample).toContainText("<email>");
 });
 
+test("a run whose storage died says so at once and can be closed out", async ({ page }) => {
+  await page.goto("/");
+  await page.getByTestId("task-mode-menu").click();
+  await page.getByRole("menuitem", { name: /Swarm mode/ }).click();
+  await page.getByTestId(`history-${"run-swarm-diskfull"}`).click();
+
+  // The reason comes straight from the server, not a generic "quiet" notice.
+  const banner = page.getByTestId("swarm-storage-error");
+  await expect(banner).toBeVisible();
+  await expect(banner).toContainText("database or disk is full");
+  await expect(banner).toContainText("Free up disk space");
+  // …and it does not double up with the vague silence notice.
+  await expect(page.getByTestId("swarm-stale")).toHaveCount(0);
+
+  // The owner's way out of a frozen run.
+  await page.getByTestId("swarm-abandon").click();
+  await expect(banner).toHaveCount(0);
+});
+
 test("replay rewinds the event log frame by frame and restores the live frame", async ({ page }) => {
   await openSwarmRun(page);
 

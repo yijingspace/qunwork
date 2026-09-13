@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import re
 import secrets
@@ -17,6 +18,8 @@ from collections import deque
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Optional
+
+logger = logging.getLogger(__name__)
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -428,6 +431,18 @@ def create_app(manager: SessionManager) -> FastAPI:
                 "ok": False,
                 "error": "no workspace configured — open a project folder first, or pass workspace",
             }
+        # Disk preflight (owner-hit 2026-09-13): a swarm writes every deliverable into
+        # the workspace, and a volume that can't allocate leaves 0-byte documents and a
+        # run store that silently stops recording. Refuse up front with the real reason.
+        from ..diskspace import check_writable
+
+        space = check_writable(workspace)
+        if not space.ok:
+            return {
+                "ok": False,
+                "error": f"workspace is not writable — {space.error}",
+                "space": space.reason,
+            }
         session_id = f"__orchestrate__{secrets.token_hex(4)}"
         store = manager.orchestration_store
         # P0 建议3 (保留分支 A/B): fork_of = the parent run whose plan_ready we copy;
@@ -616,6 +631,11 @@ def create_app(manager: SessionManager) -> FastAPI:
                 # S10: 治理命令写入持久化审计 (manager.audit_store), 可追溯。
                 audit_sink=manager.audit_store.append,
                 event_sink=lambda kind, payload: store.append_event(run_id, kind, payload),
+                # Storage failure → tell the GUI *out of band* (the event store is what
+                # just died), so a stuck run reports a reason instead of looking busy.
+                on_storage_error=lambda exc: manager.orchestration_storage_errors.__setitem__(
+                    run_id, f"{type(exc).__name__}: {exc}"
+                ),
                 # G2: command deck wiring (pause/resume/message/requeue approval).
                 controller=controller,
                 requeue_approval_timeout=float(
@@ -705,17 +725,31 @@ def create_app(manager: SessionManager) -> FastAPI:
                 # Do NOT clobber a genuinely completed run: ingestion/return
                 # errors after success must not flip it to failed (observed:
                 # report written + sunk, but status flipped to failed).
+                # Every store write here is best-effort: when the failure IS the store
+                # (full volume / read-only DB, owner-hit 2026-09-13) the bookkeeping
+                # raises too, and letting that escape would leave an unhandled task
+                # exception behind a run that still reads as "running". The owner-facing
+                # reason lives in manager.orchestration_storage_errors instead.
                 try:
                     cur = store.get_run(run_id)
                     already = (cur or {}).get("status")
                 except Exception:
                     already = None
                 if already != "completed":
-                    store.update_status(run_id, "failed", str(exc))
-                store.append_event(run_id, "orchestration_error", {"error": str(exc)})
+                    try:
+                        store.update_status(run_id, "failed", str(exc))
+                    except Exception:
+                        logger.exception("could not mark run %s failed", run_id)
+                try:
+                    store.append_event(run_id, "orchestration_error", {"error": str(exc)})
+                except Exception:
+                    logger.exception("could not record the failure event for %s", run_id)
                 return {"ok": False, "run_id": run_id, "error": str(exc)}
             finally:
                 manager.active_orchestration_controls.pop(run_id, None)
+                # A run that finished (or recorded its own failure) has no lingering
+                # storage complaint to report.
+                manager.orchestration_storage_errors.pop(run_id, None)
                 # Refine 机制: run 结束后关闭 harness 连接 (蒸馏已完成)。
                 _h = getattr(orch, "_harness_ref", None)
                 if _h is not None:
@@ -806,7 +840,36 @@ def create_app(manager: SessionManager) -> FastAPI:
         run = manager.orchestration_get_run(run_id)
         if not run:
             return {"ok": False, "error": "run not found"}
-        return {"ok": True, **run}
+        # A run whose store went unwritable still READS fine — annotate that read from
+        # memory so the GUI can say why it went quiet (and stop waiting for events that
+        # can never be persisted).
+        payload: dict[str, Any] = {"ok": True, **run}
+        storage_error = manager.orchestration_storage_errors.get(run_id)
+        if storage_error:
+            payload["storage_error"] = storage_error
+        return payload
+
+    @app.post("/v1/orchestrate/{run_id}/abandon")
+    def orchestrate_abandon(run_id: str) -> dict[str, Any]:
+        """Close out a run that stopped making progress (full disk, killed worker).
+
+        A frozen run keeps `status="running"` forever — the history list then lies and
+        the deck offers no way out. This marks it failed with a reason so the owner can
+        re-run the remaining work.
+        """
+        store = manager.orchestration_store
+        run = store.get_run(run_id)
+        if not run:
+            return {"ok": False, "error": "run not found"}
+        if run.get("status") != "running":
+            return {"ok": True, "status": run.get("status"), "already_closed": True}
+        reason = manager.orchestration_storage_errors.pop(run_id, "") or "abandoned by the owner"
+        try:
+            store.update_status(run_id, "failed", f"⚠ run abandoned: {reason}")
+        except Exception as exc:  # a dead store can't record its own death either
+            return {"ok": False, "error": f"could not update the run record: {exc}"}
+        manager.active_orchestration_controls.pop(run_id, None)
+        return {"ok": True, "status": "failed", "reason": reason}
 
     @app.get("/v1/orchestrate/{run_id}/control")
     def orchestrate_control_status(run_id: str) -> dict[str, Any]:
