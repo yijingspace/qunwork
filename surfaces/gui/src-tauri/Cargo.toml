@@ -1,6 +1,6 @@
 [package]
 name = "openworker-desktop"
-version = "0.22.12"
+version = "0.22.13"
 description = "QunWork desktop shell"
 edition = "2021"
 rust-version = "1.77"
