@@ -267,6 +267,11 @@
   .gov-card .val small { font-size: 13px; color: #62686f; font-weight: 500; margin-left: 8px; }
   .gov-card p { font-size: 13px; color: #62686f; margin-top: 4px; }
   .gov-note { font-size: 12px; color: #62686f; margin-top: 10px; }
+  /* 安全红线是关键词跳闸机制，没有数值形态 —— 按状态徽章呈现，不画成数字 */
+  .gov-state { display: inline-flex; align-items: center; gap: 6px; font-size: 15px; font-weight: 600;
+    color: #58b07f; border: 1px solid #2c4736; background: #1a2b21; border-radius: 999px; padding: 4px 12px; }
+  .gov-state i { width: 7px; height: 7px; border-radius: 999px; background: var(--ok-dot); display: block; }
+  .gov-card code { font-family: var(--font-mono, monospace); font-size: 12px; color: #9aa1ab; }
   .chain-note { margin-top: 14px; font-size: 13px; color: #9aa1ab; border-top: 1px dashed #2a2d33; padding-top: 12px; min-height: 44px; }
   .chain-note b { color: #e6e8eb; font-weight: 500; }
 
@@ -579,7 +584,7 @@
           <!-- governance strip -->
           <g>
             <rect x="20" y="206" width="520" height="22" rx="6" fill="none" stroke="#2a2d33"/>
-            <text class="n-label" x="30" y="221">治理回路：循环粘度 · 漂移度 · 安全红线 —— 命中即 REVERT / PAUSE / ESCALATE</text>
+            <text class="n-label" x="30" y="221">治理回路：循环粘度 · 漂移度 · 自主率 —— 漂移超阈值 REVERT/WARN，命中红线即 PAUSE 升级</text>
           </g>
         </svg>
         <p class="chain-note" id="chainNote">把鼠标放到任意节点上，看这个 worker 在想什么。<b>提示：</b>过程不是黑盒——每个 worker 的思维链与耗时都实时可见、可暂停。</p>
@@ -596,11 +601,16 @@
           <p>执行是否偏离计划与目标。漂移超阈值自动回滚（REVERT）或暂停（PAUSE）。</p>
         </div>
         <div class="gov-card">
-          <b>安全红线 Red Lines</b>
-          <div class="val">0<small>命中</small></div>
-          <p>触线即停：蜂群自动冻结并升级给你（ESCALATE），配合收件箱审批流处理。</p>
+          <b>自主率 Autonomy</b>
+          <div class="val">0.83<small>越高越省心</small></div>
+          <p>无需返工即通过的步骤占比。返工、驳回、重跑都会拉低它——它衡量"这群 AI 同事到底能不能自己把事办成"。</p>
         </div>
-        <p class="gov-note">※ 示意数据，用于说明治理维度。每次运行都会生成完整快照，可复盘、可追责。</p>
+        <div class="gov-card">
+          <b>安全红线 Red Lines</b>
+          <div class="val"><span class="gov-state"><i></i>未触发</span></div>
+          <p>关键词跳闸机制：命中危险动作（<code>rm -rf /</code>、<code>drop table</code> 等）即刻冻结整个蜂群并升级给你（ESCALATE），配合收件箱审批流处理。它是布尔状态，不是数值。</p>
+        </div>
+        <p class="gov-note">※ 循环粘度 / 漂移度 / 自主率均为产品治理层每次检查的真实指标，阈值（粘度 0.40 warn · 0.66 revert，漂移 0.80）随事件一并下发；此处数值为示例。每次运行都会生成完整快照，可复盘、可追责。</p>
       </div>
     </div>
   </div>
