@@ -56,3 +56,19 @@ W*_数据事实表_*.md
 
 # Rust 研究基线(bee_colony_core)构建产物
 bee_colony_core/target/
+
+# 运行时数据库 / 蜂群日志 / 图缓存 —— 不是源码, 曾把 1.92GB 的 knowledge.db 提交进来
+# 导致仓库超限(2026-09-13 历史瘦身), 这里逐条挡住:
+knowledge.db
+knowledge.db-*
+coworker/knowledge.db
+coworker/skills/coworker.db
+coworker/skills/conversations/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.db-shm
+*.db-wal
+*.db-journal
+graphflow-out/
+.graphflow-cache/
