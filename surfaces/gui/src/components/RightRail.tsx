@@ -551,7 +551,12 @@ function SheetViewer({ dataUrl }: { dataUrl: string }) {
       .then((ExcelJS) => {
         if (cancelled) return;
         const wb = new ExcelJS.Workbook();
-        return wb.xlsx.load(bytes).then(() => {
+        // exceljs 的 .d.ts 只声明 Node 视角的 `load(data: Buffer)`, 而浏览器里传
+        // Uint8Array 是它的官方用法(运行时两种都吃)。这里取它自己的参数类型做一次显式
+        // 转换: 既不需要 @types/node 存在, 也不会在装了 @types/node 的 CI 上因
+        // `Uint8Array<ArrayBuffer>` 不匹配 `Buffer` 而挂掉(GitHub CI run #2 实证)。
+        const payload = bytes as unknown as Parameters<typeof wb.xlsx.load>[0];
+        return wb.xlsx.load(payload).then(() => {
           if (cancelled) return;
           setSheets(
             wb.worksheets.map((ws) => ({
