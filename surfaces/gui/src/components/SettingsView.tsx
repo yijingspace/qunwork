@@ -53,6 +53,13 @@ import {
   type DictationStatus,
 } from "../tauri";
 import { useThemePref } from "../theme";
+import {
+  notificationPermission,
+  notifyTaskDone,
+  requestNotificationPermission,
+  useNotifyPrefs,
+  type PermissionState,
+} from "../notify";
 import { Icon } from "./Icon";
 import { PanelHead } from "./IntegrationsView";
 import { ModelsTab } from "./ManageTabs";
@@ -561,6 +568,89 @@ function PersonasSection({ onOpenPersona }: { onOpenPersona?: (id: string) => vo
 }
 
 // -- Appearance + app behaviour ------------------------------------------------
+/** Task-completion alerts (owner ask 2026-09-13): a swarm run or a normal turn routinely
+ *  ends while the window sits behind something else. Both channels are per-device
+ *  preferences (same convention as the theme); the desktop popup additionally needs the
+ *  OS permission, which can only be requested from a user gesture — hence the toggle. */
+function NotificationsCard() {
+  const t = useT();
+  const [prefs, setPrefs] = useNotifyPrefs();
+  const [perm, setPerm] = useState<PermissionState>(notificationPermission);
+  const [note, setNote] = useState("");
+
+  const toggle = async (key: "sound" | "desktop", value: boolean) => {
+    // Optimistic: the checkbox is controlled, so awaiting the permission prompt first
+    // would leave it flicking back to its old state for a frame.
+    setPrefs({ [key]: value });
+    if (key === "desktop" && value) {
+      const next = await requestNotificationPermission();
+      setPerm(next);
+      if (next !== "granted") {
+        setPrefs({ desktop: false }); // the OS said no — don't claim it's on
+        setNote(t("Your system blocked desktop notifications — allow them for QunWork, then try again."));
+        return;
+      }
+    }
+    setNote("");
+  };
+
+  const test = () => {
+    const fired = notifyTaskDone({
+      title: t("Task finished"),
+      body: t("This is what a completion alert looks like."),
+      tag: "qunwork-notify-test",
+    });
+    setNote(
+      fired.sound || fired.desktop ? t("Alert sent.") : t("Nothing played — switch on a channel above."),
+    );
+  };
+
+  return (
+    <div className={CARD + " p-4 mt-4"} data-testid="notify-card">
+      <div className={FIELD_LABEL + " mb-2.5"}>{t("Task-completion alerts")}</div>
+      <label className="flex items-start gap-3 py-2">
+        <input
+          type="checkbox"
+          className="mt-0.5"
+          checked={prefs.sound}
+          onChange={(e) => void toggle("sound", e.target.checked)}
+          data-testid="notify-sound"
+        />
+        <span>
+          <span className="block text-[13px] text-ink">{t("Play a sound")}</span>
+          <span className="block text-[12px] text-muted">
+            {t("A short chime when a task or a swarm run finishes.")}
+          </span>
+        </span>
+      </label>
+      <label className="flex items-start gap-3 py-2">
+        <input
+          type="checkbox"
+          className="mt-0.5"
+          checked={prefs.desktop}
+          onChange={(e) => void toggle("desktop", e.target.checked)}
+          data-testid="notify-desktop"
+        />
+        <span>
+          <span className="block text-[13px] text-ink">{t("Show a desktop notification")}</span>
+          <span className="block text-[12px] text-muted">
+            {t("A system popup with a one-line summary, so you notice while working elsewhere.")}
+          </span>
+        </span>
+      </label>
+      <div className="flex items-center gap-3 mt-2">
+        <button className={BTN_BORDERED} onClick={test} data-testid="notify-test">
+          {t("Test alert")}
+        </button>
+        {perm === "unsupported" && (
+          <span className="text-[11.5px] text-faint">{t("This system has no desktop notifications.")}</span>
+        )}
+      </div>
+      {note && <div className="text-[11.5px] text-muted mt-2">{note}</div>}
+    </div>
+  );
+}
+
 function AppearanceSection() {
   const t = useT();
   const { pref: langPref, setLanguage } = useLanguage();
@@ -612,6 +702,8 @@ function AppearanceSection() {
       </div>
 
       <SidebarCard />
+
+      <NotificationsCard />
 
       <FilesCard />
 

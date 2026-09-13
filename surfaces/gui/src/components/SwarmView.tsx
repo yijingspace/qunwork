@@ -23,6 +23,7 @@ import {
   type SwarmTemplate,
 } from "../api";
 import { useT } from "../i18n";
+import { notifyTaskDone } from "../notify";
 import { DecisionReplayTimeline, type SwarmDecisionRow } from "./DecisionReplay";
 
 /** Fallback workspace hint: the server's configured default, if any. */
@@ -1101,6 +1102,15 @@ export function SwarmView({
               setError(null); // the diagnostic banner below carries this now
             } else {
               setElapsed((Date.now() - startRef.current) / 1000);
+              // 任务完成提示 (owner ask 2026-09-13): a swarm run takes minutes, so it
+              // almost always ends while the owner is looking at something else.
+              // Fires once (the poll stops right here), and only for a real terminal
+              // status — the "quiet"/storage paths above have their own banners.
+              notifyTaskDone({
+                title: snap.status === "completed" ? t("Swarm finished") : t("Swarm stopped"),
+                body: `${snap.intent || intent} · ${snap.status}`,
+                tag: `swarm-${rid}`,
+              });
             }
             setBusy(false);
             onRunActivity?.(); // run 结束 → 刷新右栏, 蜂群落盘的交付物即时可见。

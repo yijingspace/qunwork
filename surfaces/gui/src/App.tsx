@@ -36,6 +36,7 @@ import { itemsFromMessages } from "./itemsFromMessages";
 import { streamMode } from "./streamGate";
 import { InboxItemCard } from "./components/InboxItemCard";
 import { isTauri, platformOS, startWindowDrag } from "./tauri";
+import { completionAlertKind, notifyTaskDone, summarize } from "./notify";
 import { Icon } from "./components/Icon";
 import { Sidebar } from "./components/Sidebar";
 import { ThinkingBlock, Transcript } from "./components/Transcript";
@@ -168,6 +169,13 @@ export function App() {
   const [mode, setMode] = useState("interactive");
   const [connected, setConnected] = useState(false);
   const [running, setRunning] = useState(false);
+  // Task-completion notification bookkeeping (owner ask 2026-09-13): the last model
+  // answer (the popup body) plus whether the turn was stopped by the owner / ended in an
+  // error — a "finished" chime must never lie. Refs, because the WS handler closure is
+  // built once per socket and cannot read fresh state.
+  const lastAssistantRef = useRef("");
+  const interruptedRef = useRef(false);
+  const erroredRef = useRef(false);
   const [items, setItems] = useState<Item[]>([]);
   const [streaming, setStreamingState] = useState("");
   // Ref mirror of `streaming`: the WS handler closure is built once per socket and can't read
@@ -653,6 +661,7 @@ export function App() {
                 ...(reasoning ? { reasoning } : {}),
               },
             ]);
+          if (d.text) lastAssistantRef.current = d.text; // notification body
           setStreaming(""); // finalized into items (or empty tool-only turn)
           setReasoningStream("");
           break;
@@ -750,10 +759,12 @@ export function App() {
         case "interrupted":
           flushPartialStream();
           setItems((p) => [...p, { kind: "notice", tone: "warn", text: t("Interrupted.") }]);
+          interruptedRef.current = true; // the user stopped it — not a completion
           break;
         case "error": {
           const d = ev.data;
           flushPartialStream();
+          erroredRef.current = true;
           setItems((p) => [
             ...p,
             { kind: "notice", tone: "warn", text: t("Error: ") + (d.error || "unknown"), retriable: true },
@@ -794,6 +805,24 @@ export function App() {
               finalizeAutomationRun(ar.taskId, ar.runId).catch(() => {});
             }
           }
+          // 任务完成提示 (owner ask 2026-09-13): a turn routinely ends while the window
+          // sits behind something else. The owner stopping it isn't a completion, and an
+          // errored turn must not claim success — completionAlertKind decides.
+          {
+            const kind = completionAlertKind({
+              interrupted: interruptedRef.current,
+              errored: erroredRef.current,
+            });
+            if (kind !== "none") {
+              notifyTaskDone({
+                title: kind === "error" ? t("Task ended with an error") : t("Task finished"),
+                body: summarize(lastAssistantRef.current) || t("QunWork finished the task."),
+                tag: `session-${sessionId}`,
+              });
+            }
+          }
+          interruptedRef.current = false;
+          erroredRef.current = false;
           break;
       }
     };
