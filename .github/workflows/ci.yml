@@ -3,7 +3,13 @@
 
 name: CI
 
-on: [push, pull_request]
+on:
+  # 只跟分支: 之前是 `on: [push, pull_request]`, 于是**打 tag 也会把整套矩阵再跑一遍**
+  # (发布 v0.22.14 时实测同时排了 CI #11/#12 两个同 commit 的 run), 纯属烧额度。
+  # tag 的构建由 release.yml 负责。
+  push:
+    branches: ["**"]
+  pull_request:
 
 # 同一个 ref 上新的推送直接取消上一次还没跑完的 run：Windows runner 慢, 上一版还没跑完
 # 新提交就来了, 队列会一直堆(实测一次堆了 3 个 run, 且都被前面卡住的 job 拖着烧额度)。
