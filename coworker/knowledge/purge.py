@@ -174,6 +174,12 @@ def main() -> int:
         choices=["active", "all"],
         help="先给存量条目补 content_hash (默认只补现役条目; all=连已退役条目一起补)",
     )
+    ap.add_argument(
+        "--backfill-limit",
+        type=int,
+        default=0,
+        help="本次最多补多少条 (0=不限)。补哈希要重抽源文件, PDF 约 7s/个, 大库请分片跑",
+    )
     ap.add_argument("--json", action="store_true", help="机器可读输出")
     args = ap.parse_args()
 
@@ -194,10 +200,14 @@ def main() -> int:
             store = KnowledgeStore(args.db)
             print(
                 "补 content_hash 中 (优先重抽源文件, 源已丢失则用已存 chunks"
-                f"{'; 仅现役条目' if active_only else ''})…",
+                f"{'; 仅现役条目' if active_only else ''}"
+                f"{'; 本次上限 %d 条' % args.backfill_limit if args.backfill_limit else ''})…",
                 flush=True,
             )
-            backfill_report = store.backfill_content_hashes(active_only=active_only)
+            backfill_report = store.backfill_content_hashes(
+                active_only=active_only,
+                limit=args.backfill_limit or None,
+            )
             print(
                 f"✅ 补哈希 {backfill_report['filled']} 条 "
                 f"(重抽 {backfill_report['from_disk']} / chunks {backfill_report['from_chunks']} / "

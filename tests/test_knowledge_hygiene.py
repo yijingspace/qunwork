@@ -140,11 +140,10 @@ def test_backfill_batching_loses_no_rows(store: KnowledgeStore, tmp_path: Path):
     """commit_every=N must not skip the tail (last <N rows) nor stop early."""
     ws = tmp_path / "ws"
     ws.mkdir()
-    ids = []
     for i in range(7):
         doc = ws / f"d{i}.md"
         doc.write_text(f"文档 {i} 内容", encoding="utf-8")
-        ids.append(store.index_file(doc, workspace=str(ws)))
+        store.index_file(doc, workspace=str(ws))
     store._con.execute("UPDATE knowledge_items SET content_hash=''")
     store._con.commit()
 
@@ -154,6 +153,27 @@ def test_backfill_batching_loses_no_rows(store: KnowledgeStore, tmp_path: Path):
         "SELECT COUNT(*) FROM knowledge_items WHERE content_hash IS NULL OR content_hash=''"
     ).fetchone()[0]
     assert missing == 0
+
+
+def test_backfill_limit_slices_the_work(store: KnowledgeStore, tmp_path: Path):
+    """Re-extracting a source is expensive (a big PDF costs seconds), so the CLI lets the
+    operator run the backfill in slices; `limit` must cap the batch exactly."""
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    for i in range(5):
+        doc = ws / f"d{i}.md"
+        doc.write_text(f"文档 {i}", encoding="utf-8")
+        store.index_file(doc, workspace=str(ws))
+    store._con.execute("UPDATE knowledge_items SET content_hash=''")
+    store._con.commit()
+
+    first = store.backfill_content_hashes(limit=2)
+    assert first["candidates"] == 2 and first["filled"] == 2
+    left = store._con.execute(
+        "SELECT COUNT(*) FROM knowledge_items WHERE content_hash IS NULL OR content_hash=''"
+    ).fetchone()[0]
+    assert left == 3
+    assert store.backfill_content_hashes()["filled"] == 3
 
 
 # -- ③ cross-workspace duplicate rule --------------------------------------------------------
