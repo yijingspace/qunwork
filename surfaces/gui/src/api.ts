@@ -2850,6 +2850,18 @@ export async function verifyProvider(
   return res.json();
 }
 
+/** The provider's LIVE model list (read-only GET /models with the stored key) — what the
+ *  service actually serves, not the small curated matrix. Empty/error just means the
+ *  gateway doesn't expose a list; the manual add row stays as the fallback. */
+export async function listProviderModels(
+  provider: string,
+): Promise<{ ok: boolean; models?: string[]; count?: number; error?: string }> {
+  const res = await apiFetch(
+    `${httpBase()}/v1/providers/${encodeURIComponent(provider)}/models`,
+  );
+  return res.json();
+}
+
 /** Client-side provider guess from an API key's shape (mirrors the server's detect_provider). */
 export function detectProvider(apiKey: string): string | null {
   const key = (apiKey || "").trim();

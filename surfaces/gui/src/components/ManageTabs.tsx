@@ -216,7 +216,7 @@ export function ModelsTab() {
     refreshSettings();
   }, []);
 
-  if (!settings) return <div className="text-[13px] text-muted">Loading…</div>;
+  if (!settings) return <div className="text-[13px] text-muted">{t("Loading…")}</div>;
 
   const info = ps.info;
   const knownNames = ps.providers.map((p) => p.name);
@@ -260,10 +260,9 @@ export function ModelsTab() {
 
       {info?.configured ? (
         <div className="mt-6">
-          <div className={SEC_H + " mb-1.5"}>Models</div>
+          <div className={SEC_H + " mb-1.5"}>{t("Models")}</div>
           <p className="text-[12px] text-muted mb-2.5 leading-relaxed">
-            Ticked models show in the composer's picker; the black badge marks the default for new
-            sessions.
+            {t("Ticked models show in the composer's picker; the black badge marks the default for new sessions.")}
           </p>
           <ModelChecklist
             provider={ps.sel}
@@ -280,9 +279,9 @@ export function ModelsTab() {
         // key unlocks is part of deciding to get one at all (owner ask, 2026-07-04).
         (info?.suggested_models?.length || 0) > 0 && (
           <div className="mt-6" data-testid="model-preview">
-            <div className={SEC_H + " mb-1.5"}>Included models</div>
+            <div className={SEC_H + " mb-1.5"}>{t("Included models")}</div>
             <p className="text-[12px] text-muted mb-2.5 leading-relaxed">
-              Curated, agent-capable models this provider serves — add your key above to enable them.
+              {t("Curated, agent-capable models this provider serves — add your key above to enable them.")}
             </p>
             <div className="space-y-1">
               {(info?.suggested_models || []).map((m) => {
@@ -318,6 +317,7 @@ function ComposerPickerCard({
   onChanged: () => void;
 }) {
   const [draft, setDraft] = useState("");
+  const t = useT();
   const names = providers.map((p) => p.name);
   const provOf = (id: string) => {
     const i = id.indexOf(":");
@@ -340,10 +340,10 @@ function ComposerPickerCard({
   };
   return (
     <div className="mt-6" data-testid="composer-picker">
-      <div className={SEC_H + " mb-1.5"}>In the composer's picker</div>
+      <div className={SEC_H + " mb-1.5"}>{t("In the composer's picker")}</div>
       <p className="text-[12px] text-muted mb-2.5 leading-relaxed">
-        The models offered when starting a session; the black badge marks the default. Add more
-        from a provider's card above, or type any model id below (e.g. <code className="text-faint">ollama:qwen2.5-coder:32b</code>).
+        {t("The models offered when starting a session; the black badge marks the default. Add more from a provider's card above, or type any model id below, e.g.")}{" "}
+        <code className="text-faint">ollama:qwen2.5-coder:32b</code>.
       </p>
       <div className="mlist">
         {settings.models.map((id) => {
@@ -355,7 +355,7 @@ function ComposerPickerCard({
                   type="checkbox"
                   checked
                   disabled={isDefault}
-                  title={isDefault ? "The default model is always shown — make another model default first" : "Remove from the picker"}
+                  title={isDefault ? t("The default model is always shown — make another model default first") : t("Remove from the picker")}
                   onChange={() => removeModel(id).then((r) => r.ok && onChanged())}
                 />
                 <span className="mlist-name" title={id}>
@@ -364,10 +364,10 @@ function ComposerPickerCard({
               </label>
               <span className="text-[11px] text-faint mr-2 shrink-0">{tag(id)}</span>
               {isDefault ? (
-                <span className="mlist-default">default</span>
+                <span className="mlist-default">{t("Default")}</span>
               ) : (
                 <button className="mlist-make" onClick={() => setDefaultModel(id).then(() => onChanged())}>
-                  Make default
+                  {t("Make default")}
                 </button>
               )}
             </div>
@@ -376,7 +376,7 @@ function ComposerPickerCard({
         {/* 自定义模型添加 (需求): 直接输入模型 id, 支持 provider:model 前缀 */}
         <div className="mlist-add">
           <input
-            placeholder="Add another model… (provider:model)"
+            placeholder={t("Add another model… (provider:model)")}
             value={draft}
             spellCheck={false}
             autoComplete="off"
@@ -385,7 +385,7 @@ function ComposerPickerCard({
             data-testid="composer-picker-add"
           />
           <button className="btn-primary sm" onClick={add} disabled={!draft.trim()}>
-            Add
+            {t("Add")}
           </button>
         </div>
       </div>

@@ -588,7 +588,7 @@ export const zh: Messages = {
   "Update to v{version} and restart": "更新到 v{version} 并重启",
   "You're on the latest version.": "你已是最新版本。",
   "Token savings": "Token 节省",
-  "PDFs on models without native PDF support": "不支持原生 PDF 的模型上的 PDF",
+  "PDFs on models without native PDF support": "不原生支持 PDF 的模型如何附带 PDF",
   "Extract text": "提取文本",
   "Send page images": "发送页面图片",
   "Max pages": "最大页数",
@@ -680,6 +680,27 @@ export const zh: Messages = {
   "Add an account": "添加账号",
   "Default": "默认",
   "Make default": "设为默认",
+  // -- 模型管理页 (Settings ▸ Models): curated 矩阵只有几个, 实时列表是主入口 ----
+  "In the composer's picker": "会话选择器中的模型",
+  "The models offered when starting a session; the black badge marks the default. Add more from a provider's card above, or type any model id below, e.g.":
+    "开始会话时可选的模型；黑色徽章为默认模型。可在上方各服务商卡片里勾选更多，或直接输入模型 id，例如",
+  "Ticked models show in the composer's picker; the black badge marks the default for new sessions.":
+    "勾选的模型会出现在会话选择器中；黑色徽章标记新会话的默认模型。",
+  "Included models": "包含的模型",
+  "Curated, agent-capable models this provider serves — add your key above to enable them.":
+    "该服务商经筛选、可运行智能体的模型——在上方填入密钥即可启用。",
+  "Add another model… (provider:model)": "添加其他模型…（服务商:模型）",
+  "Add another model…": "添加其他模型…",
+  "The default model is always shown — make another model default first":
+    "默认模型始终显示——请先将其他模型设为默认",
+  "Remove from the picker": "从选择器移除",
+  // 实时模型列表（接好一家 → 拉取这家实际提供的模型）
+  "From the provider": "来自服务商",
+  "Fetching…": "获取中…",
+  "{n} models, fetched live": "{n} 个模型 · 实时获取",
+  "Could not fetch the model list.": "无法获取模型列表。",
+  "Filter models…": "筛选模型…",
+  "Everything this provider serves is already listed above.": "该服务商提供的模型都已列在上面。",
   "Disconnect this account": "断开此账号",
   "Sign in to QunWork Cloud first": "请先登录 QunWork Cloud",
   "＋ Add account · Coming soon": "＋ 添加账号 · 即将推出",

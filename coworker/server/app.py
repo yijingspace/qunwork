@@ -3159,6 +3159,13 @@ def create_app(manager: SessionManager) -> FastAPI:
             manager.verify_provider, name, (body or {}).get("fields")
         )
 
+    @app.get("/v1/providers/{name}/models")
+    async def provider_models(name: str) -> dict[str, Any]:
+        # 已连接服务商的实时模型列表（只读 GET /models, sync httpx → off the event loop）。
+        # 接好一家就能看到这家实际提供的模型, 不再只有 curated 矩阵里那几个
+        # (owner-hit 2026-09-13: 接 6 家只见三四个模型)。
+        return await asyncio.to_thread(manager.provider_models, name)
+
     # -- settings (model API key) -----------------------------------------------
     @app.get("/v1/settings")
     def settings_get() -> dict[str, Any]:

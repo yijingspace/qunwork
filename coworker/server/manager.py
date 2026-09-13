@@ -2122,6 +2122,33 @@ class SessionManager:
             return {"ok": False, "error": "Enter an API key to test."}
         return verify_provider_key(name, api_key=api_key, base_url=base_url)
 
+    def provider_models(self, name: str) -> dict[str, Any]:
+        """已连接服务商的**实时**模型列表（只读 GET /models）。钥匙从 SecretStore 取，
+        绝不出现在返回值里。
+
+        为什么：curated 矩阵只收录人工验证过的少数模型 —— owner-hit 2026-09-13：接了
+        6 家服务商，会话选择器里只有三四个模型。接好一家后，Settings ▸ Models 应能直接
+        拉到这家实际提供的全部模型供勾选。"""
+        import os
+
+        d = get_descriptor(name)
+        if d is None:
+            return {"ok": False, "error": f"unknown provider: {name}"}
+        profile = self.secrets.get(f"provider:{name}") or {}
+        api_key = str(profile.get("api_key") or "").strip()
+        if not api_key and d.env_key:
+            api_key = str(os.environ.get(d.env_key) or "").strip()
+        if d.needs_key and not api_key:
+            return {"ok": False, "error": "not connected"}
+        base_url = str(profile.get("base_url") or "").strip()
+        if name == "ollama":
+            # Ollama 走本地 /api/tags 更稳（老版本没有 OpenAI 兼容的 /v1/models）。
+            names = [m.split(":", 1)[-1] for m in self._ollama_models()]
+            return {"ok": True, "models": names, "count": len(names)}
+        from ..providers.registry import list_provider_models
+
+        return list_provider_models(name, api_key=api_key, base_url=base_url or None)
+
     def _model_provider(self, model: str) -> str:
         """The provider a model string routes to (known `prefix:` or the OpenAI default)."""
         if ":" in (model or ""):

@@ -629,6 +629,9 @@ export async function mockApi(page: import("@playwright/test").Page) {
   // Providers — mutable so save (POST) flips `configured` and stamps key_set_at, matching the
   // backend's set_provider. verify (POST) never mutates: it's a live read-only credential check.
   const providers: any[] = PROVIDERS.map((p) => ({ ...p }));
+  // Settings — per-test mutable copy (the pdf POST and the models add/remove handlers write into
+  // it; GET /v1/settings reads it back so the UI round-trips through the real state).
+  const settingsState: any = { ...SETTINGS, models: [...SETTINGS.models] };
   // Automations — mutable so Run now appends a run, enable/disable toggles, and delete removes.
   const automations: any[] = [{ ...AUTOMATION }, { ...AUTOMATION_CLEAN }];
   // MCP servers (empty by default; the granola OAuth quick-add test populates it).
@@ -908,14 +911,26 @@ export async function mockApi(page: import("@playwright/test").Page) {
     }
 
     if (p.endsWith("/v1/health")) return json(HEALTH);
-    if (p.endsWith("/v1/settings")) return json(SETTINGS);
+    if (p.endsWith("/v1/settings")) return json(settingsState);
+    // Curated-list add/remove (ModelChecklist ticks + the composer-picker's free-type add):
+    // per-test state so ticking a live model and re-fetching /v1/settings agree.
+    if (p.endsWith("/v1/settings/models/add") && m === "POST") {
+      const { model } = req.postDataJSON();
+      if (model && !settingsState.models.includes(model)) settingsState.models.push(model);
+      return json({ ok: true, ...settingsState });
+    }
+    if (p.endsWith("/v1/settings/models/remove") && m === "POST") {
+      const { model } = req.postDataJSON();
+      settingsState.models = settingsState.models.filter((x: string) => x !== model);
+      return json({ ok: true, ...settingsState });
+    }
     if (p.endsWith("/v1/settings/pdf") && m === "POST") {
-      Object.assign(SETTINGS, req.postDataJSON());
+      Object.assign(settingsState, req.postDataJSON());
       return json({
         ok: true,
-        pdf_fallback: SETTINGS.pdf_fallback,
-        pdf_max_pages: SETTINGS.pdf_max_pages,
-        pdf_max_mb: SETTINGS.pdf_max_mb,
+        pdf_fallback: settingsState.pdf_fallback,
+        pdf_max_pages: settingsState.pdf_max_pages,
+        pdf_max_mb: settingsState.pdf_max_mb,
       });
     }
     if (p.endsWith("/v1/attachments/inspect-pdf") && m === "POST") {
@@ -1478,6 +1493,23 @@ export async function mockApi(page: import("@playwright/test").Page) {
         else if (prov.values) delete prov.values[k];
       }
       return json({ ok: true, provider: b.name, recommended_model: null });
+    }
+    // Live model listing for a CONNECTED provider (Settings ▸ Models' "From the provider"
+    // section): the curated matrix only carries a couple of vetted ids per vendor — this is
+    // what the vendor actually serves (owner-hit 2026-09-13: 6 providers connected, only
+    // 3-4 models visible).
+    if (/\/v1\/providers\/([^/]+)\/models$/.test(p) && m === "GET") {
+      const name = p.match(/\/v1\/providers\/([^/]+)\/models$/)![1];
+      const prov = providers.find((x) => x.name === name);
+      if (!prov) return json({ ok: false, error: `unknown provider: ${name}` });
+      if (!prov.configured) return json({ ok: false, error: "not connected" });
+      const live: Record<string, string[]> = {
+        openai: ["gpt-5.6-sol", "gpt-5.5", "gpt-5-mini"],
+        anthropic: ["claude-opus-4-8", "claude-sonnet-4-6"],
+        ollama: ["qwen3-coder:30b", "llama3.3:70b"],
+      };
+      const models = live[name] || ["vendor-model-a", "vendor-model-b"];
+      return json({ ok: true, models, count: models.length });
     }
     // forget a provider's stored config (Settings ▸ Models "Remove key…").
     if (/\/v1\/providers\/[^/]+$/.test(p) && m === "DELETE") {

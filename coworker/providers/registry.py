@@ -421,6 +421,55 @@ def detect_provider(api_key: str) -> Optional[str]:
     return None
 
 
+def _models_endpoint(
+    name: str, d: ProviderDescriptor, key: str, base_url: Optional[str]
+) -> tuple[str, dict[str, str], dict[str, str]]:
+    """(url, headers, params) for one read-only GET to the provider's model list — the single
+    place that knows each family's listing URL/headers. Shared by verify_provider_key (auth
+    check) and list_provider_models (live ids), so the two can never drift apart."""
+    if name == "anthropic":
+        return (
+            "https://api.anthropic.com/v1/models",
+            {"x-api-key": key, "anthropic-version": "2023-06-01"},
+            {},
+        )
+    if name == "gemini":
+        return (
+            "https://generativelanguage.googleapis.com/v1beta/models",
+            {},
+            {"key": key},
+        )
+    if name == "ollama":
+        # Keyless local server; _normalize_ollama_url appends /v1 when missing.
+        return (_normalize_ollama_url(base_url).rstrip("/") + "/models", {}, {})
+    # openai + any OpenAI-compatible endpoint (Azure, OpenRouter, vendors, vLLM…)
+    default_base = next(
+        (f.default for f in d.fields if f.key == "base_url" and f.default), ""
+    )
+    base = (
+        (base_url or "").strip().rstrip("/")
+        or default_base.rstrip("/")
+        or "https://api.openai.com/v1"
+    )
+    return base + "/models", {"Authorization": f"Bearer {key}"}, {}
+
+
+def _models_get(
+    name: str, d: ProviderDescriptor, key: str, base_url: Optional[str], timeout: float
+):
+    """Issue the model-list GET. Empty headers/params are omitted so keyless calls (ollama)
+    stay keyless. Raises on network errors — callers map them to friendly errors."""
+    import httpx
+
+    url, headers, params = _models_endpoint(name, d, key, base_url)
+    kwargs: dict[str, Any] = {"timeout": timeout}
+    if headers:
+        kwargs["headers"] = headers
+    if params:
+        kwargs["params"] = params
+    return httpx.get(url, **kwargs)
+
+
 def verify_provider_key(
     name: str,
     *,
@@ -437,56 +486,33 @@ def verify_provider_key(
     d = get_descriptor(name) or _BY_NAME["openai"]
     key = (api_key or "").strip()
     try:
-        if name == "anthropic":
-            resp = httpx.get(
-                "https://api.anthropic.com/v1/models",
-                headers={"x-api-key": key, "anthropic-version": "2023-06-01"},
+        resp = _models_get(name, d, key, base_url, timeout)
+        if (
+            name not in ("anthropic", "gemini", "ollama")
+            and resp.status_code in (404, 405)
+        ):
+            # 供应商未实现 GET /models（不少国内网关只暴露 chat/completions）
+            # → 用一次 1-token 对话探针验证鉴权（成本≈0，只为区分钥匙对错）。
+            url, _, _ = _models_endpoint(name, d, key, base_url)
+            base = url[: -len("/models")]
+            resp = httpx.post(
+                base + "/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {key}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": d.recommended_model or "default",
+                    "messages": [{"role": "user", "content": "ping"}],
+                    "max_tokens": 1,
+                    "stream": False,
+                },
                 timeout=timeout,
             )
-        elif name == "gemini":
-            resp = httpx.get(
-                "https://generativelanguage.googleapis.com/v1beta/models",
-                params={"key": key},
-                timeout=timeout,
-            )
-        elif name == "ollama":
-            base = _normalize_ollama_url(base_url)
-            resp = httpx.get(base.rstrip("/") + "/models", timeout=timeout)
-        else:  # openai + any OpenAI-compatible endpoint (Azure, OpenRouter, vendors, vLLM…)
-            default_base = next(
-                (f.default for f in d.fields if f.key == "base_url" and f.default), ""
-            )
-            base = (
-                (base_url or "").strip().rstrip("/")
-                or default_base.rstrip("/")
-                or "https://api.openai.com/v1"
-            )
-            resp = httpx.get(
-                base + "/models",
-                headers={"Authorization": f"Bearer {key}"},
-                timeout=timeout,
-            )
-            if resp.status_code in (404, 405):
-                # 供应商未实现 GET /models（不少国内网关只暴露 chat/completions）
-                # → 用一次 1-token 对话探针验证鉴权（成本≈0，只为区分钥匙对错）。
-                resp = httpx.post(
-                    base + "/chat/completions",
-                    headers={
-                        "Authorization": f"Bearer {key}",
-                        "Content-Type": "application/json",
-                    },
-                    json={
-                        "model": d.recommended_model or "default",
-                        "messages": [{"role": "user", "content": "ping"}],
-                        "max_tokens": 1,
-                        "stream": False,
-                    },
-                    timeout=timeout,
-                )
-                if resp.status_code < 300 or 400 <= resp.status_code < 500 and resp.status_code not in (401, 403):
-                    # 鉴权已通过（200，或模型不存在/参数/限流等 4xx 业务错误 — 都不是钥匙问题）
-                    return {"ok": True}
-                # 401/403 → 下方统一"Invalid API key."; 5xx → 下方 generic HTTP 错误
+            if resp.status_code < 300 or 400 <= resp.status_code < 500 and resp.status_code not in (401, 403):
+                # 鉴权已通过（200，或模型不存在/参数/限流等 4xx 业务错误 — 都不是钥匙问题）
+                return {"ok": True}
+            # 401/403 → 下方统一"Invalid API key."; 5xx → 下方 generic HTTP 错误
     except Exception as exc:  # DNS/connection/timeout — never let it bubble to a 500
         return {
             "ok": False,
@@ -505,3 +531,81 @@ def verify_provider_key(
             "error": "Reached the server, but no OpenAI-compatible /v1 API there.",
         }
     return {"ok": False, "error": f"{d.title} returned HTTP {resp.status_code}."}
+
+
+def list_provider_models(
+    name: str,
+    *,
+    api_key: Optional[str] = None,
+    base_url: Optional[str] = None,
+    timeout: float = 15.0,
+) -> dict[str, Any]:
+    """该服务商的**实时**模型列表（只读 GET /models，与 verify_provider_key 同一条请求路径）。
+
+    为什么需要它：curated 矩阵（providers/matrix.py）只收录人工验证过的少数模型 ——
+    owner-hit 2026-09-13：接了 6 家服务商，会话选择器里却只有三四个模型，用户之前用的
+    模型根本不在矩阵里。接好一家后，应该能看到**这家实际提供的模型**并直接勾选。
+
+    解析各家形状：OpenAI 兼容 ``{"data":[{"id":…}]}``（含 anthropic / DeepSeek / 智谱 /
+    Moonshot / 自建网关…）、Gemini ``{"models":[{"name":"models/gemini-…"}]}``（去掉前缀）、
+    Ollama ``{"models":[{"model":…}]}``，以及少数把列表直接放在顶层的网关。顺序保留供应商
+    自己的排序（通常新模型在前），仅去重。Never raises：{ok, models, count} 或 {ok, False, error}。
+    """
+    d = get_descriptor(name) or _BY_NAME["openai"]
+    key = (api_key or "").strip()
+    try:
+        resp = _models_get(name, d, key, base_url, timeout)
+    except Exception as exc:  # DNS/connection/timeout — never let it bubble to a 500
+        return {
+            "ok": False,
+            "error": f"Couldn't reach {d.title} ({exc.__class__.__name__}).",
+        }
+    if resp.status_code in (404, 405):
+        # 不少国内网关只暴露 chat/completions（verify 的 1-token 探针能验钥匙，但拿不到列表）
+        return {
+            "ok": False,
+            "status": 404,
+            "error": "This service does not expose a model list — add models by hand below.",
+        }
+    if resp.status_code in (401, 403):
+        if name == "ollama":
+            return {"ok": False, "error": "Server rejected the request."}
+        return {"ok": False, "error": "Invalid API key."}
+    if resp.status_code >= 300:
+        return {"ok": False, "error": f"{d.title} returned HTTP {resp.status_code}."}
+    try:
+        data = resp.json()
+    except Exception:
+        return {"ok": False, "error": f"{d.title} returned a non-JSON model list."}
+
+    items: Any
+    if isinstance(data, dict):
+        items = data.get("data") or data.get("models") or []
+        if not items and isinstance(data.get("object"), list):
+            items = data["object"]  # 个别网关把列表放在 object 键下
+    elif isinstance(data, list):
+        items = data  # 顶层就是列表的网关
+    else:
+        items = []
+
+    ids: list[str] = []
+
+    def _push(value: Any) -> None:
+        if not isinstance(value, str):
+            return
+        v = value.strip()
+        if not v:
+            return
+        if v.startswith("models/"):  # Gemini: "models/gemini-2.0-flash" → "gemini-2.0-flash"
+            v = v[len("models/") :]
+        ids.append(v)
+
+    for it in items:
+        if isinstance(it, dict):
+            _push(it.get("id") or it.get("name") or it.get("model"))
+        else:
+            _push(it)
+
+    seen: set[str] = set()
+    models = [m for m in ids if not (m in seen or seen.add(m))]
+    return {"ok": True, "models": models, "count": len(models)}

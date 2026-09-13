@@ -88,6 +88,35 @@ test("Models: Remove key reverts a configured provider", async ({ page }) => {
   await expect(page.getByTestId("set-provider-anthropic")).toContainText("Not set up");
 });
 
+// Live model listing (owner-hit 2026-09-13): connecting a provider should surface what it
+// ACTUALLY serves, not just the handful of curated-matrix ids — the checklist auto-fetches
+// the live list when a configured provider's form opens, live rows are tickable, and the
+// ticked model then shows in the composer's picker.
+test("Models: connected provider auto-fetches its live model list", async ({ page }) => {
+  await page.goto("/");
+  await page.getByTestId("account-row").click();
+  await page.getByRole("button", { name: "Settings", exact: true }).click();
+  await page.getByRole("button", { name: "Models", exact: true }).click();
+
+  // OpenAI is configured in the fixtures → its form auto-fetches the live list on open.
+  await page.getByTestId("set-provider-openai").click();
+  await expect(page.getByTestId("model-live-count")).toContainText("3");
+  // Live-only models appear below the curated rows (gpt-5.5 dedupes against them).
+  await expect(page.getByText("gpt-5.6-sol", { exact: true })).toBeVisible();
+  await expect(page.getByText("gpt-5-mini", { exact: true })).toBeVisible();
+
+  // Ticking a live model round-trips through /v1/settings/models/add. click() (not check()):
+  // the add re-renders the row into the curated section (the live section dedupes it away),
+  // and check() re-resolving across that swap races "did not change its state".
+  const liveRow = page.locator(".mlist-row", { hasText: "gpt-5-mini" }).last();
+  await liveRow.locator("input").click();
+  await expect(page.locator(".mlist-row", { hasText: "gpt-5-mini" }).first().locator("input")).toBeChecked();
+
+  // Back on the gallery, the composer's picker now offers it too.
+  await page.getByTestId("set-back").click();
+  await expect(page.getByTestId("composer-picker")).toContainText("gpt-5-mini");
+});
+
 // Token savings (owner ask 2026-07-17; moved under Models by UX-021): the card renders with
 // the PDF fallback segmented control + attach thresholds, and edits POST through.
 test("Settings: Token savings card edits PDF fallback and thresholds", async ({ page }) => {
