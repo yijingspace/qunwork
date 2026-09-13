@@ -53,6 +53,11 @@ dev = ["pytest>=8", "pytest-asyncio", "httpx"]
 messaging = ["python-telegram-bot>=21", "slack-bolt>=1.18", "aiohttp>=3.9"]
 # Interactive Cowork browser automation.
 browser = ["playwright>=1.44"]
+# 谱分析 / 3D 仿真 / DpNN 基线: coworker.orchestrator.convergence|mesh, hornet.sim3d|topo_embed|
+# builder, periodic.dpnn_baseline 都在函数内 `import numpy`。缺失时**不报错而是静默退化**
+# (代数连通度恒 0、特征值/收敛轮数全不对), 只有黄金值测试才看得见 —— 所以必须显式声明,
+# CI 也装它(GitHub CI run #2: ubuntu 上 9 个 ModuleNotFoundError + 5 个谱分析断言失败)。
+sim = ["numpy>=1.26"]
 
 [project.scripts]
 qunwork = "coworker.cli:main"

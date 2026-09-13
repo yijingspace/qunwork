@@ -6,6 +6,7 @@ against temp dirs (git_log needs a real `git`, which the dev box has).
 
 from __future__ import annotations
 
+import os
 import subprocess
 from types import SimpleNamespace
 
@@ -143,7 +144,10 @@ def test_read_file_escape_returns_error_dict_not_exception(tmp_path):
     outside.write_text("secret\n", encoding="utf-8")
     r1 = read_file(path=str(outside))  # 绝对路径越界
     assert "error" in r1 and "request_directory" in r1["error"]
-    r2 = read_file(path=r"..\..\outside.txt")  # .. 穿越越界
+    # 穿越写法要跟平台一致: POSIX 上 `..\..\outside.txt` 只是一个普通文件名(不构成穿越),
+    # 用 Windows 写法断言"提示里要有 run_shell"会在 ubuntu 上落空(GitHub CI run #2 实证)。
+    traversal = r"..\..\outside.txt" if os.name == "nt" else "../../outside.txt"
+    r2 = read_file(path=traversal)  # .. 穿越越界
     assert "error" in r2 and "run_shell" in r2["error"]
     assert read_file(path="ok.txt")["content"].endswith("inside")
 

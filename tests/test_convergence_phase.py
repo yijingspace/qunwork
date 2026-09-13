@@ -5,6 +5,8 @@ import tempfile
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from coworker.orchestrator.memory_store import PersistentVectorMemory
@@ -46,6 +48,13 @@ def test_orchestrator_stalls_on_no_progress(tmp_path):
     """T4: repeated rounds that change nothing (same result hash) stall the run
     instead of spinning — status 'stalled' + run_stalled event."""
     from coworker.orchestrator import Orchestrator
+
+    # 预热共享技能加载器: 首个引擎要扫描并做安全分析 coworker/skills 下 ~1.2k 个文件
+    # (本机冷启 8-12s), 而缓存是按"技能目录集合"建键的 —— 每个新 workspace 都是冷启,
+    # 于是 10s 预算被 I/O 吃掉而不是被测的停滞守卫。这里先按同一个 workspace 预热。
+    from coworker.agent import _shared_skill_loader
+
+    _shared_skill_loader(tmp_path / "ws")
 
     class StuckProvider(ProviderClient):
         def __init__(self):
@@ -282,7 +291,9 @@ def test_environment_git_snapshot_survives_chinese_commits():
 
     # This repo has Chinese commit messages; on a zh-CN Windows the old
     # text=True (GBK) path crashed. Just assert the fixed helper works here.
-    ws = Path(r"E:\QunWork\QunWork")
+    # 路径必须从测试文件推出来: 以前写死 `E:\QunWork\QunWork`, 在 CI(ubuntu/runner)上
+    # 那个目录不存在 → _git 返回 None → 断言 None == 'true' 直接失败(GitHub CI run #2 实证)。
+    ws = Path(__file__).resolve().parent.parent
     rc = _git(ws, "rev-parse", "--is-inside-work-tree")
     assert rc == "true"
     log = _git(ws, "log", "-n5", "--pretty=format:%h %s")
@@ -343,6 +354,10 @@ def test_worker_tool_heartbeat_events():
     assert "final" in text
 
 
+@pytest.mark.skipif(
+    sys.platform != "win32",
+    reason="验证 Windows 控制台代码页(GBK/冷启动竞态)下的中文参数与路径, 非 Windows 无此语义",
+)
 def test_shell_chinese_commands_survive_cold_start(tmp_path):
     """GBK-family regression: Chinese args/paths in worker shell commands must
     work on the FIRST command after spawn (console-code-page race), on both

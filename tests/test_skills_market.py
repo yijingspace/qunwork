@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import zipfile
 from pathlib import Path
 
@@ -134,11 +135,14 @@ def test_import_rejects_path_traversal_entries(loader: SkillLoader, tmp_path: Pa
     """zip-slip regression: `../` and backslash entries must never escape the skill folder."""
     import io
 
+    # `..\OUTSIDE\pwned.txt` 只有在 Windows 上才是穿越; POSIX 把它当普通文件名, 解到目标目录里
+    # 就不该抛错 —— 但"不许逃出目标目录"这条对三种写法都必须成立(GitHub CI run #2 实证)。
     for entry, label in [
         ("../OUTSIDE/pwned.txt", "dotdot"),
         ("..\\OUTSIDE\\pwned.txt", "backslash"),
         ("myskill/../../OUTSIDE/pwned.txt", "nested-dotdot"),
     ]:
+        is_traversal = "\\" not in entry or os.name == "nt"
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w") as zf:
             zf.writestr("SKILL.md", "---\nname: safe\n---\nbody")
@@ -149,8 +153,11 @@ def test_import_rejects_path_traversal_entries(loader: SkillLoader, tmp_path: Pa
 
         out_dir = tmp_path / f"out-{label}"
         fresh = SkillLoader([out_dir])
-        with pytest.raises(ValueError):
-            fresh.import_skill(zip_path)
+        if is_traversal:
+            with pytest.raises(ValueError):
+                fresh.import_skill(zip_path)
+        else:
+            fresh.import_skill(zip_path)  # 普通文件名, 允许落地
         # nothing may exist outside the target dir (and no OUTSIDE folder anywhere)
         assert not list(out_dir.parent.rglob("OUTSIDE")), label
         assert not any(p.name == "pwned.txt" for p in out_dir.parent.rglob("*")), label
