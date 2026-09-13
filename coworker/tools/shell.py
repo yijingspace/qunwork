@@ -250,6 +250,9 @@ class LocalExecutor(Executor):
         if a command times out and the shell is hard-closed, the next `run` respawns here
         in the last known `cwd` (in-shell env/vars are lost, but the session continues).
         """
+        # 重开之前先收掉上一个 shell: 否则旧 reader 线程会跟着旧管道一起泄漏(Windows CI
+        # 的挂死转储里积了 30 多个 _read_loop 线程, 全卡在 `for line in self._proc.stdout`)。
+        self._shutdown_process()
         if self._is_windows:
             argv = [
                 self._shell_path,
@@ -334,6 +337,9 @@ class LocalExecutor(Executor):
             assert self._proc.stdout is not None
             for line in self._proc.stdout:
                 queue.put(line)
+        except (ValueError, OSError):
+            # 管道被 close()/_shutdown_process() 关掉了 —— 正常收尾路径, 不是错误。
+            pass
         finally:
             queue.put(None)  # EOF sentinel
 
@@ -540,26 +546,53 @@ class LocalExecutor(Executor):
         self._interrupt()
 
     def close(self) -> None:
+        self._shutdown_process()
+
+    def _shutdown_process(self) -> None:
+        """Kill the shell (whole tree on Windows) and release its pipes + reader thread.
+
+        为什么不能只 kill: reader 线程阻塞在 `for line in self._proc.stdout`, 要等到**所有**
+        持有该管道写端的进程都没了才会 EOF。`taskkill /T` 覆盖进程树, 但被 detach 出去的孙进程
+        (或已死 shell 被某个子进程继承走的句柄)能一直撑着这个写端 —— 于是线程永不返回, 每次
+        重开再漏一个。GitHub CI 的 Windows 挂死转储里就是这样积了 30 多个 `_read_loop`。
+        自己 close 掉管道 = 让 reader 立刻看到 EOF; join 有上限(线程是 daemon, 且可能正卡在
+        阻塞读里, 不能无限等)。
+        """
+        proc = getattr(self, "_proc", None)
+        if proc is None:
+            return
         if self._is_windows:
             # Kill the whole tree — a timed-out command may have spawned children that
             # `terminate()` (the shell only) would orphan. Then reap so `poll()` reliably
             # reports the exit, which the next run()'s respawn check depends on.
             try:
                 subprocess.run(
-                    ["taskkill", "/F", "/T", "/PID", str(self._proc.pid)],
+                    ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
                     capture_output=True,
                 )
             except (OSError, subprocess.SubprocessError):
                 pass
+        else:
             try:
-                self._proc.wait(timeout=5)
-            except (subprocess.TimeoutExpired, OSError):
+                proc.terminate()
+            except (ProcessLookupError, OSError):
                 pass
-            return
         try:
-            self._proc.terminate()
-        except (ProcessLookupError, OSError):
-            pass
+            proc.wait(timeout=5)
+        except (subprocess.TimeoutExpired, OSError):
+            try:
+                proc.kill()
+            except (ProcessLookupError, OSError):
+                pass
+        for stream in (proc.stdin, proc.stdout, proc.stderr):
+            try:
+                if stream is not None:
+                    stream.close()
+            except (OSError, ValueError):
+                pass
+        reader = getattr(self, "_reader", None)
+        if reader is not None and reader.is_alive():
+            reader.join(timeout=2.0)
 
     def _result(
         self, command, exit_code, output, *, timed_out, truncated=False, error=None

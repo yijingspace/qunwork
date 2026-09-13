@@ -256,6 +256,31 @@ def test_unwrap_nested_shell_predicate():
     ) == 'Write-Output "x"'
 
 
+def test_close_releases_pipes_and_reader_thread():
+    """close() 必须把管道和 reader 线程真的收掉。
+
+    GitHub CI 的 Windows 挂死转储(`+++ Timeout +++`)里积了 30 多个 `_read_loop` 线程, 全部卡在
+    `for line in self._proc.stdout` —— 只 taskkill 不关管道时, 任何还持有写端的孙进程/继承句柄都
+    能让 reader 永远等不到 EOF, 每次重开再漏一个。这里断言可确定的部分: close() 之后管道已关闭、
+    reader 线程已退出。
+    """
+    ex = LocalExecutor(cwd=".")
+    try:
+        assert ex._reader is not None and ex._reader.is_alive()
+        ex.run(EXIT_OK, timeout=30)
+        proc, reader = ex._proc, ex._reader
+        ex.close()
+        assert proc.stdout is None or proc.stdout.closed, "stdout 管道未释放"
+        assert proc.stdin is None or proc.stdin.closed, "stdin 管道未释放"
+        for _ in range(30):
+            if not reader.is_alive():
+                break
+            time.sleep(0.1)
+        assert not reader.is_alive(), "close() 之后 reader 线程仍在跑(会随重开累积)"
+    finally:
+        ex.close()
+
+
 @pytest.mark.skipif(not _WIN, reason="nested-shell unwrap is Windows-REPL-specific")
 def test_self_nested_shell_command_runs_cleanly(executor):
     # A model that wraps its own command in `powershell -Command "…"` must get a
