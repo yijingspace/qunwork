@@ -1051,6 +1051,8 @@ export async function setKnowledgePath(
   return res.json();
 }
 
+export const ALL_WORKSPACES = "*";
+
 export async function listKnowledge(
   limit = 100,
   offset = 0,
@@ -1060,6 +1062,8 @@ export async function listKnowledge(
   // Scoping matters: without it the backend aggregates EVERY indexed root, so a file
   // that lives under nested roots (E:\ and E:\QunWork and E:\QunWork\QunWork) shows up
   // once per root and the page looks like it is full of duplicates (owner-hit 2026-09-13).
+  // ALL_WORKSPACES ("*") is the explicit everything-scope: omitting the parameter is not
+  // the same thing — the backend then falls back to its default root.
   if (workspace) q.set("workspace", workspace);
   const res = await apiFetch(`${httpBase()}/v1/knowledge?${q.toString()}`);
   return await res.json();

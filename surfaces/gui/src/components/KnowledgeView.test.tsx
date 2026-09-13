@@ -51,9 +51,10 @@ describe("KnowledgeView", () => {
     await waitFor(() => expect(listKnowledge).toHaveBeenCalledWith(100, 0, ws));
     expect(screen.getByTestId("knowledge-scope-path").textContent).toContain(ws);
 
-    // "All workspaces" widens it (undefined = backend aggregates).
+    // "All workspaces" asks the backend for everything ("*"); passing undefined would
+    // fall back to the backend's default root and the toggle would lie.
     screen.getByRole("button", { name: "All workspaces" }).click();
-    await waitFor(() => expect(listKnowledge).toHaveBeenCalledWith(100, 0, undefined));
+    await waitFor(() => expect(listKnowledge).toHaveBeenCalledWith(100, 0, api.ALL_WORKSPACES));
   });
 
   it("has no scope switch when the surface has no workspace", async () => {

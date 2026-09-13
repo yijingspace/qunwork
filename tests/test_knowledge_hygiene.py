@@ -18,7 +18,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from coworker.knowledge.purge import cross_workspace_duplicates, purge_retired_chunks
-from coworker.knowledge.store import KnowledgeStore
+from coworker.knowledge.store import ALL_WORKSPACES, KnowledgeStore
 
 
 @pytest.fixture()
@@ -53,6 +53,20 @@ def test_count_items_across_all_workspaces_matches_the_unscoped_list(store: Know
     assert len(store.list_items()) == 1
     assert store.count_items() == 1
     assert store.count_items(include_retired=True) == 2
+
+
+def test_all_workspaces_sentinel_spans_every_root(store: KnowledgeStore):
+    """`workspace=ALL_WORKSPACES` must mean "no filter" — None/"" collapse onto the store's
+    default workspace, which is why the UI's 全部工作区 toggle needs its own sentinel."""
+    store.add_text("a", "内容 A", workspace="ws-a")
+    store.add_text("b", "内容 B", workspace="ws-b")
+
+    assert store.count_items(workspace=ALL_WORKSPACES) == 2
+    assert len(store.list_items(workspace=ALL_WORKSPACES)) == 2
+    # A concrete scope still narrows, and the sentinel is not treated as a path.
+    assert store.count_items(workspace="ws-a") == 1
+    assert store.list_items(workspace="ws-a")[0]["title"] == "a"
+    assert store.count_items(workspace=ALL_WORKSPACES, include_retired=True) == 2
 
 
 # -- ⑤ scan exclusions -----------------------------------------------------------------------

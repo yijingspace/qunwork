@@ -110,6 +110,11 @@ _CHUNK_SIZE = 600  # chars per chunk
 _CHUNK_OVERLAP = 120
 _NGRAM_N = 3  # char n-gram width for the fallback (no-embedder) vector model
 
+#: Explicit "no workspace filter" scope. `workspace=None`/"" means *this store's* default
+#: workspace, so a UI offering a real 全部工作区 view needs a distinct sentinel — without it
+#: the toggle would silently show the default root again (owner-hit 2026-09-13).
+ALL_WORKSPACES = "*"
+
 
 def _ngram_vector(text: str, n: int = 3) -> dict[str, float]:
     """Char n-gram count vector — decent Chinese similarity without an embedder."""
@@ -639,15 +644,26 @@ class KnowledgeStore:
             "workspace": row[10],
         }
 
+    def _scope_workspace(self, workspace: Optional[str]) -> str:
+        """Resolve a caller's scope to the SQL filter value.
+
+        ``ALL_WORKSPACES`` → "" (count/list over every workspace); None/"" → this store's
+        default workspace; anything else → that workspace.
+        """
+        if workspace == ALL_WORKSPACES:
+            return ""
+        return str(workspace) if workspace else self._default_workspace
+
     def count_items(self, workspace: Optional[str] = None, *, include_retired: bool = False) -> int:
         """Number of items a LIST would show — active only, unless asked otherwise.
 
         The list hides retired rows; a count that included them made the page claim
         "200/21782" while only 8,944 rows could ever load (owner-hit 2026-09-13: 12,838
         of those were superseded versions, i.e. the count over-reported by 2.4×).
-        `include_retired=True` is for audit/maintenance callers.
+        `include_retired=True` is for audit/maintenance callers; `workspace=ALL_WORKSPACES`
+        spans every workspace instead of falling back to the store default.
         """
-        ws = str(workspace) if workspace else self._default_workspace
+        ws = self._scope_workspace(workspace)
         retired_filter = "" if include_retired else " AND retired=0"
         with self._lock:
             if ws:
@@ -755,7 +771,7 @@ class KnowledgeStore:
         limit: int = 100,
         offset: int = 0,
     ) -> list[dict]:
-        ws = str(workspace) if workspace else self._default_workspace
+        ws = self._scope_workspace(workspace)
         with self._lock:
             if ws:
                 rows = self._con.execute(

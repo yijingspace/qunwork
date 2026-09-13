@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { HornetHive } from "./HornetHive";import {
+  ALL_WORKSPACES,
   addKnowledge,
   deleteKnowledge,
   getKnowledgePath,
@@ -137,7 +138,9 @@ export default function KnowledgeView({ onResume, workspace }: KnowledgeViewProp
     [sortBy],
   );
 
-  const scopeWs = scope === "workspace" ? workspace : undefined;
+  // "*" means "no filter" to the backend; passing undefined would silently collapse the
+  // 全部工作区 view back onto the default root.
+  const scopeWs = scope === "workspace" ? workspace : ALL_WORKSPACES;
 
   const refresh = useCallback(async () => {
     try {

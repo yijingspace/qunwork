@@ -5099,7 +5099,15 @@ class SessionManager:
     def knowledge_list(
         self, workspace: Optional[str] = None, limit: int = 100, offset: int = 0
     ) -> dict[str, Any]:
-        ws = self.resolve_workspace(workspace) or self.default_workspace
+        # "*" (store.ALL_WORKSPACES) is an explicit "every workspace" scope, not a path —
+        # resolving it through resolve_workspace would turn the honest 全部工作区 view back
+        # into the default root.
+        from ..knowledge.store import ALL_WORKSPACES
+
+        if workspace == ALL_WORKSPACES:
+            ws: Optional[str] = ALL_WORKSPACES
+        else:
+            ws = self.resolve_workspace(workspace) or self.default_workspace
         return {
             "items": self.knowledge.list_items(workspace=ws, limit=limit, offset=offset),
             "total": self.knowledge.count_items(workspace=ws),
