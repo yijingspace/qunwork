@@ -46,7 +46,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "pytest-asyncio", "httpx"]
+dev = ["pytest>=8", "pytest-asyncio", "httpx", "pytest-timeout>=2.3"]
 # Inbound messaging listeners (outbound send_message needs only httpx, already a core dep).
 # aiohttp is slack-bolt's Socket Mode transport at runtime (and the FakeSlack test harness
 # drives the real handler) — declare it so CI installs it, not just transitively.
@@ -58,6 +58,10 @@ browser = ["playwright>=1.44"]
 # (代数连通度恒 0、特征值/收敛轮数全不对), 只有黄金值测试才看得见 —— 所以必须显式声明,
 # CI 也装它(GitHub CI run #2: ubuntu 上 9 个 ModuleNotFoundError + 5 个谱分析断言失败)。
 sim = ["numpy>=1.26"]
+# 本地视觉技能 (coworker/skills/vision、skills/img2threejs/integrations/vision) 用 Pillow 读图/
+# 缩放; 它此前只是被 rapidocr-onnxruntime 顺带带进来的, 谁都没声明 —— CI run #4 上 ubuntu
+# 因此挂 2 个 `ModuleNotFoundError: No module named 'PIL'`(test_attachments 的图片路径)。
+vision = ["Pillow>=10"]
 
 [project.scripts]
 qunwork = "coworker.cli:main"
@@ -74,3 +78,9 @@ coworker = ["personas/builtin/*.md"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+# 卡死护栏: GitHub CI 的 windows job 曾整套**挂住**(run #2/#3/#4 都停在 Test 步骤
+# 30-45 分钟不动, 而本地同一套件 11 分钟跑完), 没有超时的话一个卡死用例会一直占着
+# runner 直到 6 小时上限 —— 既拿不到结论, 又白烧私有仓库的免费额度。
+# thread 是 Windows 上唯一可用的方法(无法 kill, 但会先用 faulthandler 打出卡住位置的栈)。
+timeout = 300
+timeout_method = "thread"
